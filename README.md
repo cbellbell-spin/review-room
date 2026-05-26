@@ -1,27 +1,17 @@
-# Proof SDK
+# Review Room
 
-Proof SDK is the open-source editor, collaboration server, provenance model, and agent HTTP bridge that power collaborative documents in Proof.
+Review Room is a collaborative document review app with human and agent comments layered on top of Proof SDK documents.
 
-If you want the hosted product, use [Proof](https://proofeditor.ai). Hosted Proof is made by [Every](https://every.to).
+The current app is intentionally small: it gives Review Room its own dashboard, document registry, review-oriented editor chrome, and agent/comment lifecycle while reusing the Proof SDK editor, collaboration server, provenance model, and HTTP bridge.
 
 ## What Is Included
 
-- Collaborative markdown editor with provenance tracking
-- Comments, suggestions, and rewrite operations
-- Realtime collaboration server
-- Agent HTTP bridge for state, marks, edits, presence, and events
-- A small example app under `apps/proof-example`
-
-## Workspace Layout
-
-- `packages/doc-core`
-- `packages/doc-editor`
-- `packages/doc-server`
-- `packages/doc-store-sqlite`
-- `packages/agent-bridge`
-- `apps/proof-example`
-- `server`
-- `src`
+- Review Room dashboard at `/review-room`
+- Registry-backed Review Room documents mapped to Proof document slugs
+- Collaborative markdown editor with comments, replies, resolve, and reopen support
+- Agent HTTP bridge for document state, marks, edits, presence, and events
+- Local identity seed data for human reviewer and review agent development
+- Regression coverage for document opening, agent comments, permissions, and comment lifecycle
 
 ## Local Development
 
@@ -35,41 +25,47 @@ Install dependencies:
 npm install
 ```
 
-Start the editor:
+Start the editor dev server:
 
 ```bash
 npm run dev
 ```
 
-Start the local server:
+Start the local API/collaboration server:
 
 ```bash
 npm run serve
 ```
 
-The default setup serves the editor on `http://localhost:3000` and the API/server on `http://localhost:4000`.
+Open the app at:
+
+```text
+http://localhost:3000/review-room
+```
+
+The dev server runs on `http://localhost:3000` and proxies the API/server on `http://localhost:4000`.
 
 ## Core Routes
 
-Canonical Proof SDK routes:
+Review Room routes:
+
+- `GET /review-room`
+- `GET /review-room/api/identity`
+- `GET /review-room/api/documents`
+- `POST /review-room/api/documents`
+- `POST /review-room/api/documents/register`
+
+Underlying Proof-compatible document routes remain available for agents and integrations:
 
 - `POST /documents`
 - `GET /documents/:slug/state`
-- `GET /documents/:slug/snapshot`
 - `POST /documents/:slug/edit`
-- `POST /documents/:slug/edit/v2`
 - `POST /documents/:slug/ops`
-- `POST /documents/:slug/presence`
-- `GET /documents/:slug/events/pending`
-- `POST /documents/:slug/events/ack`
-- `GET /documents/:slug/bridge/state`
-- `GET /documents/:slug/bridge/marks`
 - `POST /documents/:slug/bridge/comments`
 - `POST /documents/:slug/bridge/suggestions`
 - `POST /documents/:slug/bridge/rewrite`
-- `POST /documents/:slug/bridge/presence`
-
-Compatibility aliases remain mounted for the hosted product, but the routes above are the public SDK surface.
+- `GET /documents/:slug/events/pending`
+- `POST /documents/:slug/events/ack`
 
 ## Build
 
@@ -85,14 +81,17 @@ The build outputs the web bundle to `dist/` and writes `dist/web-artifact-manife
 npm test
 ```
 
-## Docs
+Useful focused checks:
 
-- `AGENT_CONTRACT.md`
-- `docs/agent-docs.md`
-- `docs/proof.SKILL.md`
-- `docs/adr/2026-03-proof-sdk-public-core.md`
+```bash
+npm run test:server-routes-share
+npx tsx src/tests/mobile-comment-ux.test.ts
+```
+
+## Repository Notes
+
+Review Room currently includes the Proof SDK runtime it depends on. The next cleanup pass should separate product-specific Review Room code from reusable Proof SDK packages more aggressively.
 
 ## License
 
-- Code: `MIT` in `LICENSE`
-- Trademark guidance: `TRADEMARKS.md`
+MIT. See `LICENSE`.

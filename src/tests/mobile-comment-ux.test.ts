@@ -201,10 +201,12 @@ test('source includes selection caching + pointer/touch handlers + arrow trigger
   assert(popover.includes('const selectedText = selection?.toString().trim() ?? \'\';'), 'Action range resolution should fallback to selected text when PM selection is collapsed');
   assert(popover.includes('const hasDomSelectionText = Boolean(\n        selection && selection.toString().trim().length > 0 && hasDomSelectionInsideEditor\n      );'), 'Render sync should detect in-editor DOM text selection even when range mapping fails');
   assert(popover.includes('} else if (!hasSelection && hasDomSelectionText && !this.hasLiveSelection) {'), 'Render sync should elevate live-selection state from DOM text selection fallback');
-  assert(popover.includes('Comments (${data.totalCount})'), 'Mobile strip should render an explicit comments summary count');
-  assert(popover.includes('No nearby comments · ${data.totalCount} total'), 'Mobile strip summary should distinguish nearby vs total counts');
+  assert(popover.includes('Comments (${data.openCount})'), 'Mobile strip should render an explicit open comments summary count');
+  assert(popover.includes('data.resolvedCount > 0'), 'Mobile strip summary should include resolved comment counts');
   assert(popover.includes("this.renderMobileStripSection('Nearby', nearby);"), 'Expanded mobile strip should include a Nearby section');
   assert(popover.includes("this.renderMobileStripSection('All comments'"), 'Expanded mobile strip should include an All comments section');
+  assert(popover.includes("this.renderMobileStripSection('Resolved'"), 'Expanded mobile strip should include a Resolved section');
+  assert(popover.includes("resolveButton.textContent = resolved ? 'Reopen' : 'Resolve';"), 'Resolved threads should expose a Reopen action');
   assert(popover.includes("if (this.mode === 'composer' || this.mode === 'thread') {"), 'Mobile sheet should autofocus textarea for compose + thread flows');
   assert(popover.includes("this.popover.classList.toggle('mark-popover-keyboard-open', offset > 0);"), 'Mobile sheet should track keyboard-open viewport state');
   assert(popover.includes("if (!shouldUseCommentUiV2()) return;"), 'Viewport offset handling should still run for v2 mobile strip state');
@@ -230,6 +232,7 @@ test('source includes selection caching + pointer/touch handlers + arrow trigger
   assert(popover.includes("this.popover.appendChild(header);\n    this.popover.appendChild(list);\n    if (replyBox) this.popover.appendChild(replyBox);\n    this.popover.appendChild(actions);"), 'Thread reply box should render below the thread list and above the action row');
   assert(popover.includes('textarea.focus({ preventScroll: true });'), 'Composer should autofocus textarea on mobile sheet open');
   assert(indexHtml.includes('.mark-mobile-summary'), 'Expected collapsed mobile summary chip styles');
+  assert(indexHtml.includes('.mark-mobile-card-resolved'), 'Expected resolved comment cards to have distinct styles');
   assert(indexHtml.includes('.mark-mobile-strip.mark-mobile-strip-expanded'), 'Expected expanded mobile strip container styles');
   assert(indexHtml.includes('.mark-mobile-strip.mark-mobile-strip-selection'), 'Expected dedicated floating-selection mobile strip styles');
   assert(indexHtml.includes('display: inline-flex;'), 'Expected floating selection action row to use a compact inline layout');

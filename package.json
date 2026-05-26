@@ -1,7 +1,7 @@
 {
-  "name": "proof-sdk",
+  "name": "review-room",
   "version": "0.1.0",
-  "description": "Open-source collaborative markdown editor with provenance tracking and an agent HTTP bridge",
+  "description": "Review Room: collaborative document review with agent comments on top of Proof SDK",
   "private": false,
   "type": "module",
   "workspaces": [
@@ -12,8 +12,8 @@
     "dev": "vite",
     "build": "vite build && node scripts/finalize-web-build.mjs",
     "serve": "tsx server/index.ts",
-    "test": "npm run test:proof-sdk && npm run test:server-routes-share",
-    "test:proof-sdk": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
+    "test": "npm run test:agent-bridge && npm run test:server-routes-share",
+    "test:agent-bridge": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:server-routes-share": "tsx src/tests/server-routes-and-share.test.ts",
     "demo:agent": "npm --workspace proof-example run demo:agent"
   },

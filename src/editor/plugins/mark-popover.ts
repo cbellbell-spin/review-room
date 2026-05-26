@@ -68,10 +68,18 @@ type VisibleComment = {
   range: MarkRange;
 };
 
+type ListedComment = {
+  mark: Mark;
+  range: MarkRange | null;
+};
+
 type MobileCommentData = {
   nearby: VisibleComment[];
   all: VisibleComment[];
+  resolved: ListedComment[];
   nearbyCount: number;
+  openCount: number;
+  resolvedCount: number;
   totalCount: number;
 };
 
@@ -225,6 +233,12 @@ function isResolvableComment(mark: Mark): boolean {
   if (mark.kind !== 'comment') return false;
   const data = mark.data as CommentData | undefined;
   return !Boolean(data?.resolved);
+}
+
+function isResolvedComment(mark: Mark): boolean {
+  if (mark.kind !== 'comment') return false;
+  const data = mark.data as CommentData | undefined;
+  return Boolean(data?.resolved);
 }
 
 class MarkPopoverController {
@@ -484,7 +498,7 @@ class MarkPopoverController {
       if (!card) return;
       const markId = card.dataset.markId;
       if (!markId) return;
-      if (deltaX <= -60) {
+      if (deltaX <= -60 && card.dataset.resolved !== 'true') {
         this.resolveFromStrip(markId);
       }
     });
@@ -1652,6 +1666,7 @@ class MarkPopoverController {
   private buildMobileStripSignature(data: MobileCommentData): string {
     const nearbyIds = data.nearby.map(({ mark }) => mark.id).join(',');
     const allIds = data.all.map(({ mark }) => mark.id).join(',');
+    const resolvedIds = data.resolved.map(({ mark }) => mark.id).join(',');
     const sel = this.view.state.selection;
     const cachedRange = this.cachedActionRange?.range;
     const hasActionRow = this.hasLiveSelection && isMobileTouch() && canCommentInRuntime();
@@ -1660,20 +1675,28 @@ class MarkPopoverController {
         ? `sel:1:${cachedRange.from}-${cachedRange.to}`
         : `sel:1:${sel.from}-${sel.to}`)
       : 'sel:0';
-    return `${selPart}|${this.mobileStripExpanded ? 'expanded' : 'collapsed'}:${data.nearbyCount}:${data.totalCount}:${nearbyIds}:${allIds}`;
+    return `${selPart}|${this.mobileStripExpanded ? 'expanded' : 'collapsed'}:${data.nearbyCount}:${data.openCount}:${data.resolvedCount}:${data.totalCount}:${nearbyIds}:${allIds}:${resolvedIds}`;
   }
 
-  private createMobileCommentCard(mark: Mark): HTMLButtonElement {
+  private createMobileCommentCard(mark: Mark, options?: { resolved?: boolean }): HTMLButtonElement {
     const data = mark.data as CommentData | undefined;
+    const resolved = options?.resolved ?? Boolean(data?.resolved);
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'mark-mobile-card';
+    if (resolved) card.classList.add('mark-mobile-card-resolved');
     card.setAttribute('data-mark-id', mark.id);
+    card.dataset.resolved = resolved ? 'true' : 'false';
     const actor = document.createElement('strong');
     actor.textContent = getActorName(mark.by);
     const preview = document.createElement('span');
     preview.textContent = (data?.text ?? '').slice(0, 90) || 'Comment';
     card.append(actor, preview);
+    if (resolved) {
+      const status = document.createElement('em');
+      status.textContent = 'Resolved';
+      card.appendChild(status);
+    }
     installTouchSafeButton(card, () => {
       this.openForMark(mark.id);
     }, {
@@ -1690,13 +1713,20 @@ class MarkPopoverController {
 
     const title = document.createElement('span');
     title.className = 'mark-mobile-summary-title';
-    title.textContent = `Comments (${data.totalCount})`;
+    title.textContent = `Comments (${data.openCount})`;
 
     const meta = document.createElement('span');
     meta.className = 'mark-mobile-summary-meta';
-    meta.textContent = data.nearbyCount > 0
-      ? `${data.nearbyCount} nearby · ${data.totalCount} total`
-      : `No nearby comments · ${data.totalCount} total`;
+    if (data.openCount > 0) {
+      const openSummary = data.nearbyCount > 0
+        ? `${data.nearbyCount} nearby · ${data.openCount} open`
+        : `No nearby comments · ${data.openCount} open`;
+      meta.textContent = data.resolvedCount > 0
+        ? `${openSummary} · ${data.resolvedCount} resolved`
+        : openSummary;
+    } else {
+      meta.textContent = `${data.resolvedCount} resolved`;
+    }
 
     const cta = document.createElement('span');
     cta.className = 'mark-mobile-summary-cta';
@@ -1712,7 +1742,7 @@ class MarkPopoverController {
     this.strip.appendChild(summary);
   }
 
-  private renderMobileStripSection(label: string, comments: VisibleComment[]): void {
+  private renderMobileStripSection(label: string, comments: ListedComment[], options?: { resolved?: boolean }): void {
     if (comments.length === 0) return;
     const section = document.createElement('div');
     section.className = 'mark-mobile-section';
@@ -1723,7 +1753,7 @@ class MarkPopoverController {
 
     section.appendChild(heading);
     comments.forEach(({ mark }) => {
-      section.appendChild(this.createMobileCommentCard(mark));
+      section.appendChild(this.createMobileCommentCard(mark, options));
     });
     this.strip.appendChild(section);
   }
@@ -1736,12 +1766,19 @@ class MarkPopoverController {
     titleBlock.className = 'mark-mobile-strip-heading';
 
     const title = document.createElement('strong');
-    title.textContent = `Comments (${data.totalCount})`;
+    title.textContent = `Comments (${data.openCount})`;
 
     const subtitle = document.createElement('span');
-    subtitle.textContent = data.nearbyCount > 0
-      ? `${data.nearbyCount} nearby in view`
-      : 'No nearby comments in view';
+    if (data.openCount > 0) {
+      const openSummary = data.nearbyCount > 0
+        ? `${data.nearbyCount} nearby in view`
+        : 'No nearby comments in view';
+      subtitle.textContent = data.resolvedCount > 0
+        ? `${openSummary} · ${data.resolvedCount} resolved`
+        : openSummary;
+    } else {
+      subtitle.textContent = `${data.resolvedCount} resolved comments`;
+    }
 
     titleBlock.append(title, subtitle);
 
@@ -1767,17 +1804,24 @@ class MarkPopoverController {
       this.renderMobileStripSection('All comments', remaining);
     } else if (nearby.length === 0) {
       this.renderMobileStripSection('All comments', data.all.slice(0, 12));
-    } else {
+    } else if (data.openCount > 0) {
       const note = document.createElement('div');
       note.className = 'mark-mobile-strip-note';
       note.textContent = 'All open comments are nearby.';
       this.strip.appendChild(note);
     }
+
+    this.renderMobileStripSection('Resolved', data.resolved.slice(0, 12), { resolved: true });
   }
 
   private getMobileCommentData(): MobileCommentData {
-    const marks = getMarks(this.view.state).filter(isResolvableComment);
-    const all = marks
+    const marks = getMarks(this.view.state);
+    const openMarks = marks.filter(isResolvableComment);
+    const resolved = marks
+      .filter(isResolvedComment)
+      .map(mark => ({ mark, range: resolveAnchorRange(this.view, mark) }))
+      .slice(0, 24);
+    const all = openMarks
       .map(mark => {
         const range = resolveAnchorRange(this.view, mark);
         return range ? { mark, range } : null;
@@ -1801,8 +1845,11 @@ class MarkPopoverController {
     return {
       nearby: result.slice(0, 8),
       all: all.slice(0, 18),
+      resolved,
       nearbyCount: result.length,
-      totalCount: marks.length,
+      openCount: all.length,
+      resolvedCount: resolved.length,
+      totalCount: all.length + resolved.length,
     };
   }
 

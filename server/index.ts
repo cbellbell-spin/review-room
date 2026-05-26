@@ -47,6 +47,11 @@ async function main(): Promise<void> {
   const allowedCorsOrigins = parseAllowedCorsOrigins();
 
   app.use(express.json({ limit: '10mb' }));
+
+  app.get('/', (_req, res) => {
+    res.redirect(302, '/review-room');
+  });
+
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(express.static(path.join(__dirname, '..', 'dist')));
 
@@ -80,32 +85,6 @@ async function main(): Promise<void> {
       return;
     }
     next();
-  });
-
-  app.get('/', (_req, res) => {
-    res.type('html').send(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Proof SDK</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 48px 24px; color: #17261d; background: #f7faf5; }
-      main { max-width: 760px; margin: 0 auto; }
-      h1 { font-size: 2.5rem; margin: 0 0 0.5rem; }
-      p { font-size: 1.05rem; line-height: 1.6; }
-      code { background: #eaf2e6; padding: 0.2rem 0.35rem; border-radius: 4px; }
-      a { color: #266854; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>Proof SDK</h1>
-      <p>Open-source collaborative markdown editing with provenance tracking and an agent HTTP bridge.</p>
-      <p>Start with <code>POST /documents</code>, inspect <a href="/agent-docs">agent docs</a>, or read <a href="/.well-known/agent.json">discovery metadata</a>.</p>
-    </main>
-  </body>
-</html>`);
   });
 
   app.get('/health', (_req, res) => {
