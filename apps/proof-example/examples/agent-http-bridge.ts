@@ -8,6 +8,7 @@ import {
 interface CreateDocumentResponse {
   slug: string;
   accessToken: string;
+  ownerSecret: string;
   shareUrl?: string;
   agent?: {
     stateApi?: string;
@@ -56,14 +57,14 @@ async function run(): Promise<void> {
   const provider = new DemoAgentProvider();
 
   const created = await createDocument(baseUrl, title, markdown);
-  if (!created.slug || !created.accessToken) {
-    throw new Error('Create response did not include slug/accessToken');
+  if (!created.slug || !created.ownerSecret) {
+    throw new Error('Create response did not include slug/ownerSecret');
   }
 
   const bridge = createAgentBridgeClient({
     baseUrl,
     auth: {
-      shareToken: created.accessToken,
+      bridgeToken: created.ownerSecret,
     },
   });
 

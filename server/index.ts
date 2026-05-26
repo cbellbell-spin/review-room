@@ -10,6 +10,7 @@ import { createBridgeMountRouter } from './bridge.js';
 import { getCollabRuntime, startCollabRuntimeEmbedded } from './collab.js';
 import { discoveryRoutes } from './discovery-routes.js';
 import { shareWebRoutes } from './share-web-routes.js';
+import { reviewRoomRoutes } from './review-room-routes.js';
 import {
   capabilitiesPayload,
   enforceApiClientCompatibility,
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
 
   app.use(express.json({ limit: '10mb' }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
+  app.use(express.static(path.join(__dirname, '..', 'dist')));
 
   app.use((req, res, next) => {
     const originHeader = req.header('origin');
@@ -120,6 +122,7 @@ async function main(): Promise<void> {
   });
 
   app.use(discoveryRoutes);
+  app.use(reviewRoomRoutes);
   app.use('/api', enforceApiClientCompatibility, apiRoutes);
   app.use('/api/agent', agentRoutes);
   app.use(apiRoutes);

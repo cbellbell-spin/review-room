@@ -178,6 +178,7 @@ import {
 } from './share-refresh-persist';
 import { keybindingsPlugin, setShowAgentInputCallback, type AgentInputContext } from './plugins/keybindings';
 import { tableKeyboardPlugin } from './plugins/table-keyboard';
+import { placeholderPlugin } from './plugins/placeholder';
 import { showAgentInputDialog } from '../ui/agent-input-dialog';
 import { initContextMenu } from '../ui/context-menu';
 import {
@@ -1214,6 +1215,7 @@ class ProofEditorImpl implements ProofEditor {
       .use(taskCheckboxesPlugin)
       .use(mermaidDiagramsPlugin)
       .use(markdownLinkClickPlugin)
+      .use(placeholderPlugin)
       // Register unified marks plugin
       .use(marksPlugins)
       // Register keybindings plugin for agent shortcuts

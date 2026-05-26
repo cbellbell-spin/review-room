@@ -79,6 +79,52 @@
       padding: 0;
     }
 
+    #review-room-bar {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 52px;
+      z-index: 180;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 18px;
+      border-bottom: 1px solid #dfe5d7;
+      background: rgba(247, 248, 243, 0.96);
+      color: #1f2933;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+
+    body[data-review-room="true"] #review-room-bar {
+      display: flex;
+    }
+
+    body[data-review-room="true"] #editor {
+      padding-top: 112px;
+    }
+
+    .review-room-brand {
+      font-weight: 700;
+    }
+
+    .review-room-nav {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .review-room-nav a {
+      color: #266854;
+      text-decoration: none;
+      border: 1px solid #cbd7c6;
+      border-radius: 6px;
+      padding: 7px 10px;
+      background: #fff;
+    }
+
     /* Editor container - holds gutter and editor side by side */
     #editor-container {
       position: relative;
@@ -1027,6 +1073,13 @@
   </style>
 </head>
 <body>
+  <div id="review-room-bar" aria-label="Review Room navigation">
+    <div class="review-room-brand">Review Room</div>
+    <nav class="review-room-nav">
+      <a href="/review-room">Documents</a>
+      <a href="/agent-docs">Agent API</a>
+    </nav>
+  </div>
   <div id="app">
     <div id="editor-container">
       <div id="provenance-gutter"></div>
@@ -1065,7 +1118,20 @@
       document.body.appendChild(errorDiv);
     });
     console.log('[HTML] Error handlers installed');
+    if (window.__PROOF_CONFIG__ && window.__PROOF_CONFIG__.reviewRoom === true) {
+      document.body.setAttribute('data-review-room', 'true');
+      document.title = document.title.replace(/^Proof/, 'Review Room');
+    }
   </script>
-  <script type="module" src="./editor/index.ts"></script>
+  <script type="module">
+    if (window.location.protocol === 'file:') {
+      var editorEl = document.getElementById('editor');
+      if (editorEl) {
+        editorEl.innerHTML = '<div class="loading" style="max-width:640px;margin:0 auto;text-align:center;line-height:1.5;">This app needs to be opened through the local dev server. Run <code>npm run dev</code> from the project root, then open <a href="http://localhost:3000/">http://localhost:3000/</a>.</div>';
+      }
+    } else {
+      import('./editor/index.ts');
+    }
+  </script>
 </body>
 </html>

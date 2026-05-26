@@ -18,6 +18,12 @@ export interface AgentBridgeClientConfig {
   };
 }
 
+const DEFAULT_CLIENT_HEADERS: Record<string, string> = {
+  'x-proof-client-version': '0.31.0',
+  'x-proof-client-build': 'proof-sdk-agent-bridge',
+  'x-proof-client-protocol': '3',
+};
+
 export interface AgentBridgeRequestOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -87,6 +93,7 @@ function trimTrailingSlash(value: string): string {
 
 function buildAuthHeaders(config: AgentBridgeClientConfig): Record<string, string> {
   const headers: Record<string, string> = {
+    ...DEFAULT_CLIENT_HEADERS,
     ...(config.headers ?? {}),
   };
 
@@ -195,7 +202,7 @@ export function createAgentBridgeClient(config: AgentBridgeClientConfig) {
       });
     },
     setPresence<T = unknown>(slug: string, input: AgentBridgePresenceInput, options: AgentBridgeRequestOptions = {}): Promise<T> {
-      return requestJson<T>(config, buildBridgePath(slug, '/presence'), {
+      return requestJson<T>(config, `${documentBasePath(slug)}/presence`, {
         method: 'POST',
         body: JSON.stringify(input),
         ...options,

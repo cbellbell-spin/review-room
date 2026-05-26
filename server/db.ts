@@ -264,6 +264,32 @@ export interface ProjectedDocumentRow extends DocumentRow {
   canonical_marks: string;
 }
 
+export interface ReviewRoomDocumentRow {
+  id: string;
+  workspace_id: string;
+  title: string;
+  proof_slug: string;
+  proof_doc_id: string | null;
+  owner_identity_id: string;
+  created_by_identity_id: string;
+  created_at: string;
+  updated_at: string;
+  proof_title: string | null;
+  share_state: ShareState;
+  proof_created_at: string;
+  proof_updated_at: string;
+}
+
+export interface ReviewRoomIdentityRow {
+  id: string;
+  workspace_id: string;
+  kind: 'human' | 'agent';
+  display_name: string;
+  manager_identity_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DocumentAuthStateRow {
   slug: string;
   doc_id: string | null;
@@ -1335,6 +1361,70 @@ function initDatabase(): void {
     )
   `);
   d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_library_documents_slug ON library_documents(document_slug)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_identities (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      manager_identity_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES review_room_workspaces(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_identities_workspace ON review_room_identities(workspace_id, kind)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_documents (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      proof_slug TEXT NOT NULL UNIQUE,
+      proof_doc_id TEXT,
+      owner_identity_id TEXT NOT NULL,
+      created_by_identity_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES review_room_workspaces(id),
+      FOREIGN KEY (proof_slug) REFERENCES documents(slug),
+      FOREIGN KEY (owner_identity_id) REFERENCES review_room_identities(id),
+      FOREIGN KEY (created_by_identity_id) REFERENCES review_room_identities(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_documents_workspace_updated ON review_room_documents(workspace_id, updated_at)');
+  ensureReviewRoomDefaults(d);
+}
+
+function ensureReviewRoomDefaults(d: Database.Database): void {
+  const now = new Date().toISOString();
+  d.prepare(`
+    INSERT INTO review_room_workspaces (id, name, created_at, updated_at)
+    VALUES ('local', 'Local Review Room', ?, ?)
+    ON CONFLICT (id) DO NOTHING
+  `).run(now, now);
+
+  d.prepare(`
+    INSERT INTO review_room_identities (id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at)
+    VALUES ('local-human', 'local', 'human', 'Local reviewer', NULL, ?, ?)
+    ON CONFLICT (id) DO NOTHING
+  `).run(now, now);
+
+  d.prepare(`
+    INSERT INTO review_room_identities (id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at)
+    VALUES ('agent-reviewer', 'local', 'agent', 'Review agent', 'local-human', ?, ?)
+    ON CONFLICT (id) DO NOTHING
+  `).run(now, now);
 }
 
 export function createDocument(
@@ -2852,6 +2942,15 @@ export function getMarkTombstone(slug: string, markId: string): MarkTombstoneRow
   return row ?? null;
 }
 
+export function deleteMarkTombstone(slug: string, markId: string): boolean {
+  assertWritesAllowed('deleteMarkTombstone');
+  const result = getDb().prepare(`
+    DELETE FROM ${MARK_TOMBSTONES_TABLE}
+    WHERE document_slug = ? AND mark_id = ?
+  `).run(slug, markId);
+  return result.changes > 0;
+}
+
 export function listMarkTombstonesForDocument(slug: string): MarkTombstoneRow[] {
   return getDb().prepare(`
     SELECT document_slug, mark_id, status, resolved_revision, created_at, expires_at
@@ -3748,6 +3847,111 @@ export interface DashboardDocumentRow {
   last_visited_at?: string;
   is_owned?: number;
   copy_url?: string;
+}
+
+export function getReviewRoomIdentity(id: string = 'local-human'): ReviewRoomIdentityRow | null {
+  const row = getDb().prepare(`
+    SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
+    FROM review_room_identities
+    WHERE id = ?
+    LIMIT 1
+  `).get(id) as ReviewRoomIdentityRow | undefined;
+  return row ?? null;
+}
+
+export function listReviewRoomIdentities(workspaceId: string = 'local'): ReviewRoomIdentityRow[] {
+  return getDb().prepare(`
+    SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
+    FROM review_room_identities
+    WHERE workspace_id = ?
+    ORDER BY kind DESC, display_name ASC
+  `).all(workspaceId) as ReviewRoomIdentityRow[];
+}
+
+export function createReviewRoomDocumentRecord(input: {
+  workspaceId?: string;
+  title: string;
+  proofSlug: string;
+  proofDocId?: string | null;
+  ownerIdentityId?: string;
+  createdByIdentityId?: string;
+}): ReviewRoomDocumentRow {
+  assertWritesAllowed('createReviewRoomDocumentRecord');
+  const now = new Date().toISOString();
+  const workspaceId = input.workspaceId || 'local';
+  const ownerIdentityId = input.ownerIdentityId || 'local-human';
+  const createdByIdentityId = input.createdByIdentityId || ownerIdentityId;
+  const id = randomUUID();
+  getDb().prepare(`
+    INSERT INTO review_room_documents (
+      id, workspace_id, title, proof_slug, proof_doc_id, owner_identity_id, created_by_identity_id, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    workspaceId,
+    input.title,
+    input.proofSlug,
+    input.proofDocId ?? null,
+    ownerIdentityId,
+    createdByIdentityId,
+    now,
+    now,
+  );
+  const row = getReviewRoomDocumentByProofSlug(input.proofSlug);
+  if (!row) throw new Error('Review Room document record was not persisted.');
+  return row;
+}
+
+export function getReviewRoomDocumentByProofSlug(proofSlug: string): ReviewRoomDocumentRow | null {
+  const row = getDb().prepare(`
+    SELECT
+      rr.id,
+      rr.workspace_id,
+      rr.title,
+      rr.proof_slug,
+      rr.proof_doc_id,
+      rr.owner_identity_id,
+      rr.created_by_identity_id,
+      rr.created_at,
+      rr.updated_at,
+      d.title AS proof_title,
+      d.share_state,
+      d.created_at AS proof_created_at,
+      d.updated_at AS proof_updated_at
+    FROM review_room_documents rr
+    JOIN documents d ON d.slug = rr.proof_slug
+    WHERE rr.proof_slug = ?
+    LIMIT 1
+  `).get(proofSlug) as ReviewRoomDocumentRow | undefined;
+  return row ?? null;
+}
+
+export function listReviewRoomDocuments(workspaceId: string = 'local', limit: number = 50): ReviewRoomDocumentRow[] {
+  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 200));
+  return getDb().prepare(`
+    SELECT
+      rr.id,
+      rr.workspace_id,
+      rr.title,
+      rr.proof_slug,
+      rr.proof_doc_id,
+      rr.owner_identity_id,
+      rr.created_by_identity_id,
+      rr.created_at,
+      rr.updated_at,
+      d.title AS proof_title,
+      d.share_state,
+      d.created_at AS proof_created_at,
+      d.updated_at AS proof_updated_at
+    FROM review_room_documents rr
+    JOIN documents d ON d.slug = rr.proof_slug
+    WHERE rr.workspace_id = ?
+      AND d.deleted_at IS NULL
+      AND d.share_state != 'DELETED'
+    ORDER BY rr.updated_at DESC
+    LIMIT ?
+  `).all(workspaceId, safeLimit) as ReviewRoomDocumentRow[];
 }
 
 export function listUserOwnedDocuments(everyUserId: number, limit: number = 50): DashboardDocumentRow[] {

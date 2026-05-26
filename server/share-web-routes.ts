@@ -165,11 +165,12 @@ function buildLiveViewerLeaseConnectionId(
   return `share-live:${slug}:${accessEpoch}:${role}:${digest}`;
 }
 
-function buildShareRuntimeConfigScript(slug: string, shareToken?: string | null): string {
+function buildShareRuntimeConfigScript(slug: string, shareToken?: string | null, reviewRoom: boolean = false): string {
   const commentUiDefaultMode = normalizeCommentUiMode(process.env.PROOF_COMMENT_UI_DEFAULT_MODE);
   const configLines = [
-    shareToken ? `window.__PROOF_CONFIG__.shareSlug = ${JSON.stringify(slug)};` : '',
+    `window.__PROOF_CONFIG__.shareSlug = ${JSON.stringify(slug)};`,
     shareToken ? `window.__PROOF_CONFIG__.shareToken = ${JSON.stringify(shareToken)};` : '',
+    reviewRoom ? 'window.__PROOF_CONFIG__.reviewRoom = true;' : '',
     commentUiDefaultMode ? `window.__PROOF_CONFIG__.commentUiDefaultMode = ${JSON.stringify(commentUiDefaultMode)};` : '',
   ].filter(Boolean);
   if (configLines.length === 0) return '';
@@ -185,6 +186,7 @@ function injectShareHtmlDiscoveryTags(
   markdown: string,
   preview: SharePreviewModel,
   shareToken?: string | null,
+  reviewRoom: boolean = false,
 ): string {
   const proofSdkPaths = buildProofSdkDocumentPaths(slug);
   const agentApi = proofSdkPaths.state;
@@ -198,7 +200,7 @@ function injectShareHtmlDiscoveryTags(
     `<meta name="agent-api" content="${escapeHtml(agentApi)}">`,
     '<meta name="agent-docs" content="/agent-docs">',
   ].join('\n');
-  const configScript = buildShareRuntimeConfigScript(slug, shareToken);
+  const configScript = buildShareRuntimeConfigScript(slug, shareToken, reviewRoom);
 
   const instructionMarkup = `<h2>Proof Shared Document</h2>
   <p>This is a collaborative document on Proof. To read or edit it programmatically:</p>
@@ -232,8 +234,11 @@ function injectShareHtmlDiscoveryTags(
   } else if (out.includes('</head>')) {
     out = out.replace('</head>', `${pageTitle}\n</head>`);
   }
-  if (out.includes('</head>')) {
-    out = out.replace('</head>', `${metaTags}\n${configScript}\n</head>`);
+  const runtimeHeadMarkup = `${metaTags}\n${configScript}\n`;
+  if (/<script\b/i.test(out)) {
+    out = out.replace(/<script\b/i, `${runtimeHeadMarkup}<script`);
+  } else if (out.includes('</head>')) {
+    out = out.replace('</head>', `${runtimeHeadMarkup}</head>`);
   }
   out = out.replace(/<body\b[^>]*>/i, (match) => `${match}\n${noscript}\n${agentDiv}`);
   return out;
@@ -371,6 +376,7 @@ shareWebRoutes.get('/og/share/:slug.png', async (req: Request, res: Response) =>
 shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   const slug = Array.isArray(req.params.slug) ? (req.params.slug[0] ?? '') : (req.params.slug ?? '');
   const tokenFromQuery = typeof req.query.token === 'string' ? req.query.token.trim() : '';
+  const reviewRoomMode = req.query.rr === '1' || req.query.reviewRoom === '1' || req.query.reviewRoom === 'true';
   const origin = getPublicOrigin(req);
 
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
@@ -652,5 +658,5 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
     } : null,
     shareState: doc?.share_state ?? 'MISSING',
   });
-  res.type('html').send(injectShareHtmlDiscoveryTags(shareHtml ?? '', slug, doc?.markdown ?? '', preview, configShareToken));
+  res.type('html').send(injectShareHtmlDiscoveryTags(shareHtml ?? '', slug, doc?.markdown ?? '', preview, configShareToken, reviewRoomMode));
 });

@@ -39,15 +39,25 @@ async function run(): Promise<void> {
     quote: 'Hello',
     text: 'Tighten the opener.',
   });
+  await client.setPresence('doc-1', {
+    agentId: 'agent:test',
+    status: 'reviewing',
+  });
   await client.getPendingEvents('doc-1', 4, 10);
 
-  assertEqual(requests.length, 2, 'Expected two bridge client requests');
+  assertEqual(requests.length, 3, 'Expected three bridge client requests');
   assertEqual(requests[0]?.url, 'https://example.com/documents/doc-1/bridge/comments');
-  assertEqual(requests[1]?.url, 'https://example.com/documents/doc-1/events/pending?after=4&limit=10');
+  assertEqual(requests[1]?.url, 'https://example.com/documents/doc-1/presence');
+  assertEqual(requests[2]?.url, 'https://example.com/documents/doc-1/events/pending?after=4&limit=10');
   assertEqual(
     (requests[0]?.init.headers as Record<string, string>)?.['x-share-token'],
     'token-123',
     'Expected share token header',
+  );
+  assertEqual(
+    (requests[0]?.init.headers as Record<string, string>)?.['x-proof-client-protocol'],
+    '3',
+    'Expected Proof client protocol header',
   );
   assertEqual(
     (requests[0]?.init.headers as Record<string, string>)?.['Content-Type'],

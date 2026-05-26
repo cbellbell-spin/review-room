@@ -98,6 +98,41 @@ async function run(): Promise<void> {
     assert(acceptedDoc?.markdown.includes(replacement), 'Expected accept to write replacement content into canonical markdown');
     assert(!acceptedDoc?.markdown.includes(truncatedQuote), 'Expected accept to remove the stale truncated wrapper text');
     assert(!acceptedDoc?.markdown.includes('data-proof="suggestion"'), 'Expected accepted suggestion wrapper to be removed');
+    assert(!(acceptMarkId in parseStoredMarks(acceptedDoc?.marks)), 'Expected accepted suggestion metadata to be removed');
+
+    const acceptThenRejectSlug = `rehydrate-accept-then-reject-${Math.random().toString(36).slice(2, 10)}`;
+    db.createDocument(
+      acceptThenRejectSlug,
+      '# Sequence\n\nThis sentence needs clarity.\n\nThis sentence needs precision.',
+      {},
+      'Accept then reject sequence',
+    );
+    const firstSuggestion = await executeDocumentOperationAsync(acceptThenRejectSlug, 'POST', '/marks/suggest-replace', {
+      by: 'ai:test',
+      quote: 'This sentence needs clarity.',
+      content: 'This sentence is clear.',
+    });
+    assertEqual(firstSuggestion.status, 200, `Expected first suggestion to succeed, got ${firstSuggestion.status}`);
+    const firstMarkId = (firstSuggestion.body as { markId?: string }).markId;
+    assert(typeof firstMarkId === 'string' && firstMarkId.length > 0, 'Expected first suggestion mark id');
+    const sequenceAccept = await executeDocumentOperationAsync(acceptThenRejectSlug, 'POST', '/marks/accept', {
+      markId: firstMarkId,
+      by: 'human:test',
+    });
+    assertEqual(sequenceAccept.status, 200, `Expected sequence accept to succeed, got ${sequenceAccept.status}`);
+    const secondSuggestion = await executeDocumentOperationAsync(acceptThenRejectSlug, 'POST', '/marks/suggest-replace', {
+      by: 'ai:test',
+      quote: 'This sentence needs precision.',
+      content: 'This sentence is precise.',
+    });
+    assertEqual(secondSuggestion.status, 200, `Expected second suggestion to succeed, got ${secondSuggestion.status}`);
+    const secondMarkId = (secondSuggestion.body as { markId?: string }).markId;
+    assert(typeof secondMarkId === 'string' && secondMarkId.length > 0, 'Expected second suggestion mark id');
+    const sequenceReject = await executeDocumentOperationAsync(acceptThenRejectSlug, 'POST', '/marks/reject', {
+      markId: secondMarkId,
+      by: 'human:test',
+    });
+    assertEqual(sequenceReject.status, 200, `Expected reject after prior accept to succeed, got ${sequenceReject.status}`);
 
     const rejectSlug = `rehydrate-reject-${Math.random().toString(36).slice(2, 10)}`;
     const rejectMarkId = 'legacy-replace-reject';

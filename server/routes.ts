@@ -587,13 +587,14 @@ function resolveRequestScopedCollabWsBase(req: Request): string {
   }
 
   const embeddedRaw = (process.env.COLLAB_EMBEDDED_WS || '').trim().toLowerCase();
-  const embedded = embeddedRaw === '1' || embeddedRaw === 'true' || embeddedRaw === 'yes' || embeddedRaw === 'on';
+  const embeddedConfigured = embeddedRaw === '1' || embeddedRaw === 'true' || embeddedRaw === 'yes' || embeddedRaw === 'on';
 
   const publicBase = getPublicBaseUrl(req);
   if (!publicBase) return runtimeBase;
 
   try {
     const wsUrl = new URL(runtimeBase);
+    const embedded = embeddedConfigured || wsUrl.pathname.replace(/\/+$/, '') === '/ws';
     if (!isLoopbackHost(wsUrl.hostname)) {
       return runtimeBase;
     }

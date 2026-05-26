@@ -247,11 +247,15 @@ async function withEphemeralApiServer(run: (baseUrl: string) => Promise<void>): 
   const { agentRoutes } = await import('../../server/agent-routes.ts');
   const { createBridgeMountRouter } = await import('../../server/bridge.ts');
   const { discoveryRoutes } = await import('../../server/discovery-routes.ts');
+  const { reviewRoomRoutes } = await import('../../server/review-room-routes.ts');
   const { shareWebRoutes } = await import('../../server/share-web-routes.ts');
   const { enforceApiClientCompatibility } = await import('../../server/client-capabilities.ts');
   const app = express();
   app.use(express.json({ limit: '10mb' }));
+  app.use(express.static(path.resolve(process.cwd(), 'public')));
+  app.use(express.static(path.resolve(process.cwd(), 'dist')));
   app.use(discoveryRoutes);
+  app.use(reviewRoomRoutes);
   app.use('/api', enforceApiClientCompatibility, apiRoutes);
   app.use('/api/agent', agentRoutes);
   app.use(apiRoutes);
@@ -356,6 +360,7 @@ async function withMockOAuth(run: (oauthBaseUrl: string) => Promise<void>): Prom
 
 async function runServerSourceTests(): Promise<void> {
   const serverSource = readFileSync(path.resolve(process.cwd(), 'server', 'index.ts'), 'utf8');
+  const routesSource = readFileSync(path.resolve(process.cwd(), 'server', 'routes.ts'), 'utf8');
   const homeTemplate = readFileSync(path.resolve(process.cwd(), 'server', 'resources', 'home.html'), 'utf8');
 
   await test('D1: server source mounts canonical /documents bridge routes', async () => {
@@ -379,6 +384,14 @@ async function runServerSourceTests(): Promise<void> {
       serverSource,
       "app.get('/health'",
       'server source should publish a health endpoint',
+    );
+  });
+
+  await test('D2: embedded collab /ws URLs keep the main HTTP port', async () => {
+    assertIncludes(
+      routesSource,
+      "wsUrl.pathname.replace(/\\/+$/, '') === '/ws'",
+      'request-scoped collab URL rewriting should recognize embedded /ws runtime URLs',
     );
   });
 
@@ -567,6 +580,51 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(typeof payload.agent?.bridgeApi?.comments === 'string' && payload.agent.bridgeApi.comments.includes('/documents/'), 'Expected bridge comments route');
     });
 
+    await test('D2: Review Room dashboard and identity routes load', async () => {
+      const dashboard = await get(baseUrl, '/review-room');
+      assert(dashboard.status === 200, `Expected dashboard status 200, got ${dashboard.status}`);
+      assertIncludes(dashboard.body, 'Review Room');
+      assertIncludes(dashboard.body, '/review-room/api/documents');
+
+      const identity = await get(baseUrl, '/review-room/api/identity');
+      assert(identity.status === 200, `Expected identity status 200, got ${identity.status}`);
+      const payload = await identity.json();
+      assertEqual(payload.workspace?.id, 'local');
+      assert(Array.isArray(payload.identities), 'Expected identities array');
+      assert(payload.identities.some((entry: { id?: string }) => entry.id === 'local-human'), 'Expected local human identity');
+      assert(payload.identities.some((entry: { id?: string }) => entry.id === 'agent-reviewer'), 'Expected local agent identity');
+    });
+
+    await test('D2: Review Room creates registry-backed Proof documents', async () => {
+      const createResponse = await post(baseUrl, '/review-room/api/documents', {
+        title: 'Review Room Test',
+        markdown: '# Review Room Test\n\nDraft body.',
+      });
+      assert(createResponse.status === 201, `Expected Review Room create status 201, got ${createResponse.status}`);
+      const created = await createResponse.json();
+      assertEqual(created.success, true);
+      assert(typeof created.document?.id === 'string' && created.document.id.length > 0, 'Expected Review Room document id');
+      assert(typeof created.document?.proofSlug === 'string' && created.document.proofSlug.length > 0, 'Expected Proof slug');
+      assert(typeof created.document?.proofDocId === 'string' && created.document.proofDocId.length > 0, 'Expected Proof doc id');
+      assert(String(created.openPath).includes(`/d/${created.document.proofSlug}`), 'Expected open path to target Proof editor');
+      assert(String(created.openPath).includes('rr=1'), 'Expected Review Room editor flag');
+
+      const listResponse = await get(baseUrl, '/review-room/api/documents');
+      assert(listResponse.status === 200, `Expected Review Room list status 200, got ${listResponse.status}`);
+      const listed = await listResponse.json();
+      assert(
+        listed.documents.some((entry: { proofSlug?: string }) => entry.proofSlug === created.document.proofSlug),
+        'Expected created document in Review Room list',
+      );
+
+      const stateResponse = await get(baseUrl, `/documents/${created.document.proofSlug}/state`, {
+        'x-share-token': created.proof.accessToken,
+      });
+      assert(stateResponse.status === 200, `Expected state status 200, got ${stateResponse.status}`);
+      const state = await stateResponse.json();
+      assert(String(state.markdown).includes('Draft body.'), 'Expected underlying Proof document content');
+    });
+
     await test('D2: POST /api/documents in warn mode returns deprecation headers + metadata', async () => {
       const previousMode = process.env.PROOF_LEGACY_CREATE_MODE;
       process.env.PROOF_LEGACY_CREATE_MODE = 'warn';
@@ -631,6 +689,37 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(String(created._links.presence.href).includes('/documents/'), 'Expected canonical presence link');
     });
 
+    await test('D2: opening a document serves editor HTML with runtime document config', async () => {
+      const response = await get(baseUrl, `/d/${encodeURIComponent(slug)}?token=${encodeURIComponent(accessToken)}`, {
+        Accept: 'text/html',
+        'User-Agent': 'Mozilla/5.0 ProofRouteTest',
+      });
+      assert(response.status === 200, `Expected document open status 200, got ${response.status}`);
+      assertIncludes(response.body, 'id="editor"', 'Expected editor HTML shell');
+      assertIncludes(response.body, 'window.__PROOF_CONFIG__.shareSlug', 'Expected runtime share slug config');
+      assertIncludes(response.body, slug, 'Expected opened document slug in runtime config');
+    });
+
+    await test('D2: opened document editor asset is served', async () => {
+      const response = await get(baseUrl, '/assets/editor.js', {
+        Accept: 'application/javascript,*/*',
+      });
+      assert(response.status === 200, `Expected editor asset status 200, got ${response.status}`);
+      assert((response.headers.get('content-type') || '').includes('javascript'), 'Expected JavaScript content type');
+    });
+
+    await test('D2: tokenless Review Room document opens still expose runtime slug config', async () => {
+      const response = await get(baseUrl, `/d/${encodeURIComponent(slug)}?rr=1`, {
+        Accept: 'text/html',
+        'User-Agent': 'Mozilla/5.0 ProofRouteTest',
+      });
+      assert(response.status === 200, `Expected tokenless Review Room open status 200, got ${response.status}`);
+      assertIncludes(response.body, 'window.__PROOF_CONFIG__.shareSlug', 'Expected tokenless runtime share slug config');
+      assertIncludes(response.body, 'window.__PROOF_CONFIG__.reviewRoom = true;', 'Expected Review Room runtime flag');
+      assertIncludes(response.body, slug, 'Expected opened document slug in tokenless runtime config');
+      assert(!response.body.includes('window.__PROOF_CONFIG__.shareToken'), 'Did not expect tokenless open to embed a share token');
+    });
+
     await test('D2: GET /documents/:slug/state works via neutral alias', async () => {
       const response = await get(baseUrl, `/documents/${slug}/state`, { 'x-share-token': accessToken });
       assert(response.status === 200, `Expected status 200, got ${response.status}`);
@@ -648,6 +737,135 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(response.status === 200, `Expected status 200, got ${response.status}`);
       const payload = await response.json();
       assertEqual(payload.success, true, 'Expected bridge comment alias to succeed');
+    });
+
+    await test('D2: agent comment lifecycle supports comment, reply, resolve, and unresolve', async () => {
+      const commentText = `agent lifecycle comment ${Math.random().toString(36).slice(2, 8)}`;
+      const commentResponse = await post(baseUrl, `/api/agent/${slug}/marks/comment`, {
+        quote: 'Hello',
+        by: 'ai:review-agent',
+        text: commentText,
+      }, {
+        'x-share-token': accessToken,
+      });
+      assert(commentResponse.status === 200, `Expected agent comment status 200, got ${commentResponse.status}`);
+      const commentPayload = await commentResponse.json();
+      const commentMarks = commentPayload.marks as Record<string, any> | undefined;
+      const markId = commentMarks
+        ? (Object.entries(commentMarks).find(([, value]) => {
+          const mark = value as Record<string, any>;
+          return mark.kind === 'comment' && mark.text === commentText;
+        })?.[0] ?? '')
+        : '';
+      assert(markId.length > 0, 'Expected agent-created comment mark id');
+      assertEqual(commentMarks?.[markId]?.by, 'ai:review-agent', 'Expected comment author to be the agent');
+
+      const replyResponse = await post(baseUrl, `/api/agent/${slug}/marks/reply`, {
+        markId,
+        by: 'human:reviewer',
+        text: 'human reply to agent',
+      }, {
+        'x-share-token': accessToken,
+      });
+      assert(replyResponse.status === 200, `Expected reply status 200, got ${replyResponse.status}`);
+      const replyPayload = await replyResponse.json();
+      const repliedMark = (replyPayload.marks as Record<string, any> | undefined)?.[markId];
+      assert(Array.isArray(repliedMark?.thread), 'Expected reply to persist thread array');
+      assertEqual(repliedMark.thread.length, 1, 'Expected one lifecycle reply');
+
+      const resolveResponse = await post(baseUrl, `/api/agent/${slug}/marks/resolve`, {
+        markId,
+        by: 'human:reviewer',
+      }, {
+        'x-share-token': accessToken,
+      });
+      assert(resolveResponse.status === 200, `Expected resolve status 200, got ${resolveResponse.status}`);
+      const resolvePayload = await resolveResponse.json();
+      assertEqual((resolvePayload.marks as Record<string, any>)?.[markId]?.resolved, true, 'Expected comment to be resolved');
+
+      const unresolveResponse = await post(baseUrl, `/api/agent/${slug}/marks/unresolve`, {
+        markId,
+        by: 'human:reviewer',
+      }, {
+        'x-share-token': accessToken,
+      });
+      assert(unresolveResponse.status === 200, `Expected unresolve status 200, got ${unresolveResponse.status}`);
+      const unresolvePayload = await unresolveResponse.json();
+      assertEqual((unresolvePayload.marks as Record<string, any>)?.[markId]?.resolved, false, 'Expected comment to be reopened');
+    });
+
+    await test('D2: comment lifecycle routes enforce viewer/commenter/editor permissions', async () => {
+      const viewerToken = db.createDocumentAccessToken(slug, 'viewer').secret;
+      const commenterToken = db.createDocumentAccessToken(slug, 'commenter').secret;
+      const lifecycleText = `permission comment ${Math.random().toString(36).slice(2, 8)}`;
+
+      const viewerComment = await post(baseUrl, `/api/agent/${slug}/marks/comment`, {
+        quote: 'Hello',
+        by: 'human:viewer',
+        text: 'viewer should not comment',
+      }, {
+        'x-share-token': viewerToken,
+      });
+      assert(viewerComment.status === 401, `Expected viewer comment denial 401, got ${viewerComment.status}`);
+
+      const commenterComment = await post(baseUrl, `/api/agent/${slug}/marks/comment`, {
+        quote: 'Hello',
+        by: 'human:commenter',
+        text: lifecycleText,
+      }, {
+        'x-share-token': commenterToken,
+      });
+      assert(commenterComment.status === 200, `Expected commenter comment status 200, got ${commenterComment.status}`);
+      const commentPayload = await commenterComment.json();
+      const marks = commentPayload.marks as Record<string, any> | undefined;
+      const markId = marks
+        ? (Object.entries(marks).find(([, value]) => {
+          const mark = value as Record<string, any>;
+          return mark.kind === 'comment' && mark.text === lifecycleText;
+        })?.[0] ?? '')
+        : '';
+      assert(markId.length > 0, 'Expected commenter-created mark id');
+
+      const viewerReply = await post(baseUrl, `/api/agent/${slug}/marks/reply`, {
+        markId,
+        by: 'human:viewer',
+        text: 'viewer reply should fail',
+      }, {
+        'x-share-token': viewerToken,
+      });
+      assert(viewerReply.status === 401, `Expected viewer reply denial 401, got ${viewerReply.status}`);
+
+      const viewerResolve = await post(baseUrl, `/api/agent/${slug}/marks/resolve`, {
+        markId,
+        by: 'human:viewer',
+      }, {
+        'x-share-token': viewerToken,
+      });
+      assert(viewerResolve.status === 401, `Expected viewer resolve denial 401, got ${viewerResolve.status}`);
+
+      const commenterResolve = await post(baseUrl, `/api/agent/${slug}/marks/resolve`, {
+        markId,
+        by: 'human:commenter',
+      }, {
+        'x-share-token': commenterToken,
+      });
+      assert(commenterResolve.status === 200, `Expected commenter resolve status 200, got ${commenterResolve.status}`);
+
+      const viewerUnresolve = await post(baseUrl, `/api/agent/${slug}/marks/unresolve`, {
+        markId,
+        by: 'human:viewer',
+      }, {
+        'x-share-token': viewerToken,
+      });
+      assert(viewerUnresolve.status === 401, `Expected viewer unresolve denial 401, got ${viewerUnresolve.status}`);
+
+      const commenterUnresolve = await post(baseUrl, `/api/agent/${slug}/marks/unresolve`, {
+        markId,
+        by: 'human:commenter',
+      }, {
+        'x-share-token': commenterToken,
+      });
+      assert(commenterUnresolve.status === 200, `Expected commenter unresolve status 200, got ${commenterUnresolve.status}`);
     });
 
     await test('D2: v1 agent insert rejects insert.before payloads', async () => {

@@ -53,6 +53,10 @@ export default defineConfig({
         target: 'http://localhost:4000',
         changeOrigin: true,
       },
+      '/review-room': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
       '/agent-docs': {
         target: 'http://localhost:4000',
         changeOrigin: true,

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import {
   addDocumentEvent,
   bumpDocumentAccessEpoch,
+  deleteMarkTombstone,
   getDocumentBySlug,
   removeResurrectedMarksFromPayload,
   rebuildDocumentBlocks,
@@ -2339,9 +2340,11 @@ async function updateSuggestionStatusAsync(
     action: status === 'accepted' ? 'accept' : 'reject',
   });
   if (!structuredResult.ok) {
+    const onlyTargetMarkMissing = structuredResult.missingRequiredMarkIds.length > 0
+      && structuredResult.missingRequiredMarkIds.every((missingMarkId) => missingMarkId === markId);
     if (
       status === 'rejected'
-      && structuredResult.code === 'MARK_NOT_HYDRATED'
+      && (structuredResult.code === 'MARK_NOT_HYDRATED' || onlyTargetMarkMissing)
       && canRejectSuggestionWithoutHydration(doc.markdown, existing)
     ) {
       const nextMarks = { ...marks };
@@ -2531,6 +2534,7 @@ function unresolveComment(
   const existing = marks[markId];
   if (!existing) return { status: 404, body: { success: false, error: 'Mark not found' } };
   marks[markId] = { ...existing, resolved: false };
+  deleteMarkTombstone(slug, markId);
   const actor = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'owner';
   return persistMarks(slug, marks, actor, 'comment.unresolved', { markId, by: actor });
 }
@@ -2550,6 +2554,7 @@ async function unresolveCommentAsync(
   const existing = marks[markId];
   if (!existing) return { status: 404, body: { success: false, error: 'Mark not found' } };
   marks[markId] = { ...existing, resolved: false };
+  deleteMarkTombstone(slug, markId);
   const actor = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'owner';
   return persistMarksAsync(slug, doc, marks, actor, 'comment.unresolved', { markId, by: actor }, context);
 }

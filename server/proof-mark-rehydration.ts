@@ -1,6 +1,11 @@
 import { EditorState, Plugin } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
-import { canonicalizeStoredMarks, normalizeQuote, type StoredMark } from '../src/formats/marks.js';
+import {
+  canonicalizeStoredMarks,
+  normalizeQuote,
+  removeFinalizedSuggestionMetadata,
+  type StoredMark,
+} from '../src/formats/marks.js';
 import {
   applyRemoteMarks,
   accept as acceptMark,
@@ -395,5 +400,9 @@ export async function finalizeSuggestionThroughRehydration(args: {
     );
   }
 
-  return finalizeRehydratedState(rehydrated.strippedMarkdown, rehydrated.view.state);
+  const finalized = await finalizeRehydratedState(rehydrated.strippedMarkdown, rehydrated.view.state);
+  return {
+    ...finalized,
+    marks: removeFinalizedSuggestionMetadata(finalized.marks),
+  };
 }
