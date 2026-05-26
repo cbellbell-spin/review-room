@@ -3388,6 +3388,7 @@ class ProofEditorImpl implements ProofEditor {
   private renderShareBannerContent(banner: HTMLElement, otherViewerCount: number): void {
     this.ensureShareBannerResponsiveCSS();
     this.shareOtherViewerCount = otherViewerCount;
+    const isReviewRoom = this.isReviewRoomRuntime();
     if (
       this.shareBannerTitleEl
       && this.shareBannerAvatarsEl
@@ -3409,10 +3410,15 @@ class ProofEditorImpl implements ProofEditor {
     this.closeAgentMenu();
 
     const wordmark = document.createElement('a');
-    wordmark.textContent = 'Proof';
-    wordmark.href = 'https://www.proofeditor.ai';
-    wordmark.target = '_blank';
-    wordmark.rel = 'noopener';
+    wordmark.textContent = isReviewRoom ? 'Review Room' : 'Proof';
+    wordmark.href = isReviewRoom ? '/review-room' : 'https://www.proofeditor.ai';
+    if (isReviewRoom) {
+      wordmark.removeAttribute('target');
+      wordmark.removeAttribute('rel');
+    } else {
+      wordmark.target = '_blank';
+      wordmark.rel = 'noopener';
+    }
     wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:-0.2px;flex-shrink:0;text-decoration:none;';
 
     const separator = document.createElement('span');
@@ -4862,6 +4868,21 @@ class ProofEditorImpl implements ProofEditor {
     requestAnimationFrame(() => this.updateBannerLayout());
   }
 
+  private isReviewRoomRuntime(): boolean {
+    const proofConfig = (window as Window & {
+      __PROOF_CONFIG__?: { reviewRoom?: boolean };
+    }).__PROOF_CONFIG__ ?? {};
+    return proofConfig.reviewRoom === true || document.body.getAttribute('data-review-room') === 'true';
+  }
+
+  private getReviewRoomChromeHeight(): number {
+    if (!this.isReviewRoomRuntime()) return 0;
+    const bar = document.getElementById('review-room-bar');
+    if (!bar) return 52;
+    const rect = bar.getBoundingClientRect();
+    return Math.ceil(rect.height || bar.offsetHeight || 52);
+  }
+
   private applyTopChromeForMode(): void {
     const toolbar = document.getElementById('toolbar');
     if (toolbar) {
@@ -4895,7 +4916,8 @@ class ProofEditorImpl implements ProofEditor {
       return;
     }
 
-    let offset = shareBanner ? 18 : 0;
+    let offset = this.getReviewRoomChromeHeight();
+    if (shareBanner) offset += 18;
     for (const banner of banners) {
       banner.style.top = `${offset}px`;
       const height = banner.offsetHeight || banner.getBoundingClientRect().height;
