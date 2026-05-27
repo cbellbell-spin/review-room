@@ -37,6 +37,67 @@ Expected: dashboard is usable, with no visible script error banner.
 
 Expected: the document appears in the list with source label `Created in Review Room`.
 
+## Review Room Role Controls
+
+Create a Review Room document and keep the owner token from the opened URL:
+
+```text
+http://127.0.0.1:4000/d/SLUG?rr=1&token=OWNER_TOKEN
+```
+
+Create role-specific links from that owner token:
+
+```bash
+curl -s http://127.0.0.1:4000/api/documents/SLUG/access-links \
+  -H 'Content-Type: application/json' \
+  -H 'X-Proof-Client-Version: 0.31.0' \
+  -H 'X-Proof-Client-Build: manual' \
+  -H 'X-Proof-Client-Protocol: 3' \
+  -H 'X-Share-Token: OWNER_TOKEN' \
+  -d '{"role":"editor"}'
+
+curl -s http://127.0.0.1:4000/api/documents/SLUG/access-links \
+  -H 'Content-Type: application/json' \
+  -H 'X-Proof-Client-Version: 0.31.0' \
+  -H 'X-Proof-Client-Build: manual' \
+  -H 'X-Proof-Client-Protocol: 3' \
+  -H 'X-Share-Token: OWNER_TOKEN' \
+  -d '{"role":"commenter"}'
+
+curl -s http://127.0.0.1:4000/api/documents/SLUG/access-links \
+  -H 'Content-Type: application/json' \
+  -H 'X-Proof-Client-Version: 0.31.0' \
+  -H 'X-Proof-Client-Build: manual' \
+  -H 'X-Proof-Client-Protocol: 3' \
+  -H 'X-Share-Token: OWNER_TOKEN' \
+  -d '{"role":"viewer"}'
+```
+
+Open each returned `webShareUrl` with `&rr=1` appended, or open:
+
+```text
+http://127.0.0.1:4000/d/SLUG?rr=1&token=ROLE_TOKEN
+```
+
+Expected:
+
+- Owner and editor can edit the title, edit document content, comment/reply, resolve/reopen comments, use `Add agent`, and use `Share`.
+- Commenter can read and comment/reply, but cannot edit the title, edit document content, use `Add agent`, or use `Share`.
+- Viewer can read only. They cannot edit title/content, comment/reply, resolve/reopen comments, use `Add agent`, or use `Share`.
+- Non-owner roles should not see controls they cannot use, or those controls should be disabled with no successful server mutation.
+
+Check the open payload for each token:
+
+```bash
+curl -s http://127.0.0.1:4000/api/documents/SLUG/open-context \
+  -H 'X-Proof-Client-Version: 0.31.0' \
+  -H 'X-Proof-Client-Build: manual' \
+  -H 'X-Proof-Client-Protocol: 3' \
+  -H 'X-Share-Token: ROLE_TOKEN'
+```
+
+Expected: the payload reports the matching `capabilities` for the opened role. Review Room-created and registered documents should also include the current Review Room role when opened with a Review Room member token.
+
 ## Register Existing Active Document
 
 Create a document outside the Review Room dashboard:
