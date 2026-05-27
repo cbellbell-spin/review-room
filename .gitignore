@@ -75,3 +75,4 @@ test-results/
 package-lock.json
 CODEX-IMPLEMENT.md
 MOBILE-ACTION-BAR-PLAN.md
+.vercel

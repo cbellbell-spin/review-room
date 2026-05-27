@@ -1,8 +1,8 @@
 import express from 'express';
-import { createServer } from 'http';
+import { createServer, type Server } from 'http';
 import { WebSocketServer } from 'ws';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { apiRoutes } from './routes.js';
 import { agentRoutes } from './agent-routes.js';
 import { setupWebSocket } from './ws.js';
@@ -37,13 +37,8 @@ function parseAllowedCorsOrigins(): Set<string> {
   return new Set(configured.length > 0 ? configured : DEFAULT_ALLOWED_CORS_ORIGINS);
 }
 
-async function main(): Promise<void> {
+export function createReviewRoomExpressApp(): express.Express {
   const app = express();
-  const server = createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
-  wss.on('error', (error) => {
-    console.error('[server] WebSocketServer error (non-fatal):', error);
-  });
   const allowedCorsOrigins = parseAllowedCorsOrigins();
 
   app.use(express.json({ limit: '10mb' }));
@@ -110,15 +105,36 @@ async function main(): Promise<void> {
   app.use('/documents', agentRoutes);
   app.use(shareWebRoutes);
 
-  setupWebSocket(wss);
-  await startCollabRuntimeEmbedded(PORT);
-
-  server.listen(PORT, () => {
-    console.log(`[proof-sdk] listening on http://127.0.0.1:${PORT}`);
-  });
+  return app;
 }
 
-main().catch((error) => {
-  console.error('[proof-sdk] failed to start server', error);
-  process.exit(1);
-});
+export async function createReviewRoomHttpServer(mainHttpPort = PORT): Promise<Server> {
+  const app = createReviewRoomExpressApp();
+  const server = createServer(app);
+  const wss = new WebSocketServer({ server, path: '/ws' });
+  wss.on('error', (error) => {
+    console.error('[server] WebSocketServer error (non-fatal):', error);
+  });
+
+  setupWebSocket(wss);
+  await startCollabRuntimeEmbedded(mainHttpPort);
+
+  return server;
+}
+
+export async function startReviewRoomServer(port = PORT): Promise<Server> {
+  const server = await createReviewRoomHttpServer(port);
+  server.listen(port, () => {
+    console.log(`[proof-sdk] listening on http://127.0.0.1:${port}`);
+  });
+  return server;
+}
+
+const isDirectRun = process.argv[1] ? pathToFileURL(process.argv[1]).href === import.meta.url : false;
+
+if (isDirectRun) {
+  startReviewRoomServer().catch((error) => {
+    console.error('[proof-sdk] failed to start server', error);
+    process.exit(1);
+  });
+}
