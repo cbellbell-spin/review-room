@@ -29,7 +29,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(value, max));
 }
 
-const TOP_FIXED_OVERLAY_IDS = ['share-banner', 'readonly-banner', 'review-lock-banner', 'error-banner'] as const;
+const TOP_FIXED_OVERLAY_IDS = ['review-room-bar', 'share-banner', 'readonly-banner', 'review-lock-banner', 'error-banner'] as const;
 
 function getTopViewportInset(margin: number): number {
   let inset = margin;

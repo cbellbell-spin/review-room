@@ -252,6 +252,9 @@ test('source includes selection caching + pointer/touch handlers + arrow trigger
   assert(indexSource.includes('This document was shared with you. You can leave comments.'), 'Expected commenter-specific welcome copy');
   assert(indexSource.includes('proof-share-welcome-toast'), 'Expected share welcome toast to use mobile-safe class');
   assert(indexSource.includes('this.positionShareWelcomeToast(toast);'), 'Expected share welcome toast to be positioned against live viewport + banner');
+  assert(indexSource.includes("const banner = this.getActiveShareChromeRoot();"), 'Expected share welcome toast to position against Review Room header or share banner');
+  assert(popover.includes("const TOP_FIXED_OVERLAY_IDS = ['review-room-bar', 'share-banner'"), 'Expected popovers to avoid the fixed Review Room header');
+  assert(selectionBar.includes("const TOP_FIXED_OVERLAY_IDS = ['review-room-bar', 'share-banner'"), 'Expected selection actions to avoid the fixed Review Room header');
   assert(indexSource.includes('const canActInDocument = Boolean(context?.capabilities?.canComment || context?.capabilities?.canEdit);'), 'Expected share init to gate name prompt on real capabilities');
   assert(indexSource.includes('const existingViewerName = getViewerName();'), 'Expected share init to resolve any stored viewer identity before prompting');
   assert(indexSource.includes('this.shareViewerName = existingViewerName ?? this.shareViewerName ?? this.deriveDefaultShareViewerName();'), 'Expected share init to reuse stored names before falling back to an anonymous identity');

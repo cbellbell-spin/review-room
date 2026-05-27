@@ -12,9 +12,10 @@
     "dev": "vite",
     "build": "vite build && node scripts/finalize-web-build.mjs",
     "serve": "tsx server/index.ts",
-    "test": "npm run test:agent-bridge && npm run test:server-routes-share",
+    "test": "npm run test:agent-bridge && npm run test:server-routes-share && npm run test:review-room-header",
     "test:agent-bridge": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:server-routes-share": "tsx src/tests/server-routes-and-share.test.ts",
+    "test:review-room-header": "tsx src/tests/review-room-header-wiring.test.ts",
     "demo:agent": "npm --workspace proof-example run demo:agent"
   },
   "dependencies": {

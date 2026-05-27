@@ -152,7 +152,7 @@ function getProofEditorApi(): Window['proof'] | null {
   return window.proof ?? null;
 }
 
-const TOP_FIXED_OVERLAY_IDS = ['share-banner', 'readonly-banner', 'review-lock-banner', 'error-banner'] as const;
+const TOP_FIXED_OVERLAY_IDS = ['review-room-bar', 'share-banner', 'readonly-banner', 'review-lock-banner', 'error-banner'] as const;
 
 function getTopViewportInset(margin: number): number {
   let inset = margin;

@@ -85,12 +85,13 @@
       top: 0;
       left: 0;
       right: 0;
-      height: 52px;
+      min-height: 56px;
       z-index: 180;
+      flex-direction: column;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
-      padding: 0 18px;
+      gap: 8px;
+      padding: 8px 18px 10px;
       border-bottom: 1px solid #dfe5d7;
       background: rgba(247, 248, 243, 0.96);
       color: #1f2933;
@@ -103,11 +104,32 @@
     }
 
     body[data-review-room="true"] #editor {
-      padding-top: 112px;
+      padding-top: 124px;
+    }
+
+    .review-room-left,
+    .review-room-controls,
+    .review-room-document,
+    .review-room-actions {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .review-room-controls {
+      width: 100%;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .review-room-left {
+      gap: 16px;
+      flex: 0 0 auto;
     }
 
     .review-room-brand {
       font-weight: 700;
+      white-space: nowrap;
     }
 
     .review-room-nav {
@@ -123,6 +145,87 @@
       border-radius: 6px;
       padding: 7px 10px;
       background: #fff;
+    }
+
+    .review-room-document {
+      width: 100%;
+      flex: 0 0 auto;
+      justify-content: center;
+      gap: 10px;
+      overflow: hidden;
+    }
+
+    .review-room-actions {
+      flex: 0 1 auto;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    #review-room-title-slot {
+      min-width: 0;
+      flex: 1 1 auto;
+      max-width: min(720px, 100%);
+      text-align: center;
+    }
+
+    #review-room-status-slot,
+    #review-room-presence-slot,
+    #review-room-agent-slot,
+    #review-room-share-slot {
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 760px) {
+      #review-room-bar {
+        min-height: 92px;
+        gap: 8px;
+        padding: 8px 12px;
+      }
+
+      .review-room-controls {
+        gap: 8px;
+      }
+
+      .review-room-left {
+        gap: 8px;
+      }
+
+      .review-room-nav a {
+        padding: 7px 8px;
+      }
+
+      .review-room-actions {
+        gap: 6px;
+      }
+
+      #review-room-presence-slot {
+        display: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .review-room-controls {
+        flex-wrap: wrap;
+      }
+
+      .review-room-left {
+        flex: 1 1 auto;
+      }
+
+      .review-room-actions {
+        flex: 0 0 auto;
+      }
+
+      .review-room-brand {
+        font-size: 13px;
+      }
+
+      .review-room-nav a {
+        font-size: 12px;
+        padding: 6px 7px;
+      }
     }
 
     /* Editor container - holds gutter and editor side by side */
@@ -1095,11 +1198,24 @@
 </head>
 <body>
   <div id="review-room-bar" aria-label="Review Room navigation">
-    <div class="review-room-brand">Review Room</div>
-    <nav class="review-room-nav">
-      <a href="/review-room">Documents</a>
-      <a href="/agent-docs">Agent API</a>
-    </nav>
+    <div class="review-room-document">
+      <div id="review-room-title-slot" aria-live="polite"></div>
+    </div>
+    <div class="review-room-controls">
+      <div class="review-room-left">
+        <div class="review-room-brand">Review Room</div>
+        <nav class="review-room-nav">
+          <a href="/review-room">Documents</a>
+          <a href="/agent-docs">Agent API</a>
+        </nav>
+      </div>
+      <div class="review-room-actions">
+        <div id="review-room-status-slot"></div>
+        <div id="review-room-presence-slot"></div>
+        <div id="review-room-agent-slot"></div>
+        <div id="review-room-share-slot"></div>
+      </div>
+    </div>
   </div>
   <div id="app">
     <div id="editor-container">

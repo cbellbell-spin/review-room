@@ -1325,6 +1325,9 @@ class ProofEditorImpl implements ProofEditor {
         collabClient.flushPendingLocalStateForUnload();
       }
     });
+
+    window.addEventListener('resize', () => this.scheduleBannerLayoutUpdate());
+    window.visualViewport?.addEventListener('resize', () => this.scheduleBannerLayoutUpdate());
   }
 
   private async initFromCli(): Promise<void> {
@@ -1409,7 +1412,8 @@ class ProofEditorImpl implements ProofEditor {
       }
 
       // Set title
-      document.title = doc.title ? `${doc.title} - Proof` : 'Shared Document - Proof';
+      const productName = this.isReviewRoomRuntime() ? 'Review Room' : 'Proof';
+      document.title = doc.title ? `${doc.title} - ${productName}` : `Shared Document - ${productName}`;
       this.shareDocTitle = typeof doc.title === 'string' && doc.title.trim().length > 0
         ? doc.title.trim()
         : 'Untitled';
@@ -2798,13 +2802,20 @@ class ProofEditorImpl implements ProofEditor {
       }
       this.shareStatusHideTimer = setTimeout(() => {
         this.shareStatusHideTimer = null;
-        const label = document.querySelector('#share-banner .share-pill-status-inline .status-label') as HTMLElement | null;
+        const label = this.getActiveShareChromeRoot()?.querySelector('.share-pill-status-inline .status-label') as HTMLElement | null;
         if (label) label.style.display = 'none';
       }, 3_550);
       return true;
     }
 
     return now < this.shareStatusTextVisibleUntilMs;
+  }
+
+  private getActiveShareChromeRoot(): HTMLElement | null {
+    if (this.isReviewRoomRuntime()) {
+      return document.getElementById('review-room-bar');
+    }
+    return document.getElementById('share-banner');
   }
 
   private getHumanCollaboratorAvatars(): Array<{ name: string; color: string; initial: string }> {
@@ -3003,30 +3014,36 @@ class ProofEditorImpl implements ProofEditor {
         0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.40), 0 0 0 0.5px rgba(0,0,0,0.08); }
         50% { box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.00), 0 0 0 0.5px rgba(0,0,0,0.08); }
       }
-      #share-banner .share-pill-title {
+      #share-banner .share-pill-title,
+      #review-room-bar .share-pill-title {
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      #share-banner .share-pill-human-avatars {
+      #share-banner .share-pill-human-avatars,
+      #review-room-bar .share-pill-human-avatars {
         display: inline-flex;
         align-items: center;
         flex-shrink: 0;
       }
-      #share-banner .share-pill-agent-trigger .agent-btn-label {
+      #share-banner .share-pill-agent-trigger .agent-btn-label,
+      #review-room-bar .share-pill-agent-trigger .agent-btn-label {
         white-space: nowrap;
       }
-      #share-banner .share-pill-agent-trigger.has-agents {
+      #share-banner .share-pill-agent-trigger.has-agents,
+      #review-room-bar .share-pill-agent-trigger.has-agents {
         padding: 0 4px;
       }
-      #share-banner .share-pill-status-inline {
+      #share-banner .share-pill-status-inline,
+      #review-room-bar .share-pill-status-inline {
         display:inline-flex;
         align-items:center;
         gap:6px;
         flex-shrink:0;
       }
-      #share-banner .share-pill-status-inline .status-label {
+      #share-banner .share-pill-status-inline .status-label,
+      #review-room-bar .share-pill-status-inline .status-label {
         color:#6b7280;
         font-size:11px;
         font-weight:500;
@@ -3038,7 +3055,8 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(0,0,0,0.10);
         flex-shrink:0;
       }
-      #share-banner .proof-avatar-tooltip {
+      #share-banner .proof-avatar-tooltip,
+      #review-room-bar .proof-avatar-tooltip {
         position:absolute;
         top:calc(100% + 6px);
         left:50%;
@@ -3056,7 +3074,8 @@ class ProofEditorImpl implements ProofEditor {
         z-index:1000;
         line-height:1.3;
       }
-      #share-banner .proof-avatar-tooltip::before {
+      #share-banner .proof-avatar-tooltip::before,
+      #review-room-bar .proof-avatar-tooltip::before {
         content:'';
         position:absolute;
         bottom:100%;
@@ -3065,11 +3084,19 @@ class ProofEditorImpl implements ProofEditor {
         border:4px solid transparent;
         border-bottom-color:#1a1a1a;
       }
-      #share-banner .proof-avatar-wrap:hover .proof-avatar-tooltip {
+      #share-banner .proof-avatar-wrap:hover .proof-avatar-tooltip,
+      #review-room-bar .proof-avatar-wrap:hover .proof-avatar-tooltip {
         opacity:1;
       }
-      #share-banner .share-pill-agent-btn.menu-open .proof-avatar-tooltip {
+      #share-banner .share-pill-agent-btn.menu-open .proof-avatar-tooltip,
+      #review-room-bar .share-pill-agent-btn.menu-open .proof-avatar-tooltip {
         display:none !important;
+      }
+      #review-room-bar .share-pill-title {
+        display:block;
+        font-size:14px !important;
+        font-weight:600 !important;
+        color:#1f2933 !important;
       }
       @media (max-width: 480px) {
         #share-banner {
@@ -3108,6 +3135,21 @@ class ProofEditorImpl implements ProofEditor {
           display:none !important;
         }
         #share-banner .proof-avatar-tooltip {
+          display:none !important;
+        }
+      }
+      @media (max-width: 760px) {
+        #review-room-bar .share-pill-status-inline .status-label {
+          display:none !important;
+        }
+      }
+      @media (max-width: 560px) {
+        #review-room-bar .share-pill-agent-trigger {
+          padding:0 10px !important;
+        }
+        #review-room-bar .share-pill-agent-trigger .agent-btn-label,
+        #review-room-bar .share-pill-share-btn button span:first-child,
+        #review-room-bar .proof-avatar-tooltip {
           display:none !important;
         }
       }
@@ -3334,7 +3376,7 @@ class ProofEditorImpl implements ProofEditor {
     const normalized = typeof title === 'string' ? title.trim() : '';
     const nextTitle = normalized.length > 0 ? normalized : 'Untitled';
     this.shareDocTitle = nextTitle;
-    document.title = `${nextTitle} - Proof`;
+    document.title = `${nextTitle} - ${this.isReviewRoomRuntime() ? 'Review Room' : 'Proof'}`;
     this.updateShareBannerTitleDisplay();
   }
 
@@ -3409,22 +3451,6 @@ class ProofEditorImpl implements ProofEditor {
     this.closePresenceMenu();
     this.closeAgentMenu();
 
-    const wordmark = document.createElement('a');
-    wordmark.textContent = isReviewRoom ? 'Review Room' : 'Proof';
-    wordmark.href = isReviewRoom ? '/review-room' : 'https://www.proofeditor.ai';
-    if (isReviewRoom) {
-      wordmark.removeAttribute('target');
-      wordmark.removeAttribute('rel');
-    } else {
-      wordmark.target = '_blank';
-      wordmark.rel = 'noopener';
-    }
-    wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:-0.2px;flex-shrink:0;text-decoration:none;';
-
-    const separator = document.createElement('span');
-    separator.className = 'share-pill-sep';
-    separator.style.cssText = 'width:1px;height:16px;background:rgba(0,0,0,0.1);flex-shrink:0';
-
     const title = document.createElement('span');
     title.className = 'share-pill-title';
     title.style.cssText = 'font-weight:500;color:#374151;font-size:13px;flex:1 1 auto;min-width:0;';
@@ -3456,6 +3482,34 @@ class ProofEditorImpl implements ProofEditor {
     this.updateShareBannerSyncDisplay();
 
     const shareBtn = this.createShareMenuButton();
+
+    if (isReviewRoom) {
+      const titleSlot = document.getElementById('review-room-title-slot');
+      const statusSlot = document.getElementById('review-room-status-slot');
+      const presenceSlot = document.getElementById('review-room-presence-slot');
+      const agentSlotContainer = document.getElementById('review-room-agent-slot');
+      const shareSlot = document.getElementById('review-room-share-slot');
+      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && shareSlot) {
+        titleSlot.replaceChildren(title);
+        statusSlot.replaceChildren(syncStatusInline);
+        presenceSlot.replaceChildren(avatars);
+        agentSlotContainer.replaceChildren(agentSlot);
+        shareSlot.replaceChildren(shareBtn);
+        this.scheduleBannerLayoutUpdate();
+        return;
+      }
+    }
+
+    const wordmark = document.createElement('a');
+    wordmark.textContent = 'Proof';
+    wordmark.href = 'https://www.proofeditor.ai';
+    wordmark.target = '_blank';
+    wordmark.rel = 'noopener';
+    wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:-0.2px;flex-shrink:0;text-decoration:none;';
+
+    const separator = document.createElement('span');
+    separator.className = 'share-pill-sep';
+    separator.style.cssText = 'width:1px;height:16px;background:rgba(0,0,0,0.1);flex-shrink:0';
 
     banner.replaceChildren(wordmark, separator, title, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
     this.scheduleBannerLayoutUpdate();
@@ -4024,7 +4078,7 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private positionShareWelcomeToast(toast: HTMLElement): void {
-    const banner = document.getElementById('share-banner');
+    const banner = this.getActiveShareChromeRoot();
     const isMobile = window.innerWidth <= 480;
     const pageMargin = isMobile ? 12 : 12;
     let top = 12;
@@ -4614,6 +4668,16 @@ class ProofEditorImpl implements ProofEditor {
 
   private showShareBanner(viewers: number): void {
     this.clearShareBanner();
+    this.shareOtherViewerCount = Math.max(0, viewers);
+    if (this.isReviewRoomRuntime()) {
+      const reviewRoomBar = document.getElementById('review-room-bar');
+      if (reviewRoomBar) {
+        this.renderShareBannerContent(reviewRoomBar, this.shareOtherViewerCount);
+      }
+      this.scheduleBannerLayoutUpdate();
+      return;
+    }
+
     const banner = document.createElement('div');
     banner.id = 'share-banner';
     banner.style.cssText = `
@@ -4640,7 +4704,6 @@ class ProofEditorImpl implements ProofEditor {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       min-width: min(480px, calc(100vw - 24px));
     `;
-    this.shareOtherViewerCount = Math.max(0, viewers);
     this.renderShareBannerContent(banner, this.shareOtherViewerCount);
     document.body.appendChild(banner);
     this.scheduleBannerLayoutUpdate();
@@ -4671,8 +4734,16 @@ class ProofEditorImpl implements ProofEditor {
     }
     this.pendingShareMarksRefresh = false;
     const existing = document.getElementById('share-banner');
-    if (!existing) return;
-    existing.remove();
+    if (existing) existing.remove();
+    for (const id of [
+      'review-room-title-slot',
+      'review-room-status-slot',
+      'review-room-presence-slot',
+      'review-room-agent-slot',
+      'review-room-share-slot',
+    ]) {
+      document.getElementById(id)?.replaceChildren();
+    }
     this.scheduleBannerLayoutUpdate();
   }
 
@@ -4865,7 +4936,11 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private scheduleBannerLayoutUpdate(): void {
-    requestAnimationFrame(() => this.updateBannerLayout());
+    requestAnimationFrame(() => {
+      this.updateBannerLayout();
+      requestAnimationFrame(() => this.updateBannerLayout());
+      window.setTimeout(() => this.updateBannerLayout(), 150);
+    });
   }
 
   private isReviewRoomRuntime(): boolean {
@@ -4878,9 +4953,9 @@ class ProofEditorImpl implements ProofEditor {
   private getReviewRoomChromeHeight(): number {
     if (!this.isReviewRoomRuntime()) return 0;
     const bar = document.getElementById('review-room-bar');
-    if (!bar) return 52;
+    if (!bar) return 56;
     const rect = bar.getBoundingClientRect();
-    return Math.ceil(rect.height || bar.offsetHeight || 52);
+    return Math.ceil(rect.height || bar.offsetHeight || 56);
   }
 
   private applyTopChromeForMode(): void {
@@ -4912,7 +4987,10 @@ class ProofEditorImpl implements ProofEditor {
     if (this.reviewLockBanner) banners.push(this.reviewLockBanner);
 
     if (banners.length === 0) {
-      editor.style.paddingTop = '';
+      const reviewRoomChromeHeight = this.getReviewRoomChromeHeight();
+      editor.style.paddingTop = reviewRoomChromeHeight > 0
+        ? `${Math.ceil(reviewRoomChromeHeight + 32)}px`
+        : '';
       return;
     }
 
