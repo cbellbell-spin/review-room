@@ -1372,6 +1372,8 @@ class ProofEditorImpl implements ProofEditor {
         : null;
       const wantsNamePrompt = options?.promptForName ?? true;
       const canActInDocument = Boolean(context?.capabilities?.canComment || context?.capabilities?.canEdit);
+      this.collabCanComment = Boolean(context?.capabilities?.canComment);
+      this.collabCanEdit = Boolean(context?.capabilities?.canEdit);
       const existingViewerName = getViewerName();
       this.shareViewerName = existingViewerName ?? this.shareViewerName ?? this.deriveDefaultShareViewerName();
       setCurrentActorValue(`human:${this.shareViewerName || 'Anonymous'}`);
@@ -2522,6 +2524,9 @@ class ProofEditorImpl implements ProofEditor {
     });
     this.updateEditableState();
     this.updateShareBannerTitleDisplay();
+    this.updateShareBannerAgentControlDisplay();
+    const shareButton = this.getActiveShareChromeRoot()?.querySelector('.share-pill-share-btn') as HTMLElement | null;
+    if (shareButton) shareButton.style.display = this.collabCanEdit ? 'inline-flex' : 'none';
   }
 
   private ensureShareWebSocketConnection(): void {
@@ -3392,6 +3397,14 @@ class ProofEditorImpl implements ProofEditor {
       this.clearShareAgentPresenceExpiryTimer();
       return;
     }
+    if (!this.collabCanEdit) {
+      this.closeAgentMenu();
+      this.clearShareAgentPresenceExpiryTimer();
+      this.shareBannerAgentSlotEl.replaceChildren();
+      this.shareBannerAgentSlotEl.dataset.agentState = 'hidden';
+      this.shareBannerAgentSlotEl.dataset.agentSignature = '';
+      return;
+    }
     const { entries: agents, nextExpiryAtMs } = this.collectConnectedAgentEntries();
     this.scheduleShareAgentPresenceExpiryRefresh(nextExpiryAtMs);
     const nextState = agents.length > 0 ? 'connected' : 'empty';
@@ -4102,7 +4115,7 @@ class ProofEditorImpl implements ProofEditor {
   private createShareMenuButton(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'share-pill-share-btn';
-    container.style.cssText = 'position:relative;display:inline-flex;align-items:center';
+    container.style.cssText = `position:relative;display:${this.collabCanEdit ? 'inline-flex' : 'none'};align-items:center`;
 
     const btn = document.createElement('button');
     btn.type = 'button';

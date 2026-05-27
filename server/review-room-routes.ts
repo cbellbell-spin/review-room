@@ -6,12 +6,17 @@ import {
   createDocument,
   createDocumentAccessToken,
   createReviewRoomDocumentRecord,
+  deriveReviewRoomCapabilities,
   getDocumentBySlug,
+  getReviewRoomDocumentMemberForProofSlug,
   getReviewRoomDocumentByProofSlug,
   getReviewRoomIdentity,
   listReviewRoomDocuments,
   listReviewRoomIdentities,
   resolveDocumentAccess,
+  reviewRoomRoleToShareRole,
+  upsertReviewRoomDocumentMember,
+  type ReviewRoomDocumentMemberRow,
   type ReviewRoomDocumentRow,
 } from './db.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
@@ -37,6 +42,13 @@ function buildReviewRoomOpenPath(slug: string): string {
 function appendTokenToPath(path: string, token: string | null): string {
   if (!token) return path;
   return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+}
+
+function getCurrentReviewRoomIdentityId(req: Request): string {
+  const fromHeader = req.header('x-review-room-identity-id');
+  if (fromHeader && fromHeader.trim()) return fromHeader.trim();
+  const fromQuery = typeof req.query.identityId === 'string' ? req.query.identityId.trim() : '';
+  return fromQuery || DEFAULT_HUMAN_ID;
 }
 
 function parseProofSlugInput(value: string): { slug: string; token: string | null } {
@@ -87,7 +99,12 @@ function reviewRoomRegisterErrorForState(shareState: string): { status: number; 
   };
 }
 
-function serializeDocument(row: ReviewRoomDocumentRow): Record<string, unknown> {
+function serializeDocument(
+  row: ReviewRoomDocumentRow,
+  member: ReviewRoomDocumentMemberRow | null = null,
+): Record<string, unknown> {
+  const role = member?.role ?? null;
+  const shareRole = role ? reviewRoomRoleToShareRole(role) : null;
   return {
     id: row.id,
     workspaceId: row.workspace_id,
@@ -97,11 +114,14 @@ function serializeDocument(row: ReviewRoomDocumentRow): Record<string, unknown> 
     source: row.source,
     sourceLabel: row.source === 'registered' ? 'Registered document' : 'Created in Review Room',
     shareState: row.share_state,
+    currentRole: role,
+    currentShareRole: shareRole,
+    capabilities: deriveReviewRoomCapabilities(role, row.share_state),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     proofCreatedAt: row.proof_created_at,
     proofUpdatedAt: row.proof_updated_at,
-    openPath: buildReviewRoomOpenPath(row.proof_slug),
+    openPath: appendTokenToPath(buildReviewRoomOpenPath(row.proof_slug), member?.proof_access_token ?? null),
     statePath: `/documents/${encodeURIComponent(row.proof_slug)}/state`,
   };
 }
@@ -364,27 +384,32 @@ reviewRoomRoutes.get('/review-room', (_req: Request, res: Response) => {
   res.type('html').send(renderReviewRoomHome());
 });
 
-reviewRoomRoutes.get('/review-room/api/identity', (_req: Request, res: Response) => {
+reviewRoomRoutes.get('/review-room/api/identity', (req: Request, res: Response) => {
+  const identityId = getCurrentReviewRoomIdentityId(req);
   res.json({
     success: true,
     workspace: {
       id: DEFAULT_WORKSPACE_ID,
       name: 'Local Review Room',
     },
-    currentIdentity: getReviewRoomIdentity(DEFAULT_HUMAN_ID),
+    currentIdentity: getReviewRoomIdentity(identityId),
     identities: listReviewRoomIdentities(DEFAULT_WORKSPACE_ID),
   });
 });
 
 reviewRoomRoutes.get('/review-room/api/documents', (req: Request, res: Response) => {
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 50;
+  const identityId = getCurrentReviewRoomIdentityId(req);
   res.json({
     success: true,
-    documents: listReviewRoomDocuments(DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50).map(serializeDocument),
+    currentIdentity: getReviewRoomIdentity(identityId),
+    documents: listReviewRoomDocuments(DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50)
+      .map((row) => serializeDocument(row, getReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
   });
 });
 
 reviewRoomRoutes.post('/review-room/api/documents', (req: Request, res: Response) => {
+  const identityId = getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Untitled review';
   const markdown = typeof body.markdown === 'string' ? body.markdown : '';
@@ -410,14 +435,15 @@ reviewRoomRoutes.post('/review-room/api/documents', (req: Request, res: Response
     title,
     proofSlug: proofDoc.slug,
     proofDocId: proofDoc.doc_id,
-    ownerIdentityId: DEFAULT_HUMAN_ID,
-    createdByIdentityId: DEFAULT_HUMAN_ID,
+    ownerIdentityId: identityId,
+    createdByIdentityId: identityId,
   });
-  const openPath = `${buildReviewRoomOpenPath(proofDoc.slug)}&token=${encodeURIComponent(access.secret)}`;
+  const member = getReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
+  const openPath = appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), member?.proof_access_token ?? access.secret);
 
   res.status(201).json({
     success: true,
-    document: serializeDocument(reviewRoomDocument),
+    document: serializeDocument(reviewRoomDocument, member),
     openPath,
     proof: {
       slug: proofDoc.slug,
@@ -430,6 +456,7 @@ reviewRoomRoutes.post('/review-room/api/documents', (req: Request, res: Response
 });
 
 reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res: Response) => {
+  const identityId = getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const rawProofSlug = typeof body.proofSlug === 'string' ? body.proofSlug : '';
   const parsed = parseProofSlugInput(rawProofSlug);
@@ -443,11 +470,18 @@ reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res:
   }
   const existing = getReviewRoomDocumentByProofSlug(proofSlug);
   if (existing) {
+    const member = getReviewRoomDocumentMemberForProofSlug(proofSlug, identityId)
+      ?? upsertReviewRoomDocumentMember({
+        reviewRoomDocumentId: existing.id,
+        identityId,
+        role: 'owner',
+        proofSlug,
+      });
     res.json({
       success: true,
       alreadyRegistered: true,
-      document: serializeDocument(existing),
-      openPath: appendTokenToPath(buildReviewRoomOpenPath(proofSlug), token),
+      document: serializeDocument(existing, member),
+      openPath: appendTokenToPath(buildReviewRoomOpenPath(proofSlug), member.proof_access_token ?? token),
     });
     return;
   }
@@ -488,18 +522,19 @@ reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res:
     proofSlug: proofDoc.slug,
     proofDocId: proofDoc.doc_id,
     source: 'registered',
-    ownerIdentityId: DEFAULT_HUMAN_ID,
-    createdByIdentityId: DEFAULT_HUMAN_ID,
+    ownerIdentityId: identityId,
+    createdByIdentityId: identityId,
   });
+  const member = getReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
   addEvent(proofDoc.slug, 'review_room.document.registered', {
     title: reviewRoomDocument.title,
     reviewRoom: true,
-  }, `review-room:${DEFAULT_HUMAN_ID}`);
+  }, `review-room:${identityId}`);
 
   res.status(201).json({
     success: true,
-    document: serializeDocument(reviewRoomDocument),
-    openPath: appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), token),
+    document: serializeDocument(reviewRoomDocument, member),
+    openPath: appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), member?.proof_access_token ?? token),
     proof: {
       slug: proofDoc.slug,
       docId: proofDoc.doc_id,

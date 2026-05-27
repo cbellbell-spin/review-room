@@ -53,6 +53,12 @@ export interface ShareOpenContext {
   };
   session?: CollabSessionInfo;
   capabilities: { canRead: boolean; canComment: boolean; canEdit: boolean };
+  reviewRoom?: {
+    documentId: string;
+    identityId: string;
+    currentRole: 'owner' | 'editor' | 'commenter' | 'viewer';
+    currentShareRole: ShareRole;
+  };
   links: { webUrl: string; snapshotUrl: string | null };
 }
 

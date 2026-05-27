@@ -29,6 +29,7 @@ import {
   deleteDocument,
   getDocument,
   getDocumentBySlug,
+  getReviewRoomDocumentMemberForProofSlugAndToken,
   getStoredIdempotencyRecord,
   pauseDocument,
   resolveDocumentAccess,
@@ -781,6 +782,24 @@ function deriveShareCapabilities(role: ShareRole, shareState: string): {
     canRead,
     canComment,
     canEdit,
+  };
+}
+
+function buildReviewRoomOpenPayload(slug: string, presentedSecret: string | null): {
+  documentId: string;
+  identityId: string;
+  currentRole: string;
+  currentShareRole: ShareRole;
+} | null {
+  const member = presentedSecret
+    ? getReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret)
+    : null;
+  if (!member) return null;
+  return {
+    documentId: member.review_room_document_id,
+    identityId: member.identity_id,
+    currentRole: member.role,
+    currentShareRole: member.role === 'owner' ? 'owner_bot' : member.role,
   };
 }
 
@@ -1951,6 +1970,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
 
   const role = access.role;
   const capabilities = deriveShareCapabilities(role, doc.share_state);
+  const reviewRoom = buildReviewRoomOpenPayload(slug, getPresentedSecret(req));
   const collabRuntime = getCollabRuntime();
   if (!collabRuntime.enabled) {
     const snapshotUrl = doc.share_state === 'ACTIVE' ? getSnapshotPublicUrl(doc.slug) : null;
@@ -1970,6 +1990,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
         updatedAt: doc.updated_at,
         viewers: getRoomSize(doc.slug),
       },
+      ...(reviewRoom ? { reviewRoom } : {}),
       capabilities,
       links: {
         webUrl: buildShareLink(req, doc.slug).shareUrl,
@@ -2005,6 +2026,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
       updatedAt: doc.updated_at,
       viewers: getRoomSize(doc.slug),
     },
+    ...(reviewRoom ? { reviewRoom } : {}),
     session,
     capabilities,
     links: {
@@ -2131,10 +2153,12 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     res.status(500).json({ error: 'Unable to build collab session' });
     return;
   }
+  const reviewRoom = buildReviewRoomOpenPayload(slug, presentedSecret);
 
   res.json({
     success: true,
     session,
+    ...(reviewRoom ? { reviewRoom } : {}),
     capabilities: {
       canRead,
       canComment,

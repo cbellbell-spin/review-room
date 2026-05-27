@@ -291,6 +291,19 @@ export interface ReviewRoomIdentityRow {
   updated_at: string;
 }
 
+export type ReviewRoomRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
+export interface ReviewRoomDocumentMemberRow {
+  review_room_document_id: string;
+  identity_id: string;
+  role: ReviewRoomRole;
+  proof_access_token_id: string | null;
+  proof_access_token: string | null;
+  created_at: string;
+  updated_at: string;
+  proof_slug?: string;
+}
+
 export interface DocumentAuthStateRow {
   slug: string;
   doc_id: string | null;
@@ -981,6 +994,42 @@ function addMissingReviewRoomDocumentColumns(): void {
   }
 }
 
+function isReviewRoomRole(value: unknown): value is ReviewRoomRole {
+  return value === 'owner' || value === 'editor' || value === 'commenter' || value === 'viewer';
+}
+
+export function reviewRoomRoleToShareRole(role: ReviewRoomRole): ShareRole {
+  if (role === 'owner') return 'owner_bot';
+  return role;
+}
+
+export function shareRoleToReviewRoomRole(role: ShareRole): ReviewRoomRole {
+  if (role === 'owner_bot') return 'owner';
+  return role;
+}
+
+export function deriveReviewRoomCapabilities(
+  role: ReviewRoomRole | null | undefined,
+  shareState: ShareState | string,
+): {
+  canRead: boolean;
+  canComment: boolean;
+  canEdit: boolean;
+  canShare: boolean;
+  canManageAgents: boolean;
+} {
+  const shareRole = role ? reviewRoomRoleToShareRole(role) : 'viewer';
+  const isOwner = shareRole === 'owner_bot';
+  const active = shareState === 'ACTIVE';
+  return {
+    canRead: active || (isOwner && shareState !== 'DELETED'),
+    canComment: active && (role === 'owner' || role === 'editor' || role === 'commenter'),
+    canEdit: active && (role === 'owner' || role === 'editor'),
+    canShare: active && (role === 'owner' || role === 'editor'),
+    canManageAgents: active && (role === 'owner' || role === 'editor'),
+  };
+}
+
 function backfillDocumentColumns(): void {
   const d = getDb();
   const rows = d.prepare(`
@@ -1415,7 +1464,26 @@ function initDatabase(): void {
   `);
   addMissingReviewRoomDocumentColumns();
   d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_documents_workspace_updated ON review_room_documents(workspace_id, updated_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_document_members (
+      review_room_document_id TEXT NOT NULL,
+      identity_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      proof_access_token_id TEXT,
+      proof_access_token TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (review_room_document_id, identity_id),
+      FOREIGN KEY (review_room_document_id) REFERENCES review_room_documents(id),
+      FOREIGN KEY (identity_id) REFERENCES review_room_identities(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_members_identity ON review_room_document_members(identity_id, updated_at)');
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_members_token ON review_room_document_members(proof_access_token)');
+
   ensureReviewRoomDefaults(d);
+  backfillReviewRoomDocumentOwnerMemberships(d);
 }
 
 function ensureReviewRoomDefaults(d: Database.Database): void {
@@ -1437,6 +1505,30 @@ function ensureReviewRoomDefaults(d: Database.Database): void {
     VALUES ('agent-reviewer', 'local', 'agent', 'Review agent', 'local-human', ?, ?)
     ON CONFLICT (id) DO NOTHING
   `).run(now, now);
+}
+
+function backfillReviewRoomDocumentOwnerMemberships(d: Database.Database): void {
+  const rows = d.prepare(`
+    SELECT id, proof_slug, owner_identity_id
+    FROM review_room_documents
+    WHERE id NOT IN (
+      SELECT review_room_document_id
+      FROM review_room_document_members
+      WHERE role = 'owner'
+    )
+  `).all() as Array<{ id: string; proof_slug: string; owner_identity_id: string }>;
+  for (const row of rows) {
+    if (!row.id || !row.proof_slug || !row.owner_identity_id) continue;
+    const access = createDocumentAccessToken(row.proof_slug, 'owner_bot');
+    upsertReviewRoomDocumentMember({
+      reviewRoomDocumentId: row.id,
+      identityId: row.owner_identity_id,
+      role: 'owner',
+      proofSlug: row.proof_slug,
+      proofAccessTokenId: access.tokenId,
+      proofAccessToken: access.secret,
+    });
+  }
 }
 
 export function createDocument(
@@ -3914,7 +4006,134 @@ export function createReviewRoomDocumentRecord(input: {
   );
   const row = getReviewRoomDocumentByProofSlug(input.proofSlug);
   if (!row) throw new Error('Review Room document record was not persisted.');
+  upsertReviewRoomDocumentMember({
+    reviewRoomDocumentId: row.id,
+    identityId: ownerIdentityId,
+    role: 'owner',
+    proofSlug: row.proof_slug,
+  });
   return row;
+}
+
+export function upsertReviewRoomDocumentMember(input: {
+  reviewRoomDocumentId: string;
+  identityId: string;
+  role: ReviewRoomRole;
+  proofSlug: string;
+  proofAccessTokenId?: string | null;
+  proofAccessToken?: string | null;
+}): ReviewRoomDocumentMemberRow {
+  assertWritesAllowed('upsertReviewRoomDocumentMember');
+  if (!isReviewRoomRole(input.role)) {
+    throw new Error(`Invalid Review Room role: ${String(input.role)}`);
+  }
+  const now = new Date().toISOString();
+  const access = input.proofAccessToken
+    ? {
+      tokenId: input.proofAccessTokenId ?? null,
+      secret: input.proofAccessToken,
+    }
+    : createDocumentAccessToken(input.proofSlug, reviewRoomRoleToShareRole(input.role));
+
+  getDb().prepare(`
+    INSERT INTO review_room_document_members (
+      review_room_document_id,
+      identity_id,
+      role,
+      proof_access_token_id,
+      proof_access_token,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (review_room_document_id, identity_id) DO UPDATE SET
+      role = excluded.role,
+      proof_access_token_id = excluded.proof_access_token_id,
+      proof_access_token = excluded.proof_access_token,
+      updated_at = excluded.updated_at
+  `).run(
+    input.reviewRoomDocumentId,
+    input.identityId,
+    input.role,
+    access.tokenId,
+    access.secret,
+    now,
+    now,
+  );
+  const row = getReviewRoomDocumentMember(input.reviewRoomDocumentId, input.identityId);
+  if (!row) throw new Error('Review Room document member record was not persisted.');
+  return row;
+}
+
+export function getReviewRoomDocumentMember(
+  reviewRoomDocumentId: string,
+  identityId: string,
+): ReviewRoomDocumentMemberRow | null {
+  const row = getDb().prepare(`
+    SELECT
+      m.review_room_document_id,
+      m.identity_id,
+      m.role,
+      m.proof_access_token_id,
+      m.proof_access_token,
+      m.created_at,
+      m.updated_at,
+      rr.proof_slug
+    FROM review_room_document_members m
+    JOIN review_room_documents rr ON rr.id = m.review_room_document_id
+    WHERE m.review_room_document_id = ?
+      AND m.identity_id = ?
+    LIMIT 1
+  `).get(reviewRoomDocumentId, identityId) as ReviewRoomDocumentMemberRow | undefined;
+  return row ?? null;
+}
+
+export function getReviewRoomDocumentMemberForProofSlug(
+  proofSlug: string,
+  identityId: string = 'local-human',
+): ReviewRoomDocumentMemberRow | null {
+  const row = getDb().prepare(`
+    SELECT
+      m.review_room_document_id,
+      m.identity_id,
+      m.role,
+      m.proof_access_token_id,
+      m.proof_access_token,
+      m.created_at,
+      m.updated_at,
+      rr.proof_slug
+    FROM review_room_document_members m
+    JOIN review_room_documents rr ON rr.id = m.review_room_document_id
+    WHERE rr.proof_slug = ?
+      AND m.identity_id = ?
+    LIMIT 1
+  `).get(proofSlug, identityId) as ReviewRoomDocumentMemberRow | undefined;
+  return row ?? null;
+}
+
+export function getReviewRoomDocumentMemberForProofSlugAndToken(
+  proofSlug: string,
+  proofAccessToken: string,
+): ReviewRoomDocumentMemberRow | null {
+  const trimmed = proofAccessToken.trim();
+  if (!trimmed) return null;
+  const row = getDb().prepare(`
+    SELECT
+      m.review_room_document_id,
+      m.identity_id,
+      m.role,
+      m.proof_access_token_id,
+      m.proof_access_token,
+      m.created_at,
+      m.updated_at,
+      rr.proof_slug
+    FROM review_room_document_members m
+    JOIN review_room_documents rr ON rr.id = m.review_room_document_id
+    WHERE rr.proof_slug = ?
+      AND m.proof_access_token = ?
+    LIMIT 1
+  `).get(proofSlug, trimmed) as ReviewRoomDocumentMemberRow | undefined;
+  return row ?? null;
 }
 
 export function getReviewRoomDocumentByProofSlug(proofSlug: string): ReviewRoomDocumentRow | null {

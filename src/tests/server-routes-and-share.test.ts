@@ -613,8 +613,13 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(typeof created.document?.proofSlug === 'string' && created.document.proofSlug.length > 0, 'Expected document slug');
       assert(typeof created.document?.proofDocId === 'string' && created.document.proofDocId.length > 0, 'Expected document id');
       assertEqual(created.document?.source, 'created', 'Expected Review Room-created documents to expose source=created');
+      assertEqual(created.document?.currentRole, 'owner', 'Expected creator to have Review Room owner role');
+      assertEqual(created.document?.currentShareRole, 'owner_bot', 'Expected owner role to map to owner share access');
+      assertEqual(created.document?.capabilities?.canEdit, true, 'Expected owner to edit Review Room documents');
+      assertEqual(created.document?.capabilities?.canShare, true, 'Expected owner to share Review Room documents');
       assert(String(created.openPath).includes(`/d/${created.document.proofSlug}`), 'Expected open path to target Review Room editor');
       assert(String(created.openPath).includes('rr=1'), 'Expected Review Room editor flag');
+      assert(String(created.openPath).includes('token='), 'Expected Review Room open path to include the role token');
 
       const listResponse = await get(baseUrl, '/review-room/api/documents');
       assert(listResponse.status === 200, `Expected Review Room list status 200, got ${listResponse.status}`);
@@ -648,8 +653,9 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertEqual(registered.document?.proofSlug, proof.slug, 'Expected registered document to point at existing slug');
       assertEqual(registered.document?.source, 'registered', 'Expected registered document source');
       assertEqual(registered.document?.sourceLabel, 'Registered document', 'Expected registered source label');
+      assertEqual(registered.document?.currentRole, 'owner', 'Expected registrar to have Review Room owner role');
       assert(String(registered.openPath).includes('rr=1'), 'Expected registered open path to preserve Review Room flag');
-      assert(String(registered.openPath).includes(`token=${encodeURIComponent(proof.accessToken)}`), 'Expected registered open path to preserve pasted token');
+      assert(String(registered.openPath).includes('token='), 'Expected registered open path to include the Review Room role token');
 
       const listResponse = await get(baseUrl, '/review-room/api/documents');
       assert(listResponse.status === 200, `Expected Review Room list status 200, got ${listResponse.status}`);
@@ -665,6 +671,159 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const duplicate = await duplicateResponse.json();
       assertEqual(duplicate.alreadyRegistered, true, 'Expected duplicate registration to be idempotent');
       assertEqual(duplicate.document?.id, registered.document?.id, 'Expected duplicate registration to return existing record');
+    });
+
+    await test('D2: Review Room role records drive open tokens and permissions', async () => {
+      const createResponse = await post(baseUrl, '/review-room/api/documents', {
+        title: 'Review Room Permission Matrix',
+        markdown: '# Review Room Permission Matrix\n\nPermissions body.',
+      });
+      assert(createResponse.status === 201, `Expected Review Room create status 201, got ${createResponse.status}`);
+      const created = await createResponse.json();
+      const reviewRoomDocumentId = created.document?.id as string;
+      const slug = created.document?.proofSlug as string;
+      assert(typeof reviewRoomDocumentId === 'string' && reviewRoomDocumentId.length > 0, 'Expected Review Room document id');
+      assert(typeof slug === 'string' && slug.length > 0, 'Expected Review Room proof slug');
+
+      const roles = [
+        { role: 'owner', shareRole: 'owner_bot', canEdit: true, canComment: true, canShare: true },
+        { role: 'editor', shareRole: 'editor', canEdit: true, canComment: true, canShare: true },
+        { role: 'commenter', shareRole: 'commenter', canEdit: false, canComment: true, canShare: false },
+        { role: 'viewer', shareRole: 'viewer', canEdit: false, canComment: false, canShare: false },
+      ] as const;
+      const ownerToken = db.createDocumentAccessToken(slug, 'owner_bot').secret;
+
+      for (const entry of roles) {
+        const member = db.upsertReviewRoomDocumentMember({
+          reviewRoomDocumentId,
+          identityId: 'local-human',
+          role: entry.role,
+          proofSlug: slug,
+        });
+        assertEqual(member.role, entry.role, `Expected member role ${entry.role}`);
+        assert(typeof member.proof_access_token === 'string' && member.proof_access_token.length > 0, `Expected token for ${entry.role}`);
+        const token = member.proof_access_token as string;
+
+        const listResponse = await get(baseUrl, '/review-room/api/documents?identityId=local-human');
+        assert(listResponse.status === 200, `Expected Review Room list 200 for ${entry.role}, got ${listResponse.status}`);
+        const listed = await listResponse.json();
+        const listedDoc = listed.documents.find((doc: { id?: string }) => doc.id === reviewRoomDocumentId);
+        assert(listedDoc, `Expected listed doc for ${entry.role}`);
+        assertEqual(listedDoc.currentRole, entry.role, `Expected list currentRole for ${entry.role}`);
+        assertEqual(listedDoc.currentShareRole, entry.shareRole, `Expected list currentShareRole for ${entry.role}`);
+        assertEqual(listedDoc.capabilities.canEdit, entry.canEdit, `Expected list canEdit for ${entry.role}`);
+        assertEqual(listedDoc.capabilities.canComment, entry.canComment, `Expected list canComment for ${entry.role}`);
+        assertEqual(listedDoc.capabilities.canShare, entry.canShare, `Expected list canShare for ${entry.role}`);
+        assert(String(listedDoc.openPath).includes(`token=${encodeURIComponent(token)}`), `Expected open path to preserve ${entry.role} token`);
+
+        const openContext = await get(baseUrl, `/api/documents/${slug}/open-context`, {
+          'x-share-token': token,
+        });
+        assert(openContext.status === 200, `Expected open-context 200 for ${entry.role}, got ${openContext.status}`);
+        const openPayload = await openContext.json();
+        assertEqual(openPayload.reviewRoom?.currentRole, entry.role, `Expected open payload currentRole for ${entry.role}`);
+        assertEqual(openPayload.reviewRoom?.currentShareRole, entry.shareRole, `Expected open payload share role for ${entry.role}`);
+        assertEqual(openPayload.capabilities.canEdit, entry.canEdit, `Expected open canEdit for ${entry.role}`);
+        assertEqual(openPayload.capabilities.canComment, entry.canComment, `Expected open canComment for ${entry.role}`);
+
+        const titleResponse = await put(baseUrl, `/api/documents/${slug}/title`, {
+          title: `Permission Matrix ${entry.role}`,
+        }, {
+          'x-share-token': token,
+        });
+        assert(
+          entry.canEdit ? titleResponse.status === 200 : titleResponse.status === 403,
+          `Expected title status for ${entry.role}, got ${titleResponse.status}`,
+        );
+
+        const contentResponse = await put(baseUrl, `/api/documents/${slug}`, {
+          markdown: `# Review Room Permission Matrix\n\nUpdated by ${entry.role}.`,
+        }, {
+          'x-share-token': token,
+        });
+        assert(
+          entry.canEdit ? contentResponse.status === 200 : contentResponse.status === 403,
+          `Expected content edit status for ${entry.role}, got ${contentResponse.status}`,
+        );
+
+        const accessLinkResponse = await post(baseUrl, `/api/documents/${slug}/access-links`, {
+          role: 'viewer',
+        }, {
+          'x-share-token': token,
+        });
+        assert(
+          entry.canShare ? accessLinkResponse.status === 200 : accessLinkResponse.status === 403,
+          `Expected access-link status for ${entry.role}, got ${accessLinkResponse.status}`,
+        );
+
+        const commentResponse = await post(baseUrl, `/api/agent/${slug}/marks/comment`, {
+          quote: 'Permission Matrix',
+          by: `human:${entry.role}`,
+          text: `Comment from ${entry.role}`,
+        }, {
+          'x-share-token': token,
+        });
+        assert(
+          entry.canComment ? commentResponse.status === 200 : commentResponse.status === 401,
+          `Expected comment status for ${entry.role}, got ${commentResponse.status}`,
+        );
+
+        if (entry.canComment) {
+          const commentPayload = await commentResponse.json();
+          const markId = Object.keys(commentPayload.marks || {}).find((id) => commentPayload.marks[id]?.text === `Comment from ${entry.role}`);
+          assert(typeof markId === 'string' && markId.length > 0, `Expected created comment mark for ${entry.role}`);
+          const replyResponse = await post(baseUrl, `/api/agent/${slug}/marks/reply`, {
+            markId,
+            by: `human:${entry.role}`,
+            text: `Reply from ${entry.role}`,
+          }, {
+            'x-share-token': token,
+          });
+          assert(replyResponse.status === 200, `Expected reply status for ${entry.role}, got ${replyResponse.status}`);
+        }
+
+        const ownerComment = await post(baseUrl, `/api/agent/${slug}/marks/comment`, {
+          quote: 'Permission Matrix',
+          by: 'human:owner',
+          text: `Resolvable for ${entry.role}`,
+        }, {
+          'x-share-token': ownerToken,
+        });
+        assert(ownerComment.status === 200, `Expected owner setup comment for ${entry.role}, got ${ownerComment.status}`);
+        const ownerCommentPayload = await ownerComment.json();
+        const resolvableId = Object.keys(ownerCommentPayload.marks || {}).find((id) => ownerCommentPayload.marks[id]?.text === `Resolvable for ${entry.role}`);
+        assert(typeof resolvableId === 'string' && resolvableId.length > 0, `Expected resolvable mark for ${entry.role}`);
+        const resolveResponse = await post(baseUrl, `/api/agent/${slug}/marks/resolve`, {
+          markId: resolvableId,
+          by: `human:${entry.role}`,
+        }, {
+          'x-share-token': token,
+        });
+        assert(
+          entry.canComment ? resolveResponse.status === 200 : resolveResponse.status === 401,
+          `Expected resolve status for ${entry.role}, got ${resolveResponse.status}`,
+        );
+        const unresolveResponse = await post(baseUrl, `/api/agent/${slug}/marks/unresolve`, {
+          markId: resolvableId,
+          by: `human:${entry.role}`,
+        }, {
+          'x-share-token': token,
+        });
+        assert(
+          entry.canComment ? unresolveResponse.status === 200 : unresolveResponse.status === 401,
+          `Expected reopen status for ${entry.role}, got ${unresolveResponse.status}`,
+        );
+
+        const disconnectResponse = await post(baseUrl, `/api/agent/${slug}/presence/disconnect`, {
+          agentId: 'ai:permission-matrix-agent',
+        }, {
+          'x-share-token': token,
+        });
+        assert(
+          entry.canEdit ? disconnectResponse.status === 200 : disconnectResponse.status === 403,
+          `Expected agent disconnect status for ${entry.role}, got ${disconnectResponse.status}`,
+        );
+      }
     });
 
     await test('D2: Review Room register reports missing, unavailable, and permission states', async () => {
