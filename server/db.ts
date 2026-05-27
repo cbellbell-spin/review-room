@@ -270,6 +270,7 @@ export interface ReviewRoomDocumentRow {
   title: string;
   proof_slug: string;
   proof_doc_id: string | null;
+  source: 'created' | 'registered';
   owner_identity_id: string;
   created_by_identity_id: string;
   created_at: string;
@@ -971,6 +972,15 @@ function addMissingMarkTombstoneColumns(): void {
   markTombstonesTableInitialized = true;
 }
 
+function addMissingReviewRoomDocumentColumns(): void {
+  const d = getDb();
+  const columns = d.prepare('PRAGMA table_info(review_room_documents)').all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has('source')) {
+    d.exec('ALTER TABLE review_room_documents ADD COLUMN source TEXT NOT NULL DEFAULT \'created\'');
+  }
+}
+
 function backfillDocumentColumns(): void {
   const d = getDb();
   const rows = d.prepare(`
@@ -1392,6 +1402,7 @@ function initDatabase(): void {
       title TEXT NOT NULL,
       proof_slug TEXT NOT NULL UNIQUE,
       proof_doc_id TEXT,
+      source TEXT NOT NULL DEFAULT 'created',
       owner_identity_id TEXT NOT NULL,
       created_by_identity_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -1402,6 +1413,7 @@ function initDatabase(): void {
       FOREIGN KEY (created_by_identity_id) REFERENCES review_room_identities(id)
     )
   `);
+  addMissingReviewRoomDocumentColumns();
   d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_documents_workspace_updated ON review_room_documents(workspace_id, updated_at)');
   ensureReviewRoomDefaults(d);
 }
@@ -3873,6 +3885,7 @@ export function createReviewRoomDocumentRecord(input: {
   title: string;
   proofSlug: string;
   proofDocId?: string | null;
+  source?: 'created' | 'registered';
   ownerIdentityId?: string;
   createdByIdentityId?: string;
 }): ReviewRoomDocumentRow {
@@ -3884,15 +3897,16 @@ export function createReviewRoomDocumentRecord(input: {
   const id = randomUUID();
   getDb().prepare(`
     INSERT INTO review_room_documents (
-      id, workspace_id, title, proof_slug, proof_doc_id, owner_identity_id, created_by_identity_id, created_at, updated_at
+      id, workspace_id, title, proof_slug, proof_doc_id, source, owner_identity_id, created_by_identity_id, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     workspaceId,
     input.title,
     input.proofSlug,
     input.proofDocId ?? null,
+    input.source ?? 'created',
     ownerIdentityId,
     createdByIdentityId,
     now,
@@ -3911,6 +3925,7 @@ export function getReviewRoomDocumentByProofSlug(proofSlug: string): ReviewRoomD
       rr.title,
       rr.proof_slug,
       rr.proof_doc_id,
+      rr.source,
       rr.owner_identity_id,
       rr.created_by_identity_id,
       rr.created_at,
@@ -3936,6 +3951,7 @@ export function listReviewRoomDocuments(workspaceId: string = 'local', limit: nu
       rr.title,
       rr.proof_slug,
       rr.proof_doc_id,
+      rr.source,
       rr.owner_identity_id,
       rr.created_by_identity_id,
       rr.created_at,

@@ -6,10 +6,12 @@ import {
   createDocument,
   createDocumentAccessToken,
   createReviewRoomDocumentRecord,
+  getDocumentBySlug,
   getReviewRoomDocumentByProofSlug,
   getReviewRoomIdentity,
   listReviewRoomDocuments,
   listReviewRoomIdentities,
+  resolveDocumentAccess,
   type ReviewRoomDocumentRow,
 } from './db.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
@@ -32,6 +34,59 @@ function buildReviewRoomOpenPath(slug: string): string {
   return `/d/${encodeURIComponent(slug)}?rr=1`;
 }
 
+function appendTokenToPath(path: string, token: string | null): string {
+  if (!token) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+}
+
+function parseProofSlugInput(value: string): { slug: string; token: string | null } {
+  const trimmed = value.trim();
+  if (!trimmed) return { slug: '', token: null };
+  try {
+    const parsed = new URL(trimmed, 'http://review-room.local');
+    const match = parsed.pathname.match(/^\/d\/([^/?#]+)\/?$/);
+    if (match?.[1]) {
+      return {
+        slug: decodeURIComponent(match[1]).trim(),
+        token: parsed.searchParams.get('token'),
+      };
+    }
+  } catch {
+    // Treat unparsable input as a raw slug below.
+  }
+  return { slug: trimmed.replace(/^\/d\//, '').split(/[?#]/)[0]?.trim() ?? '', token: null };
+}
+
+function reviewRoomRegisterErrorForState(shareState: string): { status: number; code: string; error: string } | null {
+  if (shareState === 'ACTIVE') return null;
+  if (shareState === 'PAUSED') {
+    return {
+      status: 409,
+      code: 'DOCUMENT_PAUSED',
+      error: 'This Proof document is paused. Resume it before registering it in Review Room.',
+    };
+  }
+  if (shareState === 'REVOKED') {
+    return {
+      status: 403,
+      code: 'DOCUMENT_REVOKED',
+      error: 'This Proof document has been revoked and cannot be registered in Review Room.',
+    };
+  }
+  if (shareState === 'DELETED') {
+    return {
+      status: 410,
+      code: 'DOCUMENT_DELETED',
+      error: 'This Proof document was deleted and cannot be registered in Review Room.',
+    };
+  }
+  return {
+    status: 409,
+    code: 'DOCUMENT_UNAVAILABLE',
+    error: `This Proof document is not available for registration (${shareState}).`,
+  };
+}
+
 function serializeDocument(row: ReviewRoomDocumentRow): Record<string, unknown> {
   return {
     id: row.id,
@@ -39,6 +94,8 @@ function serializeDocument(row: ReviewRoomDocumentRow): Record<string, unknown> 
     title: row.title,
     proofSlug: row.proof_slug,
     proofDocId: row.proof_doc_id,
+    source: row.source,
+    sourceLabel: row.source === 'registered' ? 'Registered document' : 'Created in Review Room',
     shareState: row.share_state,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -107,7 +164,8 @@ function renderReviewRoomHome(): string {
       border-top: 1px solid #edf1e9;
     }
     .doc-title { font-weight: 650; margin-bottom: 5px; overflow-wrap: anywhere; }
-    .doc-meta { font-size: 13px; color: #718073; }
+    .doc-meta { font-size: 13px; color: #718073; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .doc-source { padding: 2px 7px; border-radius: 999px; background: #eef4e9; color: #4c5f4f; font-size: 12px; font-weight: 650; }
     .button {
       border: 1px solid #266854;
       background: #266854;
@@ -124,6 +182,7 @@ function renderReviewRoomHome(): string {
     }
     .button.secondary { background: #fff; color: #266854; }
     form { display: grid; gap: 12px; padding: 18px; }
+    form + form { border-top: 1px solid #edf1e9; }
     label { display: grid; gap: 6px; font-size: 13px; font-weight: 650; color: #374539; }
     input, textarea {
       width: 100%;
@@ -184,6 +243,18 @@ What should reviewers focus on?</textarea>
           <button class="button" type="submit">Create and open</button>
           <div id="form-error" class="error" role="alert"></div>
         </form>
+        <form id="register-form">
+          <label>
+            Existing Proof slug or URL
+            <input id="proof-slug" name="proofSlug" placeholder="abc123 or /d/abc123?token=..." autocomplete="off">
+          </label>
+          <label>
+            Access token
+            <input id="proof-token" name="token" placeholder="Optional if the URL includes one" autocomplete="off">
+          </label>
+          <button class="button secondary" type="submit">Register and open</button>
+          <div id="register-error" class="error" role="alert"></div>
+        </form>
         <div class="identity" id="identity"></div>
       </aside>
     </main>
@@ -192,7 +263,9 @@ What should reviewers focus on?</textarea>
     const documentsEl = document.getElementById('documents');
     const identityEl = document.getElementById('identity');
     const form = document.getElementById('create-form');
+    const registerForm = document.getElementById('register-form');
     const errorEl = document.getElementById('form-error');
+    const registerErrorEl = document.getElementById('register-error');
 
     function formatDate(value) {
       try { return new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }); }
@@ -206,9 +279,10 @@ What should reviewers focus on?</textarea>
       }
       documentsEl.innerHTML = docs.map((doc) => {
         const title = escapeHtml(doc.title || 'Untitled review');
+        const source = escapeHtml(doc.sourceLabel || (doc.source === 'registered' ? 'Registered document' : 'Created in Review Room'));
         const meta = escapeHtml('Proof slug ' + doc.proofSlug + ' · Updated ' + formatDate(doc.proofUpdatedAt || doc.updatedAt));
         return '<article class="doc-row">'
-          + '<div><div class="doc-title">' + title + '</div><div class="doc-meta">' + meta + '</div></div>'
+          + '<div><div class="doc-title">' + title + '</div><div class="doc-meta"><span class="doc-source">' + source + '</span><span>' + meta + '</span></div></div>'
           + '<a class="button secondary" href="' + encodeURI(doc.openPath) + '">Open</a>'
           + '</article>';
       }).join('');
@@ -258,9 +332,28 @@ What should reviewers focus on?</textarea>
       window.location.href = payload.openPath;
     });
 
+    registerForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      registerErrorEl.textContent = '';
+      const proofSlug = document.getElementById('proof-slug').value.trim();
+      const token = document.getElementById('proof-token').value.trim();
+      const response = await fetch('/review-room/api/documents/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proofSlug, token }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        registerErrorEl.textContent = payload.error || 'Could not register document.';
+        return;
+      }
+      window.location.href = payload.openPath || payload.document.openPath;
+    });
+
     load().catch((error) => {
       documentsEl.innerHTML = '<div class="empty">Could not load Review Room documents.</div>';
       errorEl.textContent = error.message || String(error);
+      registerErrorEl.textContent = error.message || String(error);
     });
   </script>
 </body>
@@ -338,15 +431,80 @@ reviewRoomRoutes.post('/review-room/api/documents', (req: Request, res: Response
 
 reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res: Response) => {
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
-  const proofSlug = typeof body.proofSlug === 'string' ? body.proofSlug.trim() : '';
+  const rawProofSlug = typeof body.proofSlug === 'string' ? body.proofSlug : '';
+  const parsed = parseProofSlugInput(rawProofSlug);
+  const proofSlug = parsed.slug;
+  const token = typeof body.token === 'string' && body.token.trim()
+    ? body.token.trim()
+    : parsed.token;
   if (!proofSlug) {
-    res.status(400).json({ success: false, error: 'proofSlug is required' });
+    res.status(400).json({ success: false, code: 'PROOF_SLUG_REQUIRED', error: 'proofSlug is required' });
     return;
   }
   const existing = getReviewRoomDocumentByProofSlug(proofSlug);
   if (existing) {
-    res.json({ success: true, document: serializeDocument(existing) });
+    res.json({
+      success: true,
+      alreadyRegistered: true,
+      document: serializeDocument(existing),
+      openPath: appendTokenToPath(buildReviewRoomOpenPath(proofSlug), token),
+    });
     return;
   }
-  res.status(404).json({ success: false, error: 'Registration for existing Proof documents is not wired yet.' });
+  const proofDoc = getDocumentBySlug(proofSlug);
+  if (!proofDoc) {
+    res.status(404).json({
+      success: false,
+      code: 'DOCUMENT_MISSING',
+      error: 'No Proof document exists for that slug.',
+    });
+    return;
+  }
+
+  if (token && !resolveDocumentAccess(proofSlug, token)) {
+    res.status(403).json({
+      success: false,
+      code: 'PERMISSION_DENIED',
+      error: 'The provided token does not grant access to that Proof document.',
+      shareState: proofDoc.share_state,
+    });
+    return;
+  }
+
+  const stateError = reviewRoomRegisterErrorForState(proofDoc.share_state);
+  if (stateError) {
+    res.status(stateError.status).json({
+      success: false,
+      code: stateError.code,
+      error: stateError.error,
+      shareState: proofDoc.share_state,
+    });
+    return;
+  }
+
+  const reviewRoomDocument = createReviewRoomDocumentRecord({
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    title: proofDoc.title?.trim() || 'Untitled review',
+    proofSlug: proofDoc.slug,
+    proofDocId: proofDoc.doc_id,
+    source: 'registered',
+    ownerIdentityId: DEFAULT_HUMAN_ID,
+    createdByIdentityId: DEFAULT_HUMAN_ID,
+  });
+  addEvent(proofDoc.slug, 'review_room.document.registered', {
+    title: reviewRoomDocument.title,
+    reviewRoom: true,
+  }, `review-room:${DEFAULT_HUMAN_ID}`);
+
+  res.status(201).json({
+    success: true,
+    document: serializeDocument(reviewRoomDocument),
+    openPath: appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), token),
+    proof: {
+      slug: proofDoc.slug,
+      docId: proofDoc.doc_id,
+      shareState: proofDoc.share_state,
+      statePath: `/documents/${encodeURIComponent(proofDoc.slug)}/state`,
+    },
+  });
 });

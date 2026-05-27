@@ -585,6 +585,8 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(dashboard.status === 200, `Expected dashboard status 200, got ${dashboard.status}`);
       assertIncludes(dashboard.body, 'Review Room');
       assertIncludes(dashboard.body, '/review-room/api/documents');
+      assertIncludes(dashboard.body, 'id="register-form"', 'Expected dashboard to include existing document registration form');
+      assertIncludes(dashboard.body, '/review-room/api/documents/register', 'Expected dashboard to call register API');
 
       const identity = await get(baseUrl, '/review-room/api/identity');
       assert(identity.status === 200, `Expected identity status 200, got ${identity.status}`);
@@ -606,6 +608,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(typeof created.document?.id === 'string' && created.document.id.length > 0, 'Expected Review Room document id');
       assert(typeof created.document?.proofSlug === 'string' && created.document.proofSlug.length > 0, 'Expected Proof slug');
       assert(typeof created.document?.proofDocId === 'string' && created.document.proofDocId.length > 0, 'Expected Proof doc id');
+      assertEqual(created.document?.source, 'created', 'Expected Review Room-created documents to expose source=created');
       assert(String(created.openPath).includes(`/d/${created.document.proofSlug}`), 'Expected open path to target Proof editor');
       assert(String(created.openPath).includes('rr=1'), 'Expected Review Room editor flag');
 
@@ -623,6 +626,106 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(stateResponse.status === 200, `Expected state status 200, got ${stateResponse.status}`);
       const state = await stateResponse.json();
       assert(String(state.markdown).includes('Draft body.'), 'Expected underlying Proof document content');
+    });
+
+    await test('D2: Review Room registers an existing active Proof document', async () => {
+      const proofResponse = await postNoClientHeaders(baseUrl, '/documents', {
+        title: 'Existing Proof Doc',
+        markdown: '# Existing Proof Doc\n\nAlready shared.',
+      });
+      assert(proofResponse.status === 200, `Expected Proof create status 200, got ${proofResponse.status}`);
+      const proof = await proofResponse.json();
+      const registerResponse = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: `${baseUrl}/d/${proof.slug}?token=${encodeURIComponent(proof.accessToken)}`,
+      });
+      assert(registerResponse.status === 201, `Expected register status 201, got ${registerResponse.status}`);
+      const registered = await registerResponse.json();
+      assertEqual(registered.success, true);
+      assertEqual(registered.document?.proofSlug, proof.slug, 'Expected registered document to point at Proof slug');
+      assertEqual(registered.document?.source, 'registered', 'Expected registered document source');
+      assertEqual(registered.document?.sourceLabel, 'Registered document', 'Expected registered source label');
+      assert(String(registered.openPath).includes('rr=1'), 'Expected registered open path to preserve Review Room flag');
+      assert(String(registered.openPath).includes(`token=${encodeURIComponent(proof.accessToken)}`), 'Expected registered open path to preserve pasted token');
+
+      const listResponse = await get(baseUrl, '/review-room/api/documents');
+      assert(listResponse.status === 200, `Expected Review Room list status 200, got ${listResponse.status}`);
+      const listed = await listResponse.json();
+      const listedDoc = listed.documents.find((entry: { proofSlug?: string }) => entry.proofSlug === proof.slug);
+      assert(listedDoc, 'Expected registered document in Review Room list');
+      assertEqual(listedDoc.source, 'registered', 'Expected list to distinguish registered docs');
+
+      const duplicateResponse = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: proof.slug,
+      });
+      assert(duplicateResponse.status === 200, `Expected duplicate register status 200, got ${duplicateResponse.status}`);
+      const duplicate = await duplicateResponse.json();
+      assertEqual(duplicate.alreadyRegistered, true, 'Expected duplicate registration to be idempotent');
+      assertEqual(duplicate.document?.id, registered.document?.id, 'Expected duplicate registration to return existing record');
+    });
+
+    await test('D2: Review Room register reports missing, unavailable, and permission states', async () => {
+      const missing = await post(baseUrl, '/review-room/api/documents/register', { proofSlug: 'does-not-exist' });
+      assert(missing.status === 404, `Expected missing register status 404, got ${missing.status}`);
+      assertEqual((await missing.json()).code, 'DOCUMENT_MISSING');
+
+      const invalidProofResponse = await postNoClientHeaders(baseUrl, '/documents', {
+        title: 'Invalid token target',
+        markdown: '# Invalid token target',
+      });
+      const invalidProof = await invalidProofResponse.json();
+      const invalidToken = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: invalidProof.slug,
+        token: 'not-a-real-token',
+      });
+      assert(invalidToken.status === 403, `Expected invalid-token register status 403, got ${invalidToken.status}`);
+      assertEqual((await invalidToken.json()).code, 'PERMISSION_DENIED');
+
+      async function createAndSetState(
+        title: string,
+        statePath: 'pause' | 'revoke' | 'delete',
+      ): Promise<{ slug: string; payload: any }> {
+        const createdResponse = await postNoClientHeaders(baseUrl, '/documents', {
+          title,
+          markdown: `# ${title}`,
+        });
+        assert(createdResponse.status === 200, `Expected create status 200 for ${title}, got ${createdResponse.status}`);
+        const created = await createdResponse.json();
+        const stateResponse = await post(baseUrl, `/documents/${created.slug}/${statePath}`, {
+          ownerSecret: created.ownerSecret,
+        });
+        assert(stateResponse.status === 200, `Expected ${statePath} status 200, got ${stateResponse.status}`);
+        return { slug: created.slug, payload: created };
+      }
+
+      const paused = await createAndSetState('Paused register target', 'pause');
+      const pausedRegister = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: paused.slug,
+        token: paused.payload.ownerSecret,
+      });
+      assert(pausedRegister.status === 409, `Expected paused register status 409, got ${pausedRegister.status}`);
+      const pausedPayload = await pausedRegister.json();
+      assertEqual(pausedPayload.code, 'DOCUMENT_PAUSED');
+      assertEqual(pausedPayload.shareState, 'PAUSED');
+
+      const revoked = await createAndSetState('Revoked register target', 'revoke');
+      const revokedRegister = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: revoked.slug,
+        token: revoked.payload.ownerSecret,
+      });
+      assert(revokedRegister.status === 403, `Expected revoked register status 403, got ${revokedRegister.status}`);
+      const revokedPayload = await revokedRegister.json();
+      assertEqual(revokedPayload.code, 'DOCUMENT_REVOKED');
+      assertEqual(revokedPayload.shareState, 'REVOKED');
+
+      const deleted = await createAndSetState('Deleted register target', 'delete');
+      const deletedRegister = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: deleted.slug,
+        token: deleted.payload.ownerSecret,
+      });
+      assert(deletedRegister.status === 410, `Expected deleted register status 410, got ${deletedRegister.status}`);
+      const deletedPayload = await deletedRegister.json();
+      assertEqual(deletedPayload.code, 'DOCUMENT_DELETED');
+      assertEqual(deletedPayload.shareState, 'DELETED');
     });
 
     await test('D2: POST /api/documents in warn mode returns deprecation headers + metadata', async () => {
