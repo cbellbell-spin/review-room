@@ -98,7 +98,7 @@ function formatExternalAgentName(agentId: string): string {
   const known: Record<string, string> = {
     'claude-code': 'Claude Code',
     'claude': 'Claude',
-    'proof-agent': 'Proof Agent',
+    'proof-agent': 'Review Room Agent',
   };
   if (known[agentId]) return known[agentId];
   // Convert kebab-case/snake_case to Title Case

@@ -155,14 +155,14 @@ export class FileClient {
   private updateTitleSaved(): void {
     const fileName = this.getFileName();
     if (fileName) {
-      document.title = `${fileName} - Proof Editor`;
+      document.title = `${fileName} - Review Room`;
     }
   }
 
   private updateTitleUnsaved(): void {
     const fileName = this.getFileName();
     if (fileName) {
-      document.title = `● ${fileName} - Proof Editor`;
+      document.title = `● ${fileName} - Review Room`;
     }
   }
 
@@ -172,9 +172,9 @@ export class FileClient {
   setInitialTitle(): void {
     const fileName = this.getFileName();
     if (fileName) {
-      document.title = `${fileName} - Proof Editor`;
+      document.title = `${fileName} - Review Room`;
     } else {
-      document.title = 'Proof Editor';
+      document.title = 'Review Room';
     }
   }
 }

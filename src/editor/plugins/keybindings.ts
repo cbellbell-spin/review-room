@@ -1,9 +1,9 @@
 /**
- * Keybindings Plugin for Proof
+ * Keybindings plugin for Review Room
  *
  * Provides keyboard shortcuts for agent invocation:
  * - Cmd+Shift+P: Invoke agent on selection (opens input dialog)
- * - Cmd+Shift+K: Add comment for Proof to review later
+ * - Cmd+Shift+K: Add comment for Review Room to review later
  */
 
 import { $prose } from '@milkdown/kit/utils';
@@ -108,7 +108,7 @@ function invokeAgentCommand(
 }
 
 /**
- * Add comment for Proof to review (Cmd+Shift+K)
+ * Add comment for Review Room to review (Cmd+Shift+K)
  * Tags the selection with a comment for the agent to review later
  */
 function addProofCommentCommand(
@@ -126,9 +126,9 @@ function addProofCommentCommand(
     return false;
   }
 
-  // Create comment mark tagged for Proof review
+  // Create a comment mark tagged for Review Room review.
   const actor = getCurrentActor();
-  addComment(view, selectedText, actor, '[For @proof to review]', { from, to });
+  addComment(view, selectedText, actor, '[For Review Room to review]', { from, to });
 
   return true;
 }

@@ -1,5 +1,5 @@
 /**
- * Response Handler for Proof Agent
+ * Response handler for Review Room Agent
  *
  * Processes agent responses and:
  * - Displays thinking chain in UI
@@ -56,7 +56,7 @@ export class ResponseHandler {
   private thinkingChain: ThinkingChainEvent[] = [];
   private isProcessing = false;
 
-  private static readonly AGENT_ACTOR = 'ai:Proof';
+  private static readonly AGENT_ACTOR = 'ai:review-room';
 
   constructor() {}
 

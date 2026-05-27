@@ -63,27 +63,27 @@ function reviewRoomRegisterErrorForState(shareState: string): { status: number; 
     return {
       status: 409,
       code: 'DOCUMENT_PAUSED',
-      error: 'This Proof document is paused. Resume it before registering it in Review Room.',
+      error: 'This document is paused. Resume it before registering it in Review Room.',
     };
   }
   if (shareState === 'REVOKED') {
     return {
       status: 403,
       code: 'DOCUMENT_REVOKED',
-      error: 'This Proof document has been revoked and cannot be registered in Review Room.',
+      error: 'This document has been revoked and cannot be registered in Review Room.',
     };
   }
   if (shareState === 'DELETED') {
     return {
       status: 410,
       code: 'DOCUMENT_DELETED',
-      error: 'This Proof document was deleted and cannot be registered in Review Room.',
+      error: 'This document was deleted and cannot be registered in Review Room.',
     };
   }
   return {
     status: 409,
     code: 'DOCUMENT_UNAVAILABLE',
-    error: `This Proof document is not available for registration (${shareState}).`,
+    error: `This document is not available for registration (${shareState}).`,
   };
 }
 
@@ -218,7 +218,7 @@ function renderReviewRoomHome(): string {
       <section class="panel" aria-labelledby="docs-heading">
         <div class="panel-header">
           <h1 id="docs-heading">Documents</h1>
-          <p>Drafts backed by Proof documents, with Review Room metadata layered around them.</p>
+          <p>Drafts and registered documents gathered into one Review Room workspace.</p>
         </div>
         <div id="documents" class="doc-list" aria-live="polite">
           <div class="empty">Loading documents...</div>
@@ -227,7 +227,7 @@ function renderReviewRoomHome(): string {
       <aside class="panel" aria-labelledby="create-heading">
         <div class="panel-header">
           <h1 id="create-heading">New Review</h1>
-          <p>Create a Markdown draft and open it in the existing Proof editor.</p>
+          <p>Create a Markdown draft and open it in the Review Room editor.</p>
         </div>
         <form id="create-form">
           <label>
@@ -245,7 +245,7 @@ What should reviewers focus on?</textarea>
         </form>
         <form id="register-form">
           <label>
-            Existing Proof slug or URL
+            Existing document slug or URL
             <input id="proof-slug" name="proofSlug" placeholder="abc123 or /d/abc123?token=..." autocomplete="off">
           </label>
           <label>
@@ -280,7 +280,7 @@ What should reviewers focus on?</textarea>
       documentsEl.innerHTML = docs.map((doc) => {
         const title = escapeHtml(doc.title || 'Untitled review');
         const source = escapeHtml(doc.sourceLabel || (doc.source === 'registered' ? 'Registered document' : 'Created in Review Room'));
-        const meta = escapeHtml('Proof slug ' + doc.proofSlug + ' · Updated ' + formatDate(doc.proofUpdatedAt || doc.updatedAt));
+        const meta = escapeHtml('Slug ' + doc.proofSlug + ' · Updated ' + formatDate(doc.proofUpdatedAt || doc.updatedAt));
         return '<article class="doc-row">'
           + '<div><div class="doc-title">' + title + '</div><div class="doc-meta"><span class="doc-source">' + source + '</span><span>' + meta + '</span></div></div>'
           + '<a class="button secondary" href="' + encodeURI(doc.openPath) + '">Open</a>'
@@ -438,7 +438,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res:
     ? body.token.trim()
     : parsed.token;
   if (!proofSlug) {
-    res.status(400).json({ success: false, code: 'PROOF_SLUG_REQUIRED', error: 'proofSlug is required' });
+    res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
     return;
   }
   const existing = getReviewRoomDocumentByProofSlug(proofSlug);
@@ -456,7 +456,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res:
     res.status(404).json({
       success: false,
       code: 'DOCUMENT_MISSING',
-      error: 'No Proof document exists for that slug.',
+      error: 'No document exists for that slug.',
     });
     return;
   }
@@ -465,7 +465,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res:
     res.status(403).json({
       success: false,
       code: 'PERMISSION_DENIED',
-      error: 'The provided token does not grant access to that Proof document.',
+      error: 'The provided token does not grant access to that document.',
       shareState: proofDoc.share_state,
     });
     return;

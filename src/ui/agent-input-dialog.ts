@@ -39,14 +39,14 @@ function createDialogElement(): HTMLElement {
   dialog.innerHTML = `
     <div class="agent-input-dialog-content">
       <div class="agent-input-dialog-header">
-        <span class="agent-input-dialog-title">Ask Proof</span>
+        <span class="agent-input-dialog-title">Ask Review Room</span>
         <button class="agent-input-dialog-close" aria-label="Close">&times;</button>
       </div>
       <div class="agent-input-dialog-body">
         <div class="agent-input-dialog-selection"></div>
         <textarea
           class="agent-input-dialog-textarea"
-          placeholder="What would you like Proof to do?"
+          placeholder="What would you like Review Room to do?"
           rows="3"
         ></textarea>
       </div>

@@ -194,7 +194,7 @@ function injectShareHtmlDiscoveryTags(
   const opsApi = proofSdkPaths.ops;
   const fullMetaTags = renderShareMetaTags(preview);
   const pageTitle = fullMetaTags.match(/<title>[\s\S]*?<\/title>/i)?.[0]
-    ?? `<title>${escapeHtml(`${preview.title} | Proof`)}</title>`;
+    ?? `<title>${escapeHtml(`${preview.title} | Review Room`)}</title>`;
   const metaTags = [
     fullMetaTags.replace(/<title>[\s\S]*?<\/title>\n?/i, ''),
     `<meta name="agent-api" content="${escapeHtml(agentApi)}">`,
@@ -202,8 +202,8 @@ function injectShareHtmlDiscoveryTags(
   ].join('\n');
   const configScript = buildShareRuntimeConfigScript(slug, shareToken, reviewRoom);
 
-  const instructionMarkup = `<h2>Proof Shared Document</h2>
-  <p>This is a collaborative document on Proof. To read or edit it programmatically:</p>
+  const instructionMarkup = `<h2>Review Room Shared Document</h2>
+  <p>This is a collaborative document in Review Room. To read or edit it programmatically:</p>
   <ul>
     <li>Fetch this URL with <code>Accept: application/json</code> to get content + API links.</li>
     <li>Fetch this URL with <code>Accept: text/markdown</code> to get raw markdown.</li>
@@ -224,7 +224,7 @@ function injectShareHtmlDiscoveryTags(
   const agentDiv = `<div id="agent-instructions" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:pre-wrap;" aria-hidden="true">
   <h3>Document Content</h3>
   <pre>${escapeHtml(markdown)}</pre>
-  <h2>Proof Shared Document</h2>
+  <h2>Review Room Shared Document</h2>
   ${instructionMarkup}
 </div>`;
 
@@ -302,8 +302,8 @@ function renderAgentFriendlyHtml(
   ${buildShareRuntimeConfigScript(slug, token)}
 </head>
 <body>
-  <h1>Proof Shared Document</h1>
-  <p>This is a collaborative document in Proof.</p>
+  <h1>Review Room Shared Document</h1>
+  <p>This is a collaborative document in Review Room.</p>
 
   <h2>Document Content</h2>
   <pre>${escapeHtml(markdown)}</pre>

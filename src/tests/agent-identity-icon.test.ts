@@ -37,7 +37,7 @@ function run(): void {
   assert(resolveAgentFamily({ avatar: '/assets/agent-icons/mint.png' }) === 'mint', 'Expected PNG avatar URL to resolve the mint icon');
   assert(resolveAgentFamily({ avatar: 'https://cdn.example.com/proof-agent-yellow.svg' }) === 'yellow', 'Expected avatar URL to resolve the yellow icon');
 
-  assert(isAgentIdentity({ name: 'Proof Agent' }) === true, 'Expected Proof Agent to be treated as an agent');
+  assert(isAgentIdentity({ name: 'Review Room Agent' }) === true, 'Expected Review Room Agent to be treated as an agent');
   assert(isAgentIdentity({ name: 'Dan Shipper' }) === false, 'Expected a human name not to be treated as an agent');
   assert(isAgentIdentity({ avatar: '/assets/agent-icons/red.svg' }) === true, 'Expected assigned icon avatars to be treated as agents');
 

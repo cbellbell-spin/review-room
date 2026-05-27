@@ -1,10 +1,10 @@
 /**
- * Context Menu for Proof
+ * Context menu for Review Room
  *
  * Provides right-click menu with agent options:
- * - Ask Proof... (opens input dialog)
+ * - Ask Review Room... (opens input dialog)
  * - Quick Actions submenu
- * - Add Comment for Proof
+ * - Add Comment for Review Room
  */
 
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -53,7 +53,7 @@ function createMenuElement(): HTMLElement {
     <div class="proof-context-menu-items">
       <button class="proof-context-menu-item" data-action="ask-proof">
         <span class="proof-context-menu-icon">💬</span>
-        <span>Ask Proof...</span>
+        <span>Ask Review Room...</span>
         <span class="proof-context-menu-shortcut">⇧⌘P</span>
       </button>
       <div class="proof-context-menu-item has-submenu" data-action="quick-actions">
@@ -75,7 +75,7 @@ function createMenuElement(): HTMLElement {
       <div class="proof-context-menu-separator"></div>
       <button class="proof-context-menu-item" data-action="add-comment">
         <span class="proof-context-menu-icon">📝</span>
-        <span>Add Comment for Proof</span>
+        <span>Add Comment for Review Room</span>
         <span class="proof-context-menu-shortcut">⇧⌘K</span>
       </button>
     </div>

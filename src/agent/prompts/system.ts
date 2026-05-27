@@ -1,5 +1,5 @@
 /**
- * System Prompts for Proof Agent
+ * System prompts for Review Room Agent
  *
  * Defines the agent's role, capabilities, and behavior.
  */
@@ -10,7 +10,7 @@ import type { AgentTask } from '../types';
 // Base System Prompt
 // ============================================================================
 
-const BASE_SYSTEM_PROMPT = `You are an AI assistant embedded in Proof, a markdown document editor with authorship tracking.
+const BASE_SYSTEM_PROMPT = `You are an AI assistant embedded in Review Room, a markdown document editor with authorship tracking.
 
 ## Your Role
 

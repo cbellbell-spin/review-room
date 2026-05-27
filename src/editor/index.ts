@@ -1412,8 +1412,7 @@ class ProofEditorImpl implements ProofEditor {
       }
 
       // Set title
-      const productName = this.isReviewRoomRuntime() ? 'Review Room' : 'Proof';
-      document.title = doc.title ? `${doc.title} - ${productName}` : `Shared Document - ${productName}`;
+      document.title = doc.title ? `${doc.title} - Review Room` : 'Shared Document - Review Room';
       this.shareDocTitle = typeof doc.title === 'string' && doc.title.trim().length > 0
         ? doc.title.trim()
         : 'Untitled';
@@ -3376,7 +3375,7 @@ class ProofEditorImpl implements ProofEditor {
     const normalized = typeof title === 'string' ? title.trim() : '';
     const nextTitle = normalized.length > 0 ? normalized : 'Untitled';
     this.shareDocTitle = nextTitle;
-    document.title = `${nextTitle} - ${this.isReviewRoomRuntime() ? 'Review Room' : 'Proof'}`;
+    document.title = `${nextTitle} - Review Room`;
     this.updateShareBannerTitleDisplay();
   }
 
@@ -3501,11 +3500,9 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     const wordmark = document.createElement('a');
-    wordmark.textContent = 'Proof';
-    wordmark.href = 'https://www.proofeditor.ai';
-    wordmark.target = '_blank';
-    wordmark.rel = 'noopener';
-    wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:-0.2px;flex-shrink:0;text-decoration:none;';
+    wordmark.textContent = 'Review Room';
+    wordmark.href = '/review-room';
+    wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:0;flex-shrink:0;text-decoration:none;';
 
     const separator = document.createElement('span');
     separator.className = 'share-pill-sep';
@@ -3983,7 +3980,7 @@ class ProofEditorImpl implements ProofEditor {
 
     if (!slug) {
       return [
-        'Collaborate with me on this Proof doc.',
+        'Collaborate with me on this Review Room document.',
         '',
         `Doc: ${shareUrl}`,
       ].join('\n');
@@ -3996,7 +3993,7 @@ class ProofEditorImpl implements ProofEditor {
     const editUrl = `${origin}/api/agent/${encodedSlug}/edit`;
 
     return [
-      'Collaborate with me on this Proof doc.',
+      'Collaborate with me on this Review Room document.',
       '',
       `Doc: ${shareUrl}`,
       '',

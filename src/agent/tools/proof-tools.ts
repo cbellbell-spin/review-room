@@ -1,7 +1,7 @@
 /**
- * Proof Document Tools
+ * Review Room document tools
  *
- * Tools for interacting with the Proof document editor.
+ * Tools for interacting with the Review Room document editor.
  * These tools wrap the existing functionality and bridge to the editor.
  */
 
@@ -32,7 +32,7 @@ let statusCallback: ((message: string) => void) | null = null;
 
 export function setEditorView(view: EditorView): void {
   editorView = view;
-  console.log('[ProofTools] Editor view set');
+  console.log('[ReviewRoomTools] Editor view set');
 }
 
 export function getEditorView(): EditorView | null {
@@ -48,7 +48,7 @@ export function setStatusCallback(cb: (message: string) => void): void {
 // ============================================================================
 
 /**
- * Get the Proof document tools
+ * Get the Review Room document tools.
  */
 export function getProofTools(context: DocumentContext): AgentTool[] {
   return [
@@ -394,7 +394,7 @@ export function getProofTools(context: DocumentContext): AgentTool[] {
 // Editor Bridge Functions
 // ============================================================================
 
-const AGENT_ACTOR = 'ai:Proof';
+const AGENT_ACTOR = 'ai:review-room';
 interface SelectorContext {
   cursor?: number;
   selection?: SelectorRange | null;
@@ -539,7 +539,7 @@ async function performInsert(
   const tr = editorView.state.tr.insertText(text, pos);
   editorView.dispatch(tr);
 
-  console.log('[ProofTools] Inserted text at position', pos);
+  console.log('[ReviewRoomTools] Inserted text at position', pos);
   return {
     success: true,
     position: { from: pos, to: pos },
@@ -571,7 +571,7 @@ async function performReplace(
   );
   editorView.dispatch(tr);
 
-  console.log('[ProofTools] Replaced text at range', range);
+  console.log('[ReviewRoomTools] Replaced text at range', range);
   return {
     success: true,
     selector,
@@ -596,7 +596,7 @@ async function performDelete(selector: string, context: DocumentContext): Promis
   const tr = editorView.state.tr.delete(range.from, range.to);
   editorView.dispatch(tr);
 
-  console.log('[ProofTools] Deleted text at range', range);
+  console.log('[ReviewRoomTools] Deleted text at range', range);
   return {
     success: true,
     selector,
@@ -611,10 +611,10 @@ async function createSuggestion(
   selector: string | undefined,
   context: DocumentContext
 ): Promise<unknown> {
-  console.log('[ProofTools] createSuggestion called:', { type, text: text?.substring(0, 50), selector });
+  console.log('[ReviewRoomTools] createSuggestion called:', { type, text: text?.substring(0, 50), selector });
 
   if (!editorView) {
-    console.error('[ProofTools] Editor view is null!');
+    console.error('[ReviewRoomTools] Editor view is null!');
     return { success: false, error: 'Editor not available' };
   }
 
@@ -645,12 +645,12 @@ async function createSuggestion(
         return { success: false, error: 'Insert requires text' };
       }
       mark = suggestInsert(editorView, quote, AGENT_ACTOR, text, range);
-      console.log('[ProofTools] Created insert suggestion', mark?.id);
+      console.log('[ReviewRoomTools] Created insert suggestion', mark?.id);
       break;
 
     case 'delete':
       mark = suggestDelete(editorView, quote, AGENT_ACTOR, range);
-      console.log('[ProofTools] Created delete suggestion', mark?.id);
+      console.log('[ReviewRoomTools] Created delete suggestion', mark?.id);
       break;
 
     case 'replace':
@@ -658,7 +658,7 @@ async function createSuggestion(
         return { success: false, error: 'Replace requires text' };
       }
       mark = suggestReplace(editorView, quote, AGENT_ACTOR, text, range);
-      console.log('[ProofTools] Created replace suggestion', mark?.id);
+      console.log('[ReviewRoomTools] Created replace suggestion', mark?.id);
       break;
   }
 
@@ -703,7 +703,7 @@ async function addComment(
   const quote = getTextForRange(editorView.state.doc, range);
   const mark = addCommentMark(editorView, quote, AGENT_ACTOR, text, range);
 
-  console.log('[ProofTools] Added comment', mark.id);
+  console.log('[ReviewRoomTools] Added comment', mark.id);
   return {
     success: true,
     commentId: mark.id,
@@ -723,7 +723,7 @@ async function replyToComment(commentId: string, text: string): Promise<unknown>
     return { success: false, error: `Comment not found: ${commentId}` };
   }
 
-  console.log('[ProofTools] Replied to comment', commentId, 'with', mark.id);
+  console.log('[ReviewRoomTools] Replied to comment', commentId, 'with', mark.id);
   return {
     success: true,
     commentId,
@@ -742,7 +742,7 @@ async function resolveComment(commentId: string): Promise<unknown> {
     return { success: false, error: `Comment not found: ${commentId}` };
   }
 
-  console.log('[ProofTools] Resolved comment', commentId);
+  console.log('[ReviewRoomTools] Resolved comment', commentId);
   return { success: true, commentId, resolved: true };
 }
 

@@ -1,5 +1,5 @@
 /**
- * Type definitions for Proof Agent
+ * Type definitions for Review Room Agent
  */
 
 // ============================================================================

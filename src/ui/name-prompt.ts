@@ -65,8 +65,8 @@ export function promptForName(): Promise<string> {
     `;
 
     const wordmark = document.createElement('div');
-    wordmark.textContent = 'Proof';
-    wordmark.style.cssText = 'font-size: 15px; font-weight: 600; color: #333; letter-spacing: -0.3px; margin-bottom: 20px;';
+    wordmark.textContent = 'Review Room';
+    wordmark.style.cssText = 'font-size: 15px; font-weight: 600; color: #333; letter-spacing: 0; margin-bottom: 20px;';
 
     const title = document.createElement('h2');
     title.textContent = 'Choose a display name';

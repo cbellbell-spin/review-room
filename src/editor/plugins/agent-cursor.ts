@@ -611,7 +611,7 @@ export function showThinkingPanel(onCancel?: () => void): void {
     <div class="agent-thinking-header">
       <div class="agent-thinking-title">
         <span class="agent-thinking-indicator"></span>
-        <span>Proof is thinking...</span>
+        <span>Review Room is thinking...</span>
       </div>
       <button class="agent-thinking-cancel">Cancel</button>
     </div>
@@ -692,7 +692,7 @@ export function setThinkingAction(action: string | null): void {
 
   const title = thinkingPanel.querySelector('.agent-thinking-title span:last-child');
   if (title) {
-    title.textContent = action || 'Proof is thinking...';
+    title.textContent = action || 'Review Room is thinking...';
   }
 }
 

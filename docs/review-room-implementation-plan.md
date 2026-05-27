@@ -10,7 +10,7 @@ Phase 1 is complete:
 
 - Review Room dashboard at `/review-room`.
 - Local Review Room workspace, identities, and document registry.
-- Create, list, and open Review Room documents backed by Proof document slugs.
+- Create, list, and open Review Room documents backed by reusable document slugs.
 - Review Room editor mode with document opening, agent comments, replies, resolve, and reopen.
 - Resolved comments are discoverable from the comments drawer.
 - Basic viewer/commenter/editor permission behavior is covered.
@@ -19,7 +19,7 @@ Phase 1 is complete:
 
 ## Product Direction
 
-Review Room should own the page chrome. The generic Proof shared-document pill remains useful for standalone Proof SDK share pages, but it should not compete with the Review Room navigation when a document is opened from Review Room.
+Review Room should own the page chrome. Standalone shared-document controls remain useful for direct document links, but they should use Review Room branding and stay out of the way when a document is opened from Review Room.
 
 Target Review Room document header:
 
@@ -27,7 +27,7 @@ Target Review Room document header:
 Review Room | Documents | Agent API | Document title | Saved | + Add agent | Share
 ```
 
-The Proof/editor pill should be folded into the Review Room nav/header for Review Room mode.
+The standalone editor pill should be folded into the Review Room nav/header for Review Room mode.
 
 ## Next Slice: Unified Review Room Header
 
@@ -51,7 +51,7 @@ Work items:
 
 ### Existing Document Opening
 
-- Add a first-class flow for registering/opening an existing Proof document in Review Room.
+- Add a first-class flow for registering/opening an existing document in Review Room.
 - Make the dashboard distinguish newly-created drafts from registered documents.
 - Show helpful error states when a slug is missing, revoked, paused, or permission-denied.
 
@@ -90,3 +90,5 @@ npx tsx src/tests/mobile-comment-ux.test.ts
 ```
 
 For visible UI work, also verify in the browser against `http://localhost:4000/review-room` and an opened Review Room document URL such as `/d/:slug?rr=1`.
+
+Use [Review Room manual test cases](./review-room-manual-test-cases.md) for dashboard, create/open, existing-document registration, unavailable-state, and responsive header checks.

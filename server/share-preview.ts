@@ -271,13 +271,13 @@ function truncate(value: string, maxLength: number): string {
 function buildUnavailableDescription(shareState: string): string {
   switch (shareState) {
     case 'PAUSED':
-      return 'The shared Proof document is temporarily unavailable';
+      return 'The shared document is temporarily unavailable';
     case 'REVOKED':
-      return 'The shared Proof document is no longer accessible';
+      return 'The shared document is no longer accessible';
     case 'DELETED':
-      return 'The shared Proof document has been deleted';
+      return 'The shared document has been deleted';
     default:
-      return 'The shared Proof document could not be found';
+      return 'The shared document could not be found';
   }
 }
 
@@ -318,7 +318,7 @@ export function buildSharePreviewModel(input: {
   const title = isUnavailable ? UNAVAILABLE_TITLE : extractTitle(markdown, input.doc?.title);
   const excerpt = isUnavailable ? null : extractExcerpt(markdown, title);
   const bodyText = truncate(
-    isUnavailable ? buildUnavailableDescription(shareState) : (excerpt ?? 'Shared on Proof'),
+    isUnavailable ? buildUnavailableDescription(shareState) : (excerpt ?? 'Shared on Review Room'),
     isUnavailable ? 120 : 220,
   );
   const description = truncate(bodyText, 160);
@@ -329,7 +329,7 @@ export function buildSharePreviewModel(input: {
   const imageUrl = `${publicOrigin}/og/share/${encodeURIComponent(input.slug)}.png?v=${encodeURIComponent(revisionTag)}&t=${encodeURIComponent(SHARE_OG_TEMPLATE_VERSION)}`;
   const imageAlt = bodyText
     ? `${title}. ${truncate(bodyText, 120)}`
-    : `${title} on Proof`;
+    : `${title} on Review Room`;
   const face = selectFaceVariant(input.slug, shareState);
 
   return {
@@ -355,7 +355,7 @@ export function buildSharePreviewModel(input: {
 }
 
 export function renderShareMetaTags(model: SharePreviewModel): string {
-  const title = escapeHtml(`${model.title} | Proof`);
+  const title = escapeHtml(`${model.title} | Review Room`);
   const description = escapeHtml(model.description);
   const canonicalUrl = escapeHtml(model.canonicalUrl);
   const imageUrl = escapeHtml(model.imageUrl);
@@ -369,7 +369,7 @@ export function renderShareMetaTags(model: SharePreviewModel): string {
     `<meta name="description" content="${description}">`,
     `<link rel="canonical" href="${canonicalUrl}">`,
     '<meta property="og:type" content="website">',
-    '<meta property="og:site_name" content="Proof">',
+    '<meta property="og:site_name" content="Review Room">',
     `<meta property="og:title" content="${escapeHtml(model.title)}">`,
     `<meta property="og:description" content="${description}">`,
     `<meta property="og:url" content="${canonicalUrl}">`,
@@ -605,7 +605,7 @@ function buildOgTree(model: SharePreviewModel): PreviewElement {
       },
     }),
     element('img', {
-      alt: 'Proof',
+      alt: 'Review Room',
       src: LOGO_DATA_URL,
       width: 353.008,
       height: 159.021,

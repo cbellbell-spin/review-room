@@ -587,6 +587,10 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(dashboard.body, '/review-room/api/documents');
       assertIncludes(dashboard.body, 'id="register-form"', 'Expected dashboard to include existing document registration form');
       assertIncludes(dashboard.body, '/review-room/api/documents/register', 'Expected dashboard to call register API');
+      assertIncludes(dashboard.body, 'Existing document slug or URL', 'Expected Review Room-owned registration copy');
+      assert(!dashboard.body.includes('Existing Proof slug'), 'Dashboard should not expose Proof-branded slug copy');
+      assert(!dashboard.body.includes('Proof slug'), 'Dashboard list metadata should not expose Proof-branded slug copy');
+      assert(!dashboard.body.includes('Proof editor'), 'Dashboard should not expose Proof-branded editor copy');
 
       const identity = await get(baseUrl, '/review-room/api/identity');
       assert(identity.status === 200, `Expected identity status 200, got ${identity.status}`);
@@ -597,7 +601,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(payload.identities.some((entry: { id?: string }) => entry.id === 'agent-reviewer'), 'Expected local agent identity');
     });
 
-    await test('D2: Review Room creates registry-backed Proof documents', async () => {
+    await test('D2: Review Room creates registry-backed documents', async () => {
       const createResponse = await post(baseUrl, '/review-room/api/documents', {
         title: 'Review Room Test',
         markdown: '# Review Room Test\n\nDraft body.',
@@ -606,10 +610,10 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const created = await createResponse.json();
       assertEqual(created.success, true);
       assert(typeof created.document?.id === 'string' && created.document.id.length > 0, 'Expected Review Room document id');
-      assert(typeof created.document?.proofSlug === 'string' && created.document.proofSlug.length > 0, 'Expected Proof slug');
-      assert(typeof created.document?.proofDocId === 'string' && created.document.proofDocId.length > 0, 'Expected Proof doc id');
+      assert(typeof created.document?.proofSlug === 'string' && created.document.proofSlug.length > 0, 'Expected document slug');
+      assert(typeof created.document?.proofDocId === 'string' && created.document.proofDocId.length > 0, 'Expected document id');
       assertEqual(created.document?.source, 'created', 'Expected Review Room-created documents to expose source=created');
-      assert(String(created.openPath).includes(`/d/${created.document.proofSlug}`), 'Expected open path to target Proof editor');
+      assert(String(created.openPath).includes(`/d/${created.document.proofSlug}`), 'Expected open path to target Review Room editor');
       assert(String(created.openPath).includes('rr=1'), 'Expected Review Room editor flag');
 
       const listResponse = await get(baseUrl, '/review-room/api/documents');
@@ -625,15 +629,15 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       });
       assert(stateResponse.status === 200, `Expected state status 200, got ${stateResponse.status}`);
       const state = await stateResponse.json();
-      assert(String(state.markdown).includes('Draft body.'), 'Expected underlying Proof document content');
+      assert(String(state.markdown).includes('Draft body.'), 'Expected underlying document content');
     });
 
-    await test('D2: Review Room registers an existing active Proof document', async () => {
+    await test('D2: Review Room registers an existing active document', async () => {
       const proofResponse = await postNoClientHeaders(baseUrl, '/documents', {
-        title: 'Existing Proof Doc',
-        markdown: '# Existing Proof Doc\n\nAlready shared.',
+        title: 'Existing Registered Doc',
+        markdown: '# Existing Registered Doc\n\nAlready shared.',
       });
-      assert(proofResponse.status === 200, `Expected Proof create status 200, got ${proofResponse.status}`);
+      assert(proofResponse.status === 200, `Expected document create status 200, got ${proofResponse.status}`);
       const proof = await proofResponse.json();
       const registerResponse = await post(baseUrl, '/review-room/api/documents/register', {
         proofSlug: `${baseUrl}/d/${proof.slug}?token=${encodeURIComponent(proof.accessToken)}`,
@@ -641,7 +645,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(registerResponse.status === 201, `Expected register status 201, got ${registerResponse.status}`);
       const registered = await registerResponse.json();
       assertEqual(registered.success, true);
-      assertEqual(registered.document?.proofSlug, proof.slug, 'Expected registered document to point at Proof slug');
+      assertEqual(registered.document?.proofSlug, proof.slug, 'Expected registered document to point at existing slug');
       assertEqual(registered.document?.source, 'registered', 'Expected registered document source');
       assertEqual(registered.document?.sourceLabel, 'Registered document', 'Expected registered source label');
       assert(String(registered.openPath).includes('rr=1'), 'Expected registered open path to preserve Review Room flag');
@@ -666,7 +670,9 @@ async function runRoutePayloadValidationTests(): Promise<void> {
     await test('D2: Review Room register reports missing, unavailable, and permission states', async () => {
       const missing = await post(baseUrl, '/review-room/api/documents/register', { proofSlug: 'does-not-exist' });
       assert(missing.status === 404, `Expected missing register status 404, got ${missing.status}`);
-      assertEqual((await missing.json()).code, 'DOCUMENT_MISSING');
+      const missingPayload = await missing.json();
+      assertEqual(missingPayload.code, 'DOCUMENT_MISSING');
+      assertEqual(missingPayload.error, 'No document exists for that slug.');
 
       const invalidProofResponse = await postNoClientHeaders(baseUrl, '/documents', {
         title: 'Invalid token target',
@@ -678,7 +684,9 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         token: 'not-a-real-token',
       });
       assert(invalidToken.status === 403, `Expected invalid-token register status 403, got ${invalidToken.status}`);
-      assertEqual((await invalidToken.json()).code, 'PERMISSION_DENIED');
+      const invalidTokenPayload = await invalidToken.json();
+      assertEqual(invalidTokenPayload.code, 'PERMISSION_DENIED');
+      assertEqual(invalidTokenPayload.error, 'The provided token does not grant access to that document.');
 
       async function createAndSetState(
         title: string,
@@ -706,6 +714,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const pausedPayload = await pausedRegister.json();
       assertEqual(pausedPayload.code, 'DOCUMENT_PAUSED');
       assertEqual(pausedPayload.shareState, 'PAUSED');
+      assertEqual(pausedPayload.error, 'This document is paused. Resume it before registering it in Review Room.');
 
       const revoked = await createAndSetState('Revoked register target', 'revoke');
       const revokedRegister = await post(baseUrl, '/review-room/api/documents/register', {
@@ -716,6 +725,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const revokedPayload = await revokedRegister.json();
       assertEqual(revokedPayload.code, 'DOCUMENT_REVOKED');
       assertEqual(revokedPayload.shareState, 'REVOKED');
+      assertEqual(revokedPayload.error, 'This document has been revoked and cannot be registered in Review Room.');
 
       const deleted = await createAndSetState('Deleted register target', 'delete');
       const deletedRegister = await post(baseUrl, '/review-room/api/documents/register', {
@@ -726,6 +736,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const deletedPayload = await deletedRegister.json();
       assertEqual(deletedPayload.code, 'DOCUMENT_DELETED');
       assertEqual(deletedPayload.shareState, 'DELETED');
+      assertEqual(deletedPayload.error, 'This document was deleted and cannot be registered in Review Room.');
     });
 
     await test('D2: POST /api/documents in warn mode returns deprecation headers + metadata', async () => {
@@ -1196,7 +1207,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(body, '<meta property="og:title"', 'Expected og:title in Slack unfurl HTML');
       assertIncludes(body, '<meta property="og:image"', 'Expected og:image in Slack unfurl HTML');
       assertIncludes(body, '<meta name="twitter:description"', 'Expected twitter:description in Slack unfurl HTML');
-      assertIncludes(body, '<title>Validation test | Proof</title>', 'Expected document-specific title in Slack unfurl HTML');
+      assertIncludes(body, '<title>Validation test | Review Room</title>', 'Expected document-specific title in Slack unfurl HTML');
     });
 
     await test('D2: /d/:slug content negotiation returns raw markdown', async () => {
@@ -1220,12 +1231,16 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(body, `<meta property="og:url" content="${baseUrl}/d/${slug}">`, 'Expected clean canonical og:url');
       assertIncludes(body, `${baseUrl}/og/share/${slug}.png?v=`, 'Expected versioned og:image URL');
       assertIncludes(body, '<meta name="twitter:image"', 'Expected twitter:image meta tag');
-      assertIncludes(body, '<title>Validation test | Proof</title>', 'Expected dynamic document title in HTML head');
+      assertIncludes(body, '<title>Validation test | Review Room</title>', 'Expected dynamic document title in HTML head');
       const titleTags = body.match(/<title\b[^>]*>[\s\S]*?<\/title>/gi) || [];
       assertEqual(titleTags.length, 1, `Expected single title tag, got ${titleTags.length}`);
       assert(
         !body.includes('<title>Proof Editor</title>'),
         'Expected template title to be replaced with document-specific title'
+      );
+      assert(
+        !body.includes('Proof Shared Document'),
+        'Expected shared document fallback copy to use Review Room branding',
       );
       assert(
         !body.includes(`<meta property="og:url" content="${baseUrl}/d/${slug}?token=`),
@@ -1295,7 +1310,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         !body.includes('Paused doc'),
         'Expected paused share HTML to avoid leaking document title',
       );
-      assertIncludes(body, 'content="The shared Proof document is temporarily unavailable"', 'Expected generic unavailable metadata');
+      assertIncludes(body, 'content="The shared document is temporarily unavailable"', 'Expected generic unavailable metadata');
       assert(!body.includes('This should not leak while paused.'), 'Expected paused share HTML to avoid content excerpt');
     });
 

@@ -45,8 +45,8 @@ assert(
   'Expected non-Review Room share chrome lookups to keep using the floating share banner',
 );
 assert(
-  editorSource.includes("document.title = `${nextTitle} - ${this.isReviewRoomRuntime() ? 'Review Room' : 'Proof'}`;"),
-  'Expected Review Room documents to use Review Room in the browser title',
+  editorSource.includes("document.title = `${nextTitle} - Review Room`;"),
+  'Expected documents to use Review Room in the browser title',
 );
 assert(
   markPopoverSource.includes("'review-room-bar', 'share-banner'")
