@@ -276,8 +276,13 @@ function renderAgentFriendlyHtml(
   token: string | null,
   preview: SharePreviewModel,
   mutationReady: boolean,
+  reviewRoom: boolean = false,
 ): string {
-  const docUrl = `${origin}/d/${encodeURIComponent(slug)}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+  const params = new URLSearchParams();
+  if (reviewRoom) params.set('rr', '1');
+  if (token) params.set('token', token);
+  const query = params.toString();
+  const docUrl = `${origin}/d/${encodeURIComponent(slug)}${query ? `?${query}` : ''}`;
   const proofSdkPaths = buildProofSdkDocumentPaths(slug, origin);
   const stateUrl = proofSdkPaths.state;
   const editUrl = proofSdkPaths.edit;
@@ -304,7 +309,7 @@ function renderAgentFriendlyHtml(
   ${renderShareMetaTags(preview)}
   <meta name="agent-api" content="/documents/${escapeHtml(slug)}/state">
   <meta name="agent-docs" content="/agent-docs">
-  ${buildShareRuntimeConfigScript(slug, token)}
+  ${buildShareRuntimeConfigScript(slug, token, reviewRoom)}
 </head>
 <body>
   <h1>Review Room Shared Document</h1>
@@ -613,6 +618,7 @@ shareWebRoutes.get('/d/:slug', async (req: Request, res: Response) => {
         agentHtmlToken,
         preview,
         doc ? (isHostedReviewRoomDbEnabled() ? true : isCanonicalReadMutationReady(doc)) : false,
+        reviewRoomMode,
       ),
     );
     return;

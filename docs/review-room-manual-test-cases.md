@@ -17,19 +17,20 @@ Open `http://127.0.0.1:4000/review-room`.
 2. Confirm the top nav shows `Review Room`, `Documents`, and `Agent API`.
 3. Confirm the document list loads without an error.
 4. Confirm the side panel shows:
-   - `New Review`
-   - `Create and open`
-   - `Existing document slug or URL`
+   - `Workspace`
+   - `Create document`
+   - `Review Room slug or URL`
    - `Access token`
-   - `Register and open`
+   - `Add and open`
+   - `Google Docs and SharePoint imports are not supported yet.`
 
 Expected: dashboard is usable, with no visible script error banner.
 
 ## Create Review Room Document
 
-1. In `New Review`, enter a unique title.
+1. In `Create document`, enter a unique title.
 2. Enter Markdown content.
-3. Click `Create and open`.
+3. Click `Create document`.
 4. Confirm the browser opens `/d/:slug?rr=1&token=...`.
 5. Confirm the document header has the title on its own top row.
 6. Confirm the second header row has `Review Room`, `Documents`, `Agent API`, saved/sync state, `Add agent`, and `Share`.
@@ -110,9 +111,9 @@ curl -s http://127.0.0.1:4000/documents \
 
 1. Copy the returned `shareUrl` or `/d/:slug?token=...` URL.
 2. Open `/review-room`.
-3. Paste that URL into `Existing document slug or URL`.
+3. Paste that URL into `Review Room slug or URL`.
 4. Leave `Access token` empty if the pasted URL includes `token=`.
-5. Click `Register and open`.
+5. Click `Add and open`.
 6. Confirm the browser opens `/d/:slug?rr=1&token=...`.
 7. Return to `/review-room`.
 
@@ -121,9 +122,9 @@ Expected: the document appears in the list with source label `Registered documen
 ## Register Existing Slug With Separate Token
 
 1. Create a document with the curl command above.
-2. Paste only the returned slug into `Existing document slug or URL`.
+2. Paste only the returned slug into `Review Room slug or URL`.
 3. Paste the returned `accessToken` into `Access token`.
-4. Click `Register and open`.
+4. Click `Add and open`.
 
 Expected: the document opens in Review Room mode and is listed as `Registered document`.
 
@@ -139,16 +140,16 @@ Expected: registration is idempotent. It opens the existing Review Room record a
 
 1. Open `/review-room`.
 2. Enter a made-up slug such as `missing-review-doc`.
-3. Click `Register and open`.
+3. Click `Add and open`.
 
 Expected: the form shows `No document exists for that slug.` and stays on the dashboard.
 
 ## Register With Invalid Token
 
 1. Create a document.
-2. Paste its slug into `Existing document slug or URL`.
+2. Paste its slug into `Review Room slug or URL`.
 3. Paste `not-a-real-token` into `Access token`.
-4. Click `Register and open`.
+4. Click `Add and open`.
 
 Expected: the form shows `The provided token does not grant access to that document.`
 

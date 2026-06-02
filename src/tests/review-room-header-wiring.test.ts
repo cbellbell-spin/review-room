@@ -52,6 +52,11 @@ assert(
   'Expected documents to use Review Room in the browser title',
 );
 assert(
+  editorSource.includes('if (this.isReviewRoomRuntime()) {\n          this.clearErrorBanner();')
+    && editorSource.includes("this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');"),
+  'Expected Review Room hosted no-collab mode to avoid the generic live collaboration error banner',
+);
+assert(
   markPopoverSource.includes("'review-room-bar', 'share-banner'")
     && selectionBarSource.includes("'review-room-bar', 'share-banner'"),
   'Expected fixed comment overlays to account for the Review Room header before the share banner',
@@ -63,6 +68,11 @@ assert(
     && redirect.permanent === false
   )) === true,
   'Expected Vercel root launches to redirect to the Review Room dashboard',
+);
+assert(
+  JSON.stringify(vercelConfig.functions ?? {}).includes('docs/**')
+    && JSON.stringify(vercelConfig.functions ?? {}).includes('AGENT_CONTRACT.md'),
+  'Expected Vercel function bundle to include Agent API docs',
 );
 
 console.log('✓ Review Room unified header wiring');

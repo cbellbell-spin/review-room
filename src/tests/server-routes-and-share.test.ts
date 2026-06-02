@@ -587,7 +587,9 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(dashboard.body, '/review-room/api/documents');
       assertIncludes(dashboard.body, 'id="register-form"', 'Expected dashboard to include existing document registration form');
       assertIncludes(dashboard.body, '/review-room/api/documents/register', 'Expected dashboard to call register API');
-      assertIncludes(dashboard.body, 'Existing document slug or URL', 'Expected Review Room-owned registration copy');
+      assertIncludes(dashboard.body, 'Create document', 'Expected dashboard to make document creation a first-class workflow');
+      assertIncludes(dashboard.body, 'Review Room slug or URL', 'Expected Review Room-owned registration copy');
+      assertIncludes(dashboard.body, 'Google Docs and SharePoint imports are not supported yet.', 'Expected dashboard to clarify supported registration inputs');
       assert(!dashboard.body.includes('Existing Proof slug'), 'Dashboard should not expose Proof-branded slug copy');
       assert(!dashboard.body.includes('Proof slug'), 'Dashboard list metadata should not expose Proof-branded slug copy');
       assert(!dashboard.body.includes('Proof editor'), 'Dashboard should not expose Proof-branded editor copy');
@@ -1413,6 +1415,17 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(body, '<meta name="agent-docs"', 'Expected agent-docs meta tag');
       assertIncludes(body, '<noscript>', 'Expected noscript fallback');
       assertIncludes(body, '# Hello', 'Expected noscript to contain markdown content');
+    });
+
+    await test('D2: /d/:slug agent-friendly Review Room HTML preserves runtime flag', async () => {
+      const response = await get(baseUrl, `/d/${encodeURIComponent(slug)}?rr=1&token=${encodeURIComponent(accessToken)}`, {
+        Accept: 'text/html',
+        'User-Agent': 'curl/8.7.1',
+      });
+      assert(response.status === 200, `Expected 200 Review Room agent HTML response, got ${response.status}`);
+      const body = response.body || '';
+      assertIncludes(body, 'window.__PROOF_CONFIG__.reviewRoom = true;', 'Expected Review Room runtime flag in agent-friendly HTML');
+      assertIncludes(body, '?rr=1&amp;token=', 'Expected agent-friendly copy/paste URL to preserve Review Room mode');
     });
 
     await test('D2: /d/:slug agent-friendly HTML also includes social preview metadata', async () => {

@@ -1566,7 +1566,7 @@ class ProofEditorImpl implements ProofEditor {
         this.startCollabRefreshLoop();
       } else {
         this.collabEnabled = false;
-        this.collabCanComment = false;
+        this.collabCanComment = Boolean(shareCapabilities?.canComment);
         this.collabCanEdit = false;
         this.activeCollabSession = null;
         this.collabConnectionStatus = 'disconnected';
@@ -1587,7 +1587,11 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = initialMarks;
           this.initialMarksSynced = true;
         }
-        this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');
+        if (this.isReviewRoomRuntime()) {
+          this.clearErrorBanner();
+        } else {
+          this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');
+        }
         return;
       }
 

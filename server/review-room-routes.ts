@@ -215,6 +215,7 @@ function renderReviewRoomHome(): string {
       font-weight: 650;
     }
     .button.secondary { background: #fff; color: #266854; }
+    .form-note { font-size: 13px; color: #607064; }
     form { display: grid; gap: 12px; padding: 18px; }
     form + form { border-top: 1px solid #edf1e9; }
     label { display: grid; gap: 6px; font-size: 13px; font-weight: 650; color: #374539; }
@@ -232,6 +233,7 @@ function renderReviewRoomHome(): string {
     .pill { padding: 4px 8px; border-radius: 999px; background: #eef4e9; color: #4c5f4f; font-size: 12px; }
     .empty { padding: 24px 18px; color: #607064; border-top: 1px solid #edf1e9; }
     .error { color: #b42318; font-size: 13px; min-height: 18px; }
+    .section-title { font-size: 16px; font-weight: 700; margin: 0; }
     @media (max-width: 840px) {
       main { grid-template-columns: 1fr; padding: 20px 16px 40px; }
       .topbar { padding: 0 16px; }
@@ -252,7 +254,7 @@ function renderReviewRoomHome(): string {
       <section class="panel" aria-labelledby="docs-heading">
         <div class="panel-header">
           <h1 id="docs-heading">Documents</h1>
-          <p>Drafts and registered documents gathered into one Review Room workspace.</p>
+          <p>Open documents already in Review Room, or start a new one from the workspace panel.</p>
         </div>
         <div id="documents" class="doc-list" aria-live="polite">
           <div class="empty">Loading documents...</div>
@@ -260,33 +262,37 @@ function renderReviewRoomHome(): string {
       </section>
       <aside class="panel" aria-labelledby="create-heading">
         <div class="panel-header">
-          <h1 id="create-heading">New Review</h1>
-          <p>Create a Markdown draft and open it in the Review Room editor.</p>
+          <h1 id="create-heading">Workspace</h1>
+          <p>Create a document for review, or add a Review Room link you already have.</p>
         </div>
         <form id="create-form">
+          <h2 class="section-title">Create document</h2>
+          <p class="form-note">Paste or draft the document itself here. Reviewer notes can be added as comments after it opens.</p>
           <label>
-            Title
+            Document title
             <input id="title" name="title" value="Untitled review" autocomplete="off">
           </label>
           <label>
-            Markdown
-            <textarea id="markdown" name="markdown"># Untitled review
+            Document body
+            <textarea id="markdown" name="markdown"># Untitled document
 
-What should reviewers focus on?</textarea>
+Paste the document you want reviewed, or start drafting here.</textarea>
           </label>
-          <button class="button" type="submit">Create and open</button>
+          <button class="button" type="submit">Create document</button>
           <div id="form-error" class="error" role="alert"></div>
         </form>
         <form id="register-form">
+          <h2 class="section-title">Add existing document</h2>
+          <p class="form-note">Accepts Review Room document slugs or /d/... links. Google Docs and SharePoint imports are not supported yet.</p>
           <label>
-            Existing document slug or URL
+            Review Room slug or URL
             <input id="proof-slug" name="proofSlug" placeholder="abc123 or /d/abc123?token=..." autocomplete="off">
           </label>
           <label>
             Access token
             <input id="proof-token" name="token" placeholder="Optional if the URL includes one" autocomplete="off">
           </label>
-          <button class="button secondary" type="submit">Register and open</button>
+          <button class="button secondary" type="submit">Add and open</button>
           <div id="register-error" class="error" role="alert"></div>
         </form>
         <div class="identity" id="identity"></div>
