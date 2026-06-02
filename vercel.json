@@ -9,6 +9,13 @@
       "includeFiles": "{dist/**,public/**,server/**,src/**,node_modules/@libsql/**,node_modules/libsql/**,node_modules/yjs/**,node_modules/y-prosemirror/**,node_modules/y-websocket/**,node_modules/y-protocols/**,node_modules/lib0/**}"
     }
   },
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/review-room",
+      "permanent": false
+    }
+  ],
   "rewrites": [
     {
       "source": "/(.*)",

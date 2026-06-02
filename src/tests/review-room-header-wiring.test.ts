@@ -10,6 +10,9 @@ const indexHtml = readFileSync(path.join(root, 'src/index.html'), 'utf8');
 const editorSource = readFileSync(path.join(root, 'src/editor/index.ts'), 'utf8');
 const markPopoverSource = readFileSync(path.join(root, 'src/editor/plugins/mark-popover.ts'), 'utf8');
 const selectionBarSource = readFileSync(path.join(root, 'src/editor/plugins/mark-selection-bar.ts'), 'utf8');
+const vercelConfig = JSON.parse(readFileSync(path.join(root, 'vercel.json'), 'utf8')) as {
+  redirects?: Array<{ source?: string; destination?: string; permanent?: boolean }>;
+};
 
 assert(indexHtml.includes('id="review-room-title-slot"'), 'Expected Review Room header to expose a title slot');
 assert(indexHtml.includes('id="review-room-status-slot"'), 'Expected Review Room header to expose a sync status slot');
@@ -52,6 +55,14 @@ assert(
   markPopoverSource.includes("'review-room-bar', 'share-banner'")
     && selectionBarSource.includes("'review-room-bar', 'share-banner'"),
   'Expected fixed comment overlays to account for the Review Room header before the share banner',
+);
+assert(
+  vercelConfig.redirects?.some((redirect) => (
+    redirect.source === '/'
+    && redirect.destination === '/review-room'
+    && redirect.permanent === false
+  )) === true,
+  'Expected Vercel root launches to redirect to the Review Room dashboard',
 );
 
 console.log('✓ Review Room unified header wiring');
