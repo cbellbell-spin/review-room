@@ -18,7 +18,8 @@ Open `http://127.0.0.1:4000/review-room`.
 3. Confirm the document list loads without an error.
 4. Confirm the side panel shows:
    - `Workspace`
-   - `Create document`
+   - `New document`
+   - `Create new document`
    - `Review Room slug or URL`
    - `Access token`
    - `Add and open`
@@ -28,13 +29,14 @@ Expected: dashboard is usable, with no visible script error banner.
 
 ## Create Review Room Document
 
-1. In `Create document`, enter a unique title.
-2. Enter Markdown content.
-3. Click `Create document`.
-4. Confirm the browser opens `/d/:slug?rr=1&token=...`.
+1. Click `Create new document`.
+2. Confirm the browser opens `/d/:slug?rr=1&token=...`.
+3. Confirm the editor opens as an empty document window.
+4. Enter Markdown content in the editor.
 5. Confirm the document header has the title on its own top row.
-6. Confirm the second header row has `Review Room`, `Documents`, `Agent API`, saved/sync state, `Add agent`, and `Share`.
-7. Return to `/review-room`.
+6. Confirm the second header row has `Review Room`, `Documents`, `Agent API`, saved/manual-save state, `Add agent`, `Save`, and `Share`.
+7. Click `Save`.
+8. Confirm the browser returns to `/review-room`.
 
 Expected: the document appears in the list with source label `Created in Review Room`.
 

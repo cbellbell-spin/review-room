@@ -1010,6 +1010,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareViewerName: string | null = null;
   private isReadOnly: boolean = false;
   private shareAllowLocalEdits: boolean = true;
+  private reviewRoomRestSaveMode: boolean = false;
   private shareContentFilterEnabled: boolean = false;
   private readOnlyBanner: HTMLElement | null = null;
   private reviewLockCount: number = 0;
@@ -1455,6 +1456,7 @@ class ProofEditorImpl implements ProofEditor {
           ? { ...(context.doc.marks as Record<string, StoredMark>) }
           : {};
         this.collabEnabled = true;
+        this.reviewRoomRestSaveMode = false;
         this.collabCanComment = Boolean(collabSession.capabilities.canComment);
         this.collabCanEdit = Boolean(collabSession.capabilities.canEdit);
         this.activeCollabSession = collabSession.session;
@@ -1565,9 +1567,11 @@ class ProofEditorImpl implements ProofEditor {
         collabClient.connect(collabSession.session);
         this.startCollabRefreshLoop();
       } else {
+        const reviewRoomRestSaveMode = this.isReviewRoomRuntime() && Boolean(shareCapabilities?.canEdit);
         this.collabEnabled = false;
         this.collabCanComment = Boolean(shareCapabilities?.canComment);
-        this.collabCanEdit = false;
+        this.collabCanEdit = Boolean(shareCapabilities?.canEdit);
+        this.reviewRoomRestSaveMode = reviewRoomRestSaveMode;
         this.activeCollabSession = null;
         this.collabConnectionStatus = 'disconnected';
         this.collabIsSynced = false;
@@ -1587,7 +1591,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = initialMarks;
           this.initialMarksSynced = true;
         }
-        if (this.isReviewRoomRuntime()) {
+        if (reviewRoomRestSaveMode) {
           this.clearErrorBanner();
         } else {
           this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');
@@ -2517,7 +2521,7 @@ class ProofEditorImpl implements ProofEditor {
       // Prevent "type into blank doc" races that can overwrite remote Yjs state.
       this.kickCollabHydration();
     }
-    const allowLocalEdits = baseAllowLocalEdits && hydrated;
+    const allowLocalEdits = this.reviewRoomRestSaveMode || (baseAllowLocalEdits && hydrated);
     this.shareAllowLocalEdits = allowLocalEdits;
     // Only block content mutations for true view-only sessions.
     // Avoid using filterTransaction as a temporary "sync lock", since it can deadlock hydration.
@@ -2741,6 +2745,9 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private getShareSyncStatus(): { label: string; color: string } {
+    if (this.reviewRoomRestSaveMode) {
+      return { label: 'Manual save', color: '#266854' };
+    }
     if (!this.collabEnabled) {
       return { label: 'Live sync unavailable', color: '#ef4444' };
     }
@@ -2793,6 +2800,7 @@ class ProofEditorImpl implements ProofEditor {
       'Access revoked': 'Revoked',
       'Document is no longer shared': 'Unshared',
       'Live sync unavailable': 'No sync',
+      'Manual save': 'Manual',
     };
     return map[label] ?? 'Saved';
   }
@@ -3504,12 +3512,14 @@ class ProofEditorImpl implements ProofEditor {
       const statusSlot = document.getElementById('review-room-status-slot');
       const presenceSlot = document.getElementById('review-room-presence-slot');
       const agentSlotContainer = document.getElementById('review-room-agent-slot');
+      const saveSlot = document.getElementById('review-room-save-slot');
       const shareSlot = document.getElementById('review-room-share-slot');
-      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && shareSlot) {
+      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && saveSlot && shareSlot) {
         titleSlot.replaceChildren(title);
         statusSlot.replaceChildren(syncStatusInline);
         presenceSlot.replaceChildren(avatars);
         agentSlotContainer.replaceChildren(agentSlot);
+        saveSlot.replaceChildren(this.createReviewRoomSaveButton());
         shareSlot.replaceChildren(shareBtn);
         this.scheduleBannerLayoutUpdate();
         return;
@@ -4114,6 +4124,63 @@ class ProofEditorImpl implements ProofEditor {
       toast.style.right = `${pageMargin}px`;
       toast.style.maxWidth = '340px';
     }
+  }
+
+  private serializeCurrentShareDocument(): { markdown: string; marks: Record<string, unknown> } | null {
+    if (!this.editor) return null;
+    let result: { markdown: string; marks: Record<string, unknown> } | null = null;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const serializer = ctx.get(serializerCtx);
+      const markdown = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
+      result = {
+        markdown,
+        marks: getMarkMetadataWithQuotes(view.state),
+      };
+    });
+    return result;
+  }
+
+  private async saveReviewRoomDocumentAndReturnHome(button: HTMLButtonElement): Promise<void> {
+    const snapshot = this.serializeCurrentShareDocument();
+    if (!snapshot) {
+      this.showErrorBanner('Could not read the document before saving.');
+      return;
+    }
+    const previousText = button.textContent || 'Save';
+    button.disabled = true;
+    button.textContent = 'Saving...';
+    try {
+      const ok = await shareClient.pushUpdate(snapshot.markdown, snapshot.marks, getCurrentActor());
+      if (!ok) {
+        button.disabled = false;
+        button.textContent = previousText;
+        this.showErrorBanner('Could not save this document. Try again.');
+        return;
+      }
+      window.location.href = '/review-room';
+    } catch (error) {
+      console.error('[review-room] save failed', error);
+      button.disabled = false;
+      button.textContent = previousText;
+      this.showErrorBanner('Could not save this document. Try again.');
+    }
+  }
+
+  private createReviewRoomSaveButton(): HTMLElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Save';
+    button.setAttribute('aria-label', 'Save and return to documents');
+    button.style.cssText = `
+      display:inline-flex;align-items:center;justify-content:center;min-height:36px;min-width:64px;padding:0 14px;
+      border:1px solid #266854;border-radius:18px;background:#266854;color:#fff;
+      font-size:13px;font-weight:650;cursor:pointer;font-family:inherit;
+    `;
+    button.onclick = () => {
+      void this.saveReviewRoomDocumentAndReturnHome(button);
+    };
+    return button;
   }
 
   private createShareMenuButton(): HTMLElement {

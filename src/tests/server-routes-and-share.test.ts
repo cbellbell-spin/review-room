@@ -395,6 +395,14 @@ async function runServerSourceTests(): Promise<void> {
     );
   });
 
+  await test('D2: hosted Review Room saves route through libSQL persistence', async () => {
+    assertIncludes(
+      routesSource,
+      'await updateHostedDocument({',
+      'hosted Review Room document saves should not fall through to local SQLite',
+    );
+  });
+
   await test('D1: landing template keeps mobile hero CTA visible', async () => {
     assertIncludes(
       homeTemplate,
@@ -586,10 +594,13 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(dashboard.body, 'Review Room');
       assertIncludes(dashboard.body, '/review-room/api/documents');
       assertIncludes(dashboard.body, 'id="register-form"', 'Expected dashboard to include existing document registration form');
+      assertIncludes(dashboard.body, 'id="new-document-button"', 'Expected dashboard to expose a one-click new document action');
       assertIncludes(dashboard.body, '/review-room/api/documents/register', 'Expected dashboard to call register API');
-      assertIncludes(dashboard.body, 'Create document', 'Expected dashboard to make document creation a first-class workflow');
+      assertIncludes(dashboard.body, 'Create new document', 'Expected dashboard to make document creation a first-class workflow');
+      assertIncludes(dashboard.body, 'Open an empty editor', 'Expected new document copy to describe the editor-first workflow');
       assertIncludes(dashboard.body, 'Review Room slug or URL', 'Expected Review Room-owned registration copy');
       assertIncludes(dashboard.body, 'Google Docs and SharePoint imports are not supported yet.', 'Expected dashboard to clarify supported registration inputs');
+      assert(!dashboard.body.includes('Document body'), 'Dashboard should not ask for document content before opening the editor');
       assert(!dashboard.body.includes('Existing Proof slug'), 'Dashboard should not expose Proof-branded slug copy');
       assert(!dashboard.body.includes('Proof slug'), 'Dashboard list metadata should not expose Proof-branded slug copy');
       assert(!dashboard.body.includes('Proof editor'), 'Dashboard should not expose Proof-branded editor copy');
@@ -605,8 +616,8 @@ async function runRoutePayloadValidationTests(): Promise<void> {
 
     await test('D2: Review Room creates registry-backed documents', async () => {
       const createResponse = await post(baseUrl, '/review-room/api/documents', {
-        title: 'Review Room Test',
-        markdown: '# Review Room Test\n\nDraft body.',
+        title: 'Untitled document',
+        markdown: '',
       });
       assert(createResponse.status === 201, `Expected Review Room create status 201, got ${createResponse.status}`);
       const created = await createResponse.json();
@@ -636,7 +647,24 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       });
       assert(stateResponse.status === 200, `Expected state status 200, got ${stateResponse.status}`);
       const state = await stateResponse.json();
-      assert(String(state.markdown).includes('Draft body.'), 'Expected underlying document content');
+      assertEqual(state.markdown, '', 'Expected Review Room-created documents to start empty');
+
+      const savedMarkdown = '# Saved Review Room Draft\n\nDraft body.';
+      const saveResponse = await put(baseUrl, `/documents/${created.document.proofSlug}`, {
+        markdown: savedMarkdown,
+        marks: {},
+        actor: 'human:local-human',
+      }, {
+        'x-share-token': created.proof.accessToken,
+      });
+      assert(saveResponse.status === 200, `Expected Review Room save status 200, got ${saveResponse.status}`);
+
+      const savedStateResponse = await get(baseUrl, `/documents/${created.document.proofSlug}/state`, {
+        'x-share-token': created.proof.accessToken,
+      });
+      assert(savedStateResponse.status === 200, `Expected saved state status 200, got ${savedStateResponse.status}`);
+      const savedState = await savedStateResponse.json();
+      assert(String(savedState.markdown).includes('Draft body.'), 'Expected saved underlying document content');
     });
 
     await test('D2: Review Room registers an existing active document', async () => {

@@ -17,6 +17,7 @@ const vercelConfig = JSON.parse(readFileSync(path.join(root, 'vercel.json'), 'ut
 assert(indexHtml.includes('id="review-room-title-slot"'), 'Expected Review Room header to expose a title slot');
 assert(indexHtml.includes('id="review-room-status-slot"'), 'Expected Review Room header to expose a sync status slot');
 assert(indexHtml.includes('id="review-room-agent-slot"'), 'Expected Review Room header to expose an agent control slot');
+assert(indexHtml.includes('id="review-room-save-slot"'), 'Expected Review Room header to expose a save slot');
 assert(indexHtml.includes('id="review-room-share-slot"'), 'Expected Review Room header to expose a share control slot');
 assert(indexHtml.includes('class="review-room-controls"'), 'Expected Review Room header to group controls below the title row');
 assert(
@@ -32,8 +33,18 @@ assert(
   editorSource.includes("titleSlot.replaceChildren(title);")
     && editorSource.includes("statusSlot.replaceChildren(syncStatusInline);")
     && editorSource.includes("agentSlotContainer.replaceChildren(agentSlot);")
+    && editorSource.includes("saveSlot.replaceChildren(this.createReviewRoomSaveButton());")
     && editorSource.includes("shareSlot.replaceChildren(shareBtn);"),
   'Expected existing share controls to be mounted into Review Room header slots',
+);
+assert(
+  editorSource.includes('private createReviewRoomSaveButton()')
+    && editorSource.includes("window.location.href = '/review-room';"),
+  'Expected Review Room save button to save and return to the document list',
+);
+assert(
+  editorSource.includes('this.reviewRoomRestSaveMode || (baseAllowLocalEdits && hydrated)'),
+  'Expected hosted Review Room mode to allow local edits for manual save',
 );
 assert(
   editorSource.includes("if (this.isReviewRoomRuntime()) {\n      const reviewRoomBar = document.getElementById('review-room-bar');"),
@@ -52,9 +63,9 @@ assert(
   'Expected documents to use Review Room in the browser title',
 );
 assert(
-  editorSource.includes('if (this.isReviewRoomRuntime()) {\n          this.clearErrorBanner();')
+  editorSource.includes('if (reviewRoomRestSaveMode) {\n          this.clearErrorBanner();')
     && editorSource.includes("this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');"),
-  'Expected Review Room hosted no-collab mode to avoid the generic live collaboration error banner',
+  'Expected editable Review Room hosted no-collab mode to avoid the generic live collaboration error banner',
 );
 assert(
   markPopoverSource.includes("'review-room-bar', 'share-banner'")

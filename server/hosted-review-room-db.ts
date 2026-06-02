@@ -619,6 +619,100 @@ export async function readHostedDocumentState(slug: string): Promise<HostedEngin
   };
 }
 
+export async function updateHostedDocument(input: {
+  slug: string;
+  markdown?: string;
+  marks?: Record<string, unknown>;
+  title?: string;
+  actor?: string;
+}): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(input.slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  if (doc.share_state === 'REVOKED') {
+    return { status: 403, body: { success: false, error: 'Document access has been revoked' } };
+  }
+  const hasMarkdown = input.markdown !== undefined;
+  const hasMarks = input.marks !== undefined;
+  const hasTitle = input.title !== undefined;
+  if (!hasMarkdown && !hasMarks && !hasTitle) {
+    return { status: 400, body: { success: false, error: 'Provide title, marks, and/or markdown' } };
+  }
+
+  const db = await ensureHostedReviewRoomDatabase();
+  const now = new Date().toISOString();
+  const markdown = hasMarkdown ? input.markdown ?? '' : doc.markdown;
+  const marks = hasMarks ? input.marks ?? {} : parseMarks(doc.marks);
+  const title = hasTitle ? input.title ?? '' : doc.title;
+  const revision = Number(doc.revision ?? 1) + (hasMarkdown ? 1 : 0);
+  const marksJson = JSON.stringify(marks);
+  const actor = input.actor?.trim() || 'review-room:user';
+  const eventData = JSON.stringify({
+    title,
+    markdownUpdated: hasMarkdown,
+    marksUpdated: hasMarks,
+    titleUpdated: hasTitle,
+  });
+
+  const results = await db.batch([
+    [
+      `UPDATE documents
+       SET title = ?, markdown = ?, marks = ?, revision = ?, updated_at = ?
+       WHERE slug = ? AND share_state IN ('ACTIVE', 'PAUSED')`,
+      [title, markdown, marksJson, revision, now, input.slug],
+    ],
+    [
+      `INSERT INTO document_projections (
+        document_slug, revision, y_state_version, markdown, marks_json, plain_text, updated_at, health, health_reason
+      )
+      VALUES (?, ?, 0, ?, ?, ?, ?, 'healthy', NULL)
+      ON CONFLICT (document_slug) DO UPDATE SET
+        revision = excluded.revision,
+        markdown = excluded.markdown,
+        marks_json = excluded.marks_json,
+        plain_text = excluded.plain_text,
+        updated_at = excluded.updated_at,
+        health = 'healthy',
+        health_reason = NULL`,
+      [input.slug, revision, markdown, marksJson, plainText(markdown), now],
+    ],
+    [
+      `INSERT INTO document_events (
+        document_slug, document_revision, event_type, event_data, actor, idempotency_key, mutation_route, tombstone_revision, created_at
+      )
+      VALUES (?, ?, 'document.updated', ?, ?, NULL, 'PUT /documents/:slug', NULL, ?)`,
+      [input.slug, revision, eventData, actor, now],
+    ],
+    [
+      `INSERT INTO mutation_outbox (
+        document_slug, document_revision, event_id, event_type, event_data, actor, idempotency_key, mutation_route,
+        tombstone_revision, created_at, delivered_at
+      )
+      VALUES (?, ?, last_insert_rowid(), 'document.updated', ?, ?, NULL, 'PUT /documents/:slug', NULL, ?, NULL)`,
+      [input.slug, revision, eventData, actor, now],
+    ],
+  ]);
+
+  if (Number(results[0].rowsAffected ?? 0) <= 0) {
+    return { status: 409, body: { success: false, error: 'Document changed during update; retry with latest state' } };
+  }
+
+  return {
+    status: 200,
+    body: {
+      success: true,
+      slug: input.slug,
+      title,
+      markdown,
+      marks,
+      updatedAt: now,
+      revision,
+      shareState: doc.share_state,
+    },
+  };
+}
+
 async function persistHostedMarks(
   slug: string,
   marks: Record<string, unknown>,

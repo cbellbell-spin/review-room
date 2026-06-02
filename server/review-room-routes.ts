@@ -200,6 +200,13 @@ function renderReviewRoomHome(): string {
     .doc-title { font-weight: 650; margin-bottom: 5px; overflow-wrap: anywhere; }
     .doc-meta { font-size: 13px; color: #718073; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .doc-source { padding: 2px 7px; border-radius: 999px; background: #eef4e9; color: #4c5f4f; font-size: 12px; font-weight: 650; }
+    .primary-action {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 18px;
+      border-top: 1px solid #edf1e9;
+    }
     .button {
       border: 1px solid #266854;
       background: #266854;
@@ -263,24 +270,14 @@ function renderReviewRoomHome(): string {
       <aside class="panel" aria-labelledby="create-heading">
         <div class="panel-header">
           <h1 id="create-heading">Workspace</h1>
-          <p>Create a document for review, or add a Review Room link you already have.</p>
+          <p>Start writing in a new Review Room document, or add a Review Room link you already have.</p>
         </div>
-        <form id="create-form">
-          <h2 class="section-title">Create document</h2>
-          <p class="form-note">Paste or draft the document itself here. Reviewer notes can be added as comments after it opens.</p>
-          <label>
-            Document title
-            <input id="title" name="title" value="Untitled review" autocomplete="off">
-          </label>
-          <label>
-            Document body
-            <textarea id="markdown" name="markdown"># Untitled document
-
-Paste the document you want reviewed, or start drafting here.</textarea>
-          </label>
-          <button class="button" type="submit">Create document</button>
+        <div class="primary-action">
+          <h2 class="section-title">New document</h2>
+          <p class="form-note">Open an empty editor, write the document, then save back to this workspace.</p>
+          <button id="new-document-button" class="button" type="button">Create new document</button>
           <div id="form-error" class="error" role="alert"></div>
-        </form>
+        </div>
         <form id="register-form">
           <h2 class="section-title">Add existing document</h2>
           <p class="form-note">Accepts Review Room document slugs or /d/... links. Google Docs and SharePoint imports are not supported yet.</p>
@@ -302,7 +299,7 @@ Paste the document you want reviewed, or start drafting here.</textarea>
   <script>
     const documentsEl = document.getElementById('documents');
     const identityEl = document.getElementById('identity');
-    const form = document.getElementById('create-form');
+    const newDocumentButton = document.getElementById('new-document-button');
     const registerForm = document.getElementById('register-form');
     const errorEl = document.getElementById('form-error');
     const registerErrorEl = document.getElementById('register-error');
@@ -354,19 +351,20 @@ Paste the document you want reviewed, or start drafting here.</textarea>
       renderIdentity(identityPayload);
     }
 
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
+    newDocumentButton.addEventListener('click', async () => {
       errorEl.textContent = '';
-      const title = document.getElementById('title').value.trim() || 'Untitled review';
-      const markdown = document.getElementById('markdown').value;
+      newDocumentButton.disabled = true;
+      newDocumentButton.textContent = 'Creating...';
       const response = await fetch('/review-room/api/documents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, markdown }),
+        body: JSON.stringify({ title: 'Untitled document', markdown: '' }),
       });
       const payload = await response.json();
       if (!response.ok) {
         errorEl.textContent = payload.error || 'Could not create document.';
+        newDocumentButton.disabled = false;
+        newDocumentButton.textContent = 'Create new document';
         return;
       }
       window.location.href = payload.openPath;
@@ -455,12 +453,8 @@ reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Res
 reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Response) => {
   const identityId = getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
-  const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Untitled review';
+  const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Untitled document';
   const markdown = typeof body.markdown === 'string' ? body.markdown : '';
-  if (!markdown.trim()) {
-    res.status(400).json({ success: false, error: 'markdown must not be empty' });
-    return;
-  }
 
   const slug = generateSlug();
   const ownerSecret = randomUUID();

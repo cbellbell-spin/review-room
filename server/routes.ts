@@ -109,6 +109,7 @@ import {
   getHostedReviewRoomDocumentMemberForProofSlugAndToken,
   isHostedReviewRoomDbEnabled,
   resolveHostedDocumentAccess,
+  updateHostedDocument,
 } from './hosted-review-room-db.js';
 
 export const apiRoutes = Router();
@@ -1323,6 +1324,74 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
     return;
   }
 
+  const hasMarkdownUpdate = markdown !== undefined;
+  const hasMarksUpdate = marks !== undefined;
+  const hasTitleUpdate = title !== undefined;
+  const mutationActor = (typeof actor === 'string' && actor.trim()) ? actor.trim() : 'anonymous';
+
+  if (isHostedReviewRoomDbEnabled()) {
+    const doc = await getHostedDocumentBySlug(slug);
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    if (doc.share_state === 'DELETED') {
+      res.status(410).json({ error: 'Document deleted' });
+      return;
+    }
+    if (doc.share_state === 'REVOKED') {
+      res.status(403).json({ error: 'Document access has been revoked' });
+      return;
+    }
+
+    const presentedSecret = getPresentedSecret(req);
+    const access = presentedSecret ? await resolveHostedDocumentAccess(slug, presentedSecret) : null;
+    const role = access?.role ?? null;
+    const ownerOrBot = role === 'owner_bot';
+    const canEditContent = ownerOrBot || (doc.share_state === 'ACTIVE' && role === 'editor');
+    const canMutateMarks = ownerOrBot || (doc.share_state === 'ACTIVE' && (role === 'commenter' || role === 'editor'));
+    const normalizedTitle = hasTitleUpdate && typeof title === 'string' ? title.trim() : '';
+
+    if (hasMarkdownUpdate && typeof markdown !== 'string') {
+      res.status(400).json({ error: 'markdown must be a string when provided' });
+      return;
+    }
+    if (hasMarksUpdate && !isMarksPayload(marks)) {
+      res.status(400).json({ error: 'marks must be an object when provided' });
+      return;
+    }
+    if (hasTitleUpdate && typeof title !== 'string') {
+      res.status(400).json({ error: 'title must be a string when provided' });
+      return;
+    }
+    if (hasTitleUpdate && normalizedTitle.length === 0) {
+      res.status(400).json({ error: 'title must not be empty', code: 'EMPTY_TITLE' });
+      return;
+    }
+    if (hasMarkdownUpdate && !canEditContent) {
+      res.status(403).json({ error: 'Not authorized to update document content' });
+      return;
+    }
+    if (hasMarksUpdate && !canMutateMarks) {
+      res.status(403).json({ error: 'Not authorized to update document marks' });
+      return;
+    }
+    if (hasTitleUpdate && !canEditContent) {
+      res.status(403).json({ error: 'Not authorized to update document title' });
+      return;
+    }
+
+    const result = await updateHostedDocument({
+      slug,
+      ...(hasMarkdownUpdate ? { markdown: stripEphemeralCollabSpans(markdown as string) } : {}),
+      ...(hasMarksUpdate ? { marks: canonicalizeStoredMarks(marks as Record<string, unknown>) } : {}),
+      ...(hasTitleUpdate ? { title: normalizedTitle } : {}),
+      actor: mutationActor,
+    });
+    res.status(result.status).json(result.body);
+    return;
+  }
+
   const doc = getDocumentBySlug(slug);
   if (!doc) {
     res.status(404).json({ error: 'Document not found' });
@@ -1337,10 +1406,6 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
     return;
   }
 
-  const hasMarkdownUpdate = markdown !== undefined;
-  const hasMarksUpdate = marks !== undefined;
-  const hasTitleUpdate = title !== undefined;
-  const mutationActor = (typeof actor === 'string' && actor.trim()) ? actor.trim() : 'anonymous';
   const previousMarks = hasMarksUpdate ? parseJson(doc.marks) : null;
   const accessRole = getAccessRole(req, slug);
   const ownerAuthorized = canOwnerMutate(req, doc);
