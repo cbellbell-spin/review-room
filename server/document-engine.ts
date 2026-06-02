@@ -56,6 +56,10 @@ import {
   recordEditAuthoredSpanRemap,
   recordEditStructuralCleanupApplied,
 } from './metrics.js';
+import {
+  executeHostedDocumentOperation,
+  isHostedReviewRoomDbEnabled,
+} from './hosted-review-room-db.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -2660,6 +2664,9 @@ export async function executeDocumentOperationAsync(
   body: JsonRecord = {},
   context?: AsyncDocumentMutationContext,
 ): Promise<EngineExecutionResult> {
+  if (isHostedReviewRoomDbEnabled()) {
+    return executeHostedDocumentOperation(slug, method, routePath, body);
+  }
   if (method === 'GET' && routePath === '/state') {
     return readStateAsync(slug);
   }

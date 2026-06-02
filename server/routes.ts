@@ -103,9 +103,18 @@ import {
   buildProofSdkDocumentPaths,
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
+import {
+  buildHostedOpenContextBody,
+  getHostedDocumentBySlug,
+  getHostedReviewRoomDocumentMemberForProofSlugAndToken,
+  isHostedReviewRoomDbEnabled,
+  resolveHostedDocumentAccess,
+} from './hosted-review-room-db.js';
 
 export const apiRoutes = Router();
-runLegacyMarkRangeBackfillOnce();
+if (!isHostedReviewRoomDbEnabled()) {
+  runLegacyMarkRangeBackfillOnce();
+}
 
 const DIRECT_SHARE_RATE_LIMIT_BUCKETS = new Map<string, { count: number; resetAt: number }>();
 const DEFAULT_DIRECT_SHARE_RATE_LIMIT_WINDOW_MS = 60_000;
@@ -1947,6 +1956,38 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
     res.status(400).json({ error: 'Invalid slug' });
     return;
   }
+  if (isHostedReviewRoomDbEnabled()) {
+    const doc = await getHostedDocumentBySlug(slug);
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    if (doc.share_state === 'DELETED') {
+      res.status(410).json({ error: 'Document deleted' });
+      return;
+    }
+    const presentedSecret = getPresentedSecret(req);
+    const access = presentedSecret ? await resolveHostedDocumentAccess(slug, presentedSecret) : null;
+    if (presentedSecret && !access) {
+      res.status(401).json({ error: 'Invalid share token', code: 'UNAUTHORIZED' });
+      return;
+    }
+    const role = access?.role ?? 'editor';
+    if (doc.share_state === 'REVOKED' && role !== 'owner_bot') {
+      res.status(403).json({ error: 'Document access has been revoked' });
+      return;
+    }
+    if (doc.share_state === 'PAUSED' && role !== 'owner_bot') {
+      res.status(403).json({ error: 'Document is not currently accessible' });
+      return;
+    }
+    res.json(buildHostedOpenContextBody({
+      doc,
+      role,
+      reviewRoom: await getHostedReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret),
+    }));
+    return;
+  }
   const doc = getCanonicalReadableDocumentSync(slug, 'share') ?? getDocumentBySlug(slug);
   if (!doc) {
     res.status(404).json({ error: 'Document not found' });
@@ -2042,6 +2083,23 @@ apiRoutes.post('/documents/:slug/collab-refresh', async (req: Request, res: Resp
     res.status(400).json({ error: 'Invalid slug' });
     return;
   }
+  if (isHostedReviewRoomDbEnabled()) {
+    const doc = await getHostedDocumentBySlug(slug);
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    res.json({
+      collabAvailable: false,
+      snapshotUrl: null,
+      capabilities: {
+        canRead: doc.share_state === 'ACTIVE',
+        canComment: doc.share_state === 'ACTIVE',
+        canEdit: doc.share_state === 'ACTIVE',
+      },
+    });
+    return;
+  }
   const doc = getDocumentBySlug(slug);
   if (!doc) {
     res.status(404).json({ error: 'Document not found' });
@@ -2092,6 +2150,28 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    getHostedDocumentBySlug(slug)
+      .then((doc) => {
+        if (!doc) {
+          res.status(404).json({ error: 'Document not found' });
+          return;
+        }
+        res.json({
+          collabAvailable: false,
+          snapshotUrl: null,
+          capabilities: {
+            canRead: doc.share_state === 'ACTIVE',
+            canComment: doc.share_state === 'ACTIVE',
+            canEdit: doc.share_state === 'ACTIVE',
+          },
+        });
+      })
+      .catch((error) => {
+        res.status(500).json({ error: error instanceof Error ? error.message : 'Hosted document lookup failed' });
+      });
     return;
   }
   const doc = getDocumentBySlug(slug);

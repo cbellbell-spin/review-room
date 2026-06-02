@@ -24,6 +24,7 @@
     "@handlewithcare/prosemirror-suggest-changes": "^0.1.8",
     "@hocuspocus/provider": "^2.15.2",
     "@hocuspocus/server": "^2.15.2",
+    "@libsql/client": "^0.17.3",
     "@milkdown/core": "^7.5.0",
     "@milkdown/kit": "^7.5.0",
     "@milkdown/plugin-clipboard": "^7.5.0",

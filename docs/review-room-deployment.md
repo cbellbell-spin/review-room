@@ -13,12 +13,18 @@ The deployment uses a Vercel Function entrypoint at `api/index.js`, with all pat
 Runtime environment used for the initial staging deploy:
 
 ```text
-DATABASE_PATH=/tmp/review-room.db
+TURSO_DATABASE_URL=libsql://...
+TURSO_AUTH_TOKEN=...
+SNAPSHOT_DIR=/tmp/review-room-snapshots
 PROOF_TRUST_PROXY_HEADERS=true
 PROOF_COLLAB_V2=0
 ```
 
-This is a smoke-test deployment, not durable production persistence. The SQLite file lives in the function runtime temp directory and may disappear when the function instance is replaced. Live WebSocket collaboration is disabled for this target.
+When `TURSO_DATABASE_URL` is present, Review Room uses the hosted libSQL adapter for the dashboard create/register/list flow, document state reads, editor open-context bootstrap, and bridge comment writes. Local development and tests keep using `better-sqlite3` through `DATABASE_PATH`.
+
+Live WebSocket collaboration remains disabled for this target. The hosted adapter returns non-collab editor bootstrap responses so Vercel serverless instances can still open, read, and comment on Review Room documents against the same durable database.
+
+Do not use `DATABASE_PATH=/tmp/review-room.db` for hosted smoke tests except when intentionally checking packaging only. The temp SQLite path is per function instance, so document creation can succeed on one invocation while a later document-state request lands on another instance and cannot see the same file.
 
 ## Database Direction
 

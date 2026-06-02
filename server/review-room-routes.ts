@@ -20,6 +20,20 @@ import {
   type ReviewRoomDocumentRow,
 } from './db.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
+import {
+  addHostedDocumentEvent,
+  createHostedReviewRoomDocument,
+  createHostedReviewRoomDocumentRecord,
+  getHostedDocumentBySlug,
+  getHostedReviewRoomDocumentByProofSlug,
+  getHostedReviewRoomDocumentMemberForProofSlug,
+  getHostedReviewRoomIdentity,
+  isHostedReviewRoomDbEnabled,
+  listHostedReviewRoomDocuments,
+  listHostedReviewRoomIdentities,
+  resolveHostedDocumentAccess,
+  upsertHostedReviewRoomDocumentMember,
+} from './hosted-review-room-db.js';
 
 export const reviewRoomRoutes = Router();
 
@@ -384,8 +398,20 @@ reviewRoomRoutes.get('/review-room', (_req: Request, res: Response) => {
   res.type('html').send(renderReviewRoomHome());
 });
 
-reviewRoomRoutes.get('/review-room/api/identity', (req: Request, res: Response) => {
+reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Response) => {
   const identityId = getCurrentReviewRoomIdentityId(req);
+  if (isHostedReviewRoomDbEnabled()) {
+    res.json({
+      success: true,
+      workspace: {
+        id: DEFAULT_WORKSPACE_ID,
+        name: 'Local Review Room',
+      },
+      currentIdentity: await getHostedReviewRoomIdentity(identityId),
+      identities: await listHostedReviewRoomIdentities(DEFAULT_WORKSPACE_ID),
+    });
+    return;
+  }
   res.json({
     success: true,
     workspace: {
@@ -397,9 +423,21 @@ reviewRoomRoutes.get('/review-room/api/identity', (req: Request, res: Response) 
   });
 });
 
-reviewRoomRoutes.get('/review-room/api/documents', (req: Request, res: Response) => {
+reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Response) => {
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 50;
   const identityId = getCurrentReviewRoomIdentityId(req);
+  if (isHostedReviewRoomDbEnabled()) {
+    const rows = await listHostedReviewRoomDocuments(DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50);
+    const documents = await Promise.all(
+      rows.map(async (row) => serializeDocument(row, await getHostedReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
+    );
+    res.json({
+      success: true,
+      currentIdentity: await getHostedReviewRoomIdentity(identityId),
+      documents,
+    });
+    return;
+  }
   res.json({
     success: true,
     currentIdentity: getReviewRoomIdentity(identityId),
@@ -408,7 +446,7 @@ reviewRoomRoutes.get('/review-room/api/documents', (req: Request, res: Response)
   });
 });
 
-reviewRoomRoutes.post('/review-room/api/documents', (req: Request, res: Response) => {
+reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Response) => {
   const identityId = getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Untitled review';
@@ -421,6 +459,34 @@ reviewRoomRoutes.post('/review-room/api/documents', (req: Request, res: Response
   const slug = generateSlug();
   const ownerSecret = randomUUID();
   const ownerId = `review-room:${DEFAULT_HUMAN_ID}`;
+  if (isHostedReviewRoomDbEnabled()) {
+    const hosted = await createHostedReviewRoomDocument({
+      slug,
+      title,
+      markdown,
+      ownerId,
+      ownerSecret,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      identityId,
+    });
+    const openPath = appendTokenToPath(
+      buildReviewRoomOpenPath(hosted.proofDoc.slug),
+      hosted.member?.proof_access_token ?? hosted.editorAccess.secret,
+    );
+    res.status(201).json({
+      success: true,
+      document: serializeDocument(hosted.reviewRoomDocument, hosted.member),
+      openPath,
+      proof: {
+        slug: hosted.proofDoc.slug,
+        docId: hosted.proofDoc.doc_id,
+        accessToken: hosted.editorAccess.secret,
+        ownerSecret,
+        statePath: `/documents/${encodeURIComponent(hosted.proofDoc.slug)}/state`,
+      },
+    });
+    return;
+  }
   const proofDoc = createDocument(slug, markdown, {}, title, ownerId, ownerSecret);
   const access = createDocumentAccessToken(slug, 'editor');
   refreshSnapshotForSlug(slug);
@@ -455,7 +521,7 @@ reviewRoomRoutes.post('/review-room/api/documents', (req: Request, res: Response
   });
 });
 
-reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res: Response) => {
+reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request, res: Response) => {
   const identityId = getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const rawProofSlug = typeof body.proofSlug === 'string' ? body.proofSlug : '';
@@ -466,6 +532,79 @@ reviewRoomRoutes.post('/review-room/api/documents/register', (req: Request, res:
     : parsed.token;
   if (!proofSlug) {
     res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const existing = await getHostedReviewRoomDocumentByProofSlug(proofSlug);
+    if (existing) {
+      const member = await getHostedReviewRoomDocumentMemberForProofSlug(proofSlug, identityId)
+        ?? await upsertHostedReviewRoomDocumentMember({
+          reviewRoomDocumentId: existing.id,
+          identityId,
+          role: 'owner',
+          proofSlug,
+        });
+      res.json({
+        success: true,
+        alreadyRegistered: true,
+        document: serializeDocument(existing, member),
+        openPath: appendTokenToPath(buildReviewRoomOpenPath(proofSlug), member.proof_access_token ?? token),
+      });
+      return;
+    }
+    const proofDoc = await getHostedDocumentBySlug(proofSlug);
+    if (!proofDoc) {
+      res.status(404).json({
+        success: false,
+        code: 'DOCUMENT_MISSING',
+        error: 'No document exists for that slug.',
+      });
+      return;
+    }
+    if (token && !(await resolveHostedDocumentAccess(proofSlug, token))) {
+      res.status(403).json({
+        success: false,
+        code: 'PERMISSION_DENIED',
+        error: 'The provided token does not grant access to that document.',
+        shareState: proofDoc.share_state,
+      });
+      return;
+    }
+    const stateError = reviewRoomRegisterErrorForState(proofDoc.share_state);
+    if (stateError) {
+      res.status(stateError.status).json({
+        success: false,
+        code: stateError.code,
+        error: stateError.error,
+        shareState: proofDoc.share_state,
+      });
+      return;
+    }
+    const reviewRoomDocument = await createHostedReviewRoomDocumentRecord({
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      title: proofDoc.title?.trim() || 'Untitled review',
+      proofSlug: proofDoc.slug,
+      proofDocId: proofDoc.doc_id,
+      source: 'registered',
+      ownerIdentityId: identityId,
+      createdByIdentityId: identityId,
+    });
+    const member = await getHostedReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
+    await addHostedDocumentEvent(proofDoc.slug, 'review_room.document.registered', {
+      title: reviewRoomDocument.title,
+      reviewRoom: true,
+    }, `review-room:${identityId}`);
+    res.status(201).json({
+      success: true,
+      document: serializeDocument(reviewRoomDocument, member),
+      openPath: appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), member?.proof_access_token ?? token),
+      proof: {
+        slug: proofDoc.slug,
+        docId: proofDoc.doc_id,
+        shareState: proofDoc.share_state,
+        statePath: `/documents/${encodeURIComponent(proofDoc.slug)}/state`,
+      },
+    });
     return;
   }
   const existing = getReviewRoomDocumentByProofSlug(proofSlug);

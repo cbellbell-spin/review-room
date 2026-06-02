@@ -39,6 +39,11 @@ import {
   buildProofSdkDocumentPaths,
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
+import {
+  getHostedDocumentBySlug,
+  isHostedReviewRoomDbEnabled,
+  resolveHostedDocumentAccessRole,
+} from './hosted-review-room-db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -373,17 +378,29 @@ shareWebRoutes.get('/og/share/:slug.png', async (req: Request, res: Response) =>
   res.type('png').send(png);
 });
 
-shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
+shareWebRoutes.get('/d/:slug', async (req: Request, res: Response) => {
   const slug = Array.isArray(req.params.slug) ? (req.params.slug[0] ?? '') : (req.params.slug ?? '');
   const tokenFromQuery = typeof req.query.token === 'string' ? req.query.token.trim() : '';
   const reviewRoomMode = req.query.rr === '1' || req.query.reviewRoom === '1' || req.query.reviewRoom === 'true';
   const origin = getPublicOrigin(req);
 
-  const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
+  const doc = slug
+    ? (isHostedReviewRoomDbEnabled()
+      ? await getHostedDocumentBySlug(slug) ?? null
+      : getCanonicalReadableDocumentSync(slug, 'share') ?? null)
+    : null;
   const tokenFromCookie = slug ? getCookie(req, shareTokenCookieName(slug)) : null;
-  const roleFromQuery = slug && tokenFromQuery ? resolveDocumentAccessRole(slug, tokenFromQuery) : null;
+  const roleFromQuery = slug && tokenFromQuery
+    ? (isHostedReviewRoomDbEnabled()
+      ? await resolveHostedDocumentAccessRole(slug, tokenFromQuery)
+      : resolveDocumentAccessRole(slug, tokenFromQuery))
+    : null;
   const queryOwner = Boolean(doc && tokenFromQuery && canMutateByOwnerIdentity(doc, tokenFromQuery));
-  const roleFromCookie = slug && tokenFromCookie ? resolveDocumentAccessRole(slug, tokenFromCookie) : null;
+  const roleFromCookie = slug && tokenFromCookie
+    ? (isHostedReviewRoomDbEnabled()
+      ? await resolveHostedDocumentAccessRole(slug, tokenFromCookie)
+      : resolveDocumentAccessRole(slug, tokenFromCookie))
+    : null;
   const cookieOwner = Boolean(doc && tokenFromCookie && canMutateByOwnerIdentity(doc, tokenFromCookie));
 
   // Prefer URL token over cookie when it is valid, but allow a valid cookie to win if the query token is stale.
@@ -498,7 +515,9 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
     const capabilities = deriveShareCapabilities(role, shareState);
     const origin = getPublicOrigin(req);
     const editV2Enabled = isFeatureEnabled(process.env.AGENT_EDIT_V2_ENABLED);
-    const mutationReady = doc ? isCanonicalReadMutationReady(doc) : false;
+    const mutationReady = doc
+      ? (isHostedReviewRoomDbEnabled() ? true : isCanonicalReadMutationReady(doc))
+      : false;
     const readSource = doc && 'read_source' in doc ? doc.read_source : 'projection';
     const projectionFresh = doc && 'projection_fresh' in doc ? doc.projection_fresh : true;
     const links: Record<string, unknown> = {
@@ -593,7 +612,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
         doc?.markdown ?? '',
         agentHtmlToken,
         preview,
-        doc ? isCanonicalReadMutationReady(doc) : false,
+        doc ? (isHostedReviewRoomDbEnabled() ? true : isCanonicalReadMutationReady(doc)) : false,
       ),
     );
     return;

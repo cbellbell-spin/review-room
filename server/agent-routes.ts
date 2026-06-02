@@ -130,6 +130,12 @@ import {
   releaseMutationReservation,
   type MutationReservation,
 } from './mutation-idempotency.js';
+import {
+  buildHostedAgentStateBody,
+  executeHostedDocumentOperation,
+  isHostedReviewRoomDbEnabled,
+  resolveHostedDocumentAccessRole,
+} from './hosted-review-room-db.js';
 
 export const agentRoutes = Router({ mergeParams: true });
 
@@ -1969,6 +1975,11 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
     res.status(400).json({ success: false, error: 'Invalid slug' });
     return;
   }
+  if (isHostedReviewRoomDbEnabled()) {
+    const result = await buildHostedAgentStateBody(slug, getPresentedSecret(req, slug));
+    res.status(result.status).json(result.body);
+    return;
+  }
   const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
   if (!role) return;
   ensureAgentPresenceForAuthenticatedCall(req, slug, {}, 'state.read');
@@ -3398,6 +3409,21 @@ agentRoutes.post('/:slug/marks/comment', async (req: Request, res: Response) => 
   const slug = getSlug(req);
   if (!slug) {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['commenter', 'editor', 'owner_bot'])) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const result = await executeHostedDocumentOperation(slug, 'POST', '/marks/comment', asPayload(req.body));
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
     return;
   }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;

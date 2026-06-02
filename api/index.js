@@ -1,3 +1,37 @@
-import { createReviewRoomExpressApp } from '../server/index.ts';
+import '@aws-sdk/client-s3';
+import '@handlewithcare/prosemirror-suggest-changes';
+import '@libsql/client';
+import '@milkdown/core';
+import '@milkdown/kit';
+import '@milkdown/kit/prose/keymap';
+import '@milkdown/kit/prose/model';
+import '@milkdown/kit/prose/state';
+import '@milkdown/kit/prose/transform';
+import '@milkdown/kit/prose/view';
+import '@milkdown/kit/utils';
+import '@milkdown/plugin-clipboard';
+import '@milkdown/plugin-cursor';
+import '@milkdown/plugin-history';
+import '@milkdown/plugin-listener';
+import '@milkdown/plugin-prism';
+import '@milkdown/preset-commonmark';
+import '@milkdown/preset-gfm';
+import '@milkdown/theme-nord';
+import '@resvg/resvg-js';
+import 'beautiful-mermaid';
+import 'better-sqlite3';
+import 'express';
+import 'prismjs';
+import 'remark-frontmatter';
+import 'remark-gfm';
+import 'satori';
+import 'web-haptics';
+import 'wink-eng-lite-web-model';
+import 'wink-nlp';
+import 'ws';
+import 'zod';
+import { tsImport } from 'tsx/esm/api';
+
+const { createReviewRoomExpressApp } = await tsImport('../server/index.ts', import.meta.url);
 
 export default createReviewRoomExpressApp();

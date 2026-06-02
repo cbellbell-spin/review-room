@@ -6,7 +6,7 @@
   "regions": ["sfo1"],
   "functions": {
     "api/index.js": {
-      "includeFiles": "{dist/**,public/**,server/resources/**}"
+      "includeFiles": "{dist/**,public/**,server/**,src/**,node_modules/@libsql/**,node_modules/libsql/**,node_modules/yjs/**,node_modules/y-prosemirror/**,node_modules/y-websocket/**,node_modules/y-protocols/**,node_modules/lib0/**}"
     }
   },
   "rewrites": [
