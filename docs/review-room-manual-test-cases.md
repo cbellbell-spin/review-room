@@ -32,13 +32,14 @@ Expected: dashboard is usable, with no visible script error banner.
 1. Click `Create new document`.
 2. Confirm the browser opens `/d/:slug?rr=1&token=...`.
 3. Confirm the editor opens as an empty document window.
-4. Enter Markdown content in the editor.
-5. Confirm the document header has the title on its own top row.
-6. Confirm the second header row has `Review Room`, `Documents`, `Agent API`, saved/manual-save state, `Add agent`, `Save`, and `Share`.
-7. Click `Save`.
-8. Confirm the browser returns to `/review-room`.
+4. Edit the title in the header and confirm the updated title remains visible.
+5. Use the formatting toolbar for heading, bold, italic, quote, and list formatting.
+6. Enter Markdown content in the editor.
+7. Confirm the status changes to unsaved/saving and returns to saved after autosave.
+8. Make one more edit, click `Cancel`, and confirm the unsaved-change warning appears.
+9. Stay on the document, click `Save`, and confirm the browser returns to `/review-room`.
 
-Expected: the document appears in the list with source label `Created in Review Room`.
+Expected: the document appears in the list with source label `Created in Review Room` and the edited title.
 
 ## Review Room Role Controls
 
@@ -214,9 +215,10 @@ Expected: standalone document mode remains separate from Review Room mode.
 2. At desktop width, confirm:
    - title row is above the controls row,
    - there is no duplicate floating share pill,
-   - `Add agent` and `Share` are usable.
+   - formatting controls, `Add agent`, `Cancel`, `Save`, and `Share` are usable.
 3. At a narrow mobile width, confirm:
    - title stays on its own row,
+   - formatting controls scroll horizontally if needed,
    - controls stay inside the viewport,
    - document content starts below the fixed header.
 

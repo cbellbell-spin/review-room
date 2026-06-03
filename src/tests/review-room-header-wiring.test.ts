@@ -17,6 +17,7 @@ const vercelConfig = JSON.parse(readFileSync(path.join(root, 'vercel.json'), 'ut
 assert(indexHtml.includes('id="review-room-title-slot"'), 'Expected Review Room header to expose a title slot');
 assert(indexHtml.includes('id="review-room-status-slot"'), 'Expected Review Room header to expose a sync status slot');
 assert(indexHtml.includes('id="review-room-agent-slot"'), 'Expected Review Room header to expose an agent control slot');
+assert(indexHtml.includes('id="review-room-format-slot"'), 'Expected Review Room header to expose a formatting toolbar slot');
 assert(indexHtml.includes('id="review-room-save-slot"'), 'Expected Review Room header to expose a save slot');
 assert(indexHtml.includes('id="review-room-share-slot"'), 'Expected Review Room header to expose a share control slot');
 assert(indexHtml.includes('class="review-room-controls"'), 'Expected Review Room header to group controls below the title row');
@@ -33,14 +34,30 @@ assert(
   editorSource.includes("titleSlot.replaceChildren(title);")
     && editorSource.includes("statusSlot.replaceChildren(syncStatusInline);")
     && editorSource.includes("agentSlotContainer.replaceChildren(agentSlot);")
-    && editorSource.includes("saveSlot.replaceChildren(this.createReviewRoomSaveButton());")
+    && editorSource.includes("formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());")
+    && editorSource.includes("saveSlot.replaceChildren(this.createReviewRoomSaveControls());")
     && editorSource.includes("shareSlot.replaceChildren(shareBtn);"),
   'Expected existing share controls to be mounted into Review Room header slots',
 );
 assert(
   editorSource.includes('private createReviewRoomSaveButton()')
+    && editorSource.includes('private createReviewRoomCancelButton()')
     && editorSource.includes("window.location.href = '/review-room';"),
-  'Expected Review Room save button to save and return to the document list',
+  'Expected Review Room save/cancel controls to return to the document list',
+);
+assert(
+  editorSource.includes('private readonly reviewRoomAutosaveDelayMs: number = 5_000;')
+    && editorSource.includes('this.scheduleReviewRoomAutosave();')
+    && editorSource.includes('this.shouldWarnAboutUnsavedReviewRoomChanges()'),
+  'Expected Review Room manual-save mode to autosave and warn only for unsaved changes',
+);
+assert(
+  editorSource.includes('private createReviewRoomFormattingToolbar()')
+    && editorSource.includes("action: 'bold'")
+    && editorSource.includes("action: 'italic'")
+    && editorSource.includes("action: 'heading1'")
+    && editorSource.includes("action: 'bulletList'"),
+  'Expected Review Room editor to expose a compact Markdown formatting toolbar',
 );
 assert(
   editorSource.includes('this.reviewRoomRestSaveMode || (baseAllowLocalEdits && hydrated)'),

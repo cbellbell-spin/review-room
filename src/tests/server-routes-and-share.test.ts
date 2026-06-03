@@ -401,6 +401,11 @@ async function runServerSourceTests(): Promise<void> {
       'await updateHostedDocument({',
       'hosted Review Room document saves should not fall through to local SQLite',
     );
+    assertIncludes(
+      routesSource,
+      "apiRoutes.put('/documents/:slug/title', async",
+      'hosted Review Room title saves should be handled by the async route',
+    );
   });
 
   await test('D1: landing template keeps mobile hero CTA visible', async () => {
@@ -665,6 +670,21 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(savedStateResponse.status === 200, `Expected saved state status 200, got ${savedStateResponse.status}`);
       const savedState = await savedStateResponse.json();
       assert(String(savedState.markdown).includes('Draft body.'), 'Expected saved underlying document content');
+
+      const editedTitle = 'Edited Review Room Draft Title';
+      const titleResponse = await put(baseUrl, `/documents/${created.document.proofSlug}/title`, {
+        title: editedTitle,
+      }, {
+        'x-share-token': created.proof.accessToken,
+      });
+      assert(titleResponse.status === 200, `Expected Review Room title save status 200, got ${titleResponse.status}`);
+
+      const relistedResponse = await get(baseUrl, '/review-room/api/documents');
+      assert(relistedResponse.status === 200, `Expected Review Room relist status 200, got ${relistedResponse.status}`);
+      const relisted = await relistedResponse.json();
+      const relistedDoc = relisted.documents.find((entry: { proofSlug?: string }) => entry.proofSlug === created.document.proofSlug);
+      assert(relistedDoc, 'Expected edited document in Review Room list');
+      assertEqual(relistedDoc.title, editedTitle, 'Expected Review Room list to reflect edited title');
     });
 
     await test('D2: Review Room registers an existing active document', async () => {

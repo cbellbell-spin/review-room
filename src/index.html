@@ -161,6 +161,18 @@
       gap: 10px;
     }
 
+    .review-room-format-row {
+      display: none;
+      width: 100%;
+      justify-content: center;
+      overflow-x: auto;
+      padding: 2px 0 0;
+    }
+
+    body[data-review-room="true"] .review-room-format-row:not(:empty) {
+      display: flex;
+    }
+
     #review-room-title-slot {
       min-width: 0;
       flex: 1 1 auto;
@@ -178,9 +190,16 @@
       flex-shrink: 0;
     }
 
+    #review-room-format-slot {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-width: 0;
+    }
+
     @media (max-width: 760px) {
       #review-room-bar {
-        min-height: 92px;
+        min-height: 124px;
         gap: 8px;
         padding: 8px 12px;
       }
@@ -199,6 +218,10 @@
 
       .review-room-actions {
         gap: 6px;
+      }
+
+      .review-room-format-row {
+        justify-content: flex-start;
       }
 
       #review-room-presence-slot {
@@ -1217,6 +1240,9 @@
         <div id="review-room-save-slot"></div>
         <div id="review-room-share-slot"></div>
       </div>
+    </div>
+    <div class="review-room-format-row">
+      <div id="review-room-format-slot"></div>
     </div>
   </div>
   <div id="app">

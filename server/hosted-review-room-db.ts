@@ -623,7 +623,7 @@ export async function updateHostedDocument(input: {
   slug: string;
   markdown?: string;
   marks?: Record<string, unknown>;
-  title?: string;
+  title?: string | null;
   actor?: string;
 }): Promise<HostedEngineExecutionResult> {
   const doc = await getHostedDocumentBySlug(input.slug);
@@ -644,7 +644,8 @@ export async function updateHostedDocument(input: {
   const now = new Date().toISOString();
   const markdown = hasMarkdown ? input.markdown ?? '' : doc.markdown;
   const marks = hasMarks ? input.marks ?? {} : parseMarks(doc.marks);
-  const title = hasTitle ? input.title ?? '' : doc.title;
+  const title = hasTitle ? input.title ?? null : doc.title;
+  const reviewRoomTitle = typeof title === 'string' && title.trim().length > 0 ? title.trim() : 'Untitled';
   const revision = Number(doc.revision ?? 1) + (hasMarkdown ? 1 : 0);
   const marksJson = JSON.stringify(marks);
   const actor = input.actor?.trim() || 'review-room:user';
@@ -691,6 +692,13 @@ export async function updateHostedDocument(input: {
       )
       VALUES (?, ?, last_insert_rowid(), 'document.updated', ?, ?, NULL, 'PUT /documents/:slug', NULL, ?, NULL)`,
       [input.slug, revision, eventData, actor, now],
+    ],
+    [
+      `UPDATE review_room_documents
+       SET title = CASE WHEN ? THEN ? ELSE title END,
+           updated_at = ?
+       WHERE proof_slug = ?`,
+      [hasTitle ? 1 : 0, reviewRoomTitle, now, input.slug],
     ],
   ]);
 

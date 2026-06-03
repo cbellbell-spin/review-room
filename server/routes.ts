@@ -42,6 +42,7 @@ import {
   updateDocument,
   updateDocumentTitle,
   updateMarks,
+  updateReviewRoomDocumentTitleByProofSlug,
 } from './db.js';
 import { isShareRole, type ShareRole } from './share-types.js';
 import { broadcastToRoom, closeRoom, getActiveCollabClientBreakdown, getRoomSize } from './ws.js';
@@ -1240,10 +1241,59 @@ apiRoutes.get('/documents/:slug', (req: Request, res: Response) => {
 });
 
 // Update document title metadata.
-apiRoutes.put('/documents/:slug/title', (req: Request, res: Response) => {
+apiRoutes.put('/documents/:slug/title', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
+    return;
+  }
+
+  const body = isRecord(req.body) ? req.body : {};
+  const title = body.title;
+  const actor = body.actor;
+  const clientId = body.clientId;
+  if (title !== null && typeof title !== 'string') {
+    res.status(400).json({ error: 'title must be a string or null when provided' });
+    return;
+  }
+
+  if (isHostedReviewRoomDbEnabled()) {
+    const doc = await getHostedDocumentBySlug(slug);
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    if (doc.share_state === 'DELETED') {
+      res.status(410).json({ error: 'Document deleted' });
+      return;
+    }
+    if (doc.share_state === 'REVOKED') {
+      res.status(403).json({ error: 'Document access has been revoked' });
+      return;
+    }
+
+    const presentedSecret = getPresentedSecret(req);
+    const access = presentedSecret ? await resolveHostedDocumentAccess(slug, presentedSecret) : null;
+    const role = access?.role ?? null;
+    const ownerOrBot = role === 'owner_bot';
+    const canEditTitle = ownerOrBot || (doc.share_state === 'ACTIVE' && role === 'editor');
+    if (doc.share_state === 'PAUSED' && !ownerOrBot) {
+      res.status(403).json({ error: 'Document is paused' });
+      return;
+    }
+    if (!canEditTitle) {
+      res.status(403).json({ error: 'Not authorized to update document title' });
+      return;
+    }
+
+    const normalizedTitle = typeof title === 'string' ? title.trim() : '';
+    const canonicalTitle = normalizedTitle.length > 0 ? normalizedTitle : null;
+    const result = await updateHostedDocument({
+      slug,
+      title: canonicalTitle,
+      actor: (typeof actor === 'string' && actor.trim()) ? actor.trim() : 'anonymous',
+    });
+    res.status(result.status).json(result.body);
     return;
   }
 
@@ -1258,15 +1308,6 @@ apiRoutes.put('/documents/:slug/title', (req: Request, res: Response) => {
   }
   if (doc.share_state === 'REVOKED') {
     res.status(403).json({ error: 'Document access has been revoked' });
-    return;
-  }
-
-  const body = isRecord(req.body) ? req.body : {};
-  const title = body.title;
-  const actor = body.actor;
-  const clientId = body.clientId;
-  if (title !== null && typeof title !== 'string') {
-    res.status(400).json({ error: 'title must be a string or null when provided' });
     return;
   }
 
@@ -1297,6 +1338,7 @@ apiRoutes.put('/documents/:slug/title', (req: Request, res: Response) => {
     res.status(500).json({ error: 'Document title updated but document could not be reloaded' });
     return;
   }
+  updateReviewRoomDocumentTitleByProofSlug(slug, canonicalTitle);
 
   broadcastToRoom(slug, {
     type: 'document.title.updated',
@@ -1552,6 +1594,9 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
   if (hasTitleUpdate) {
     didUpdate = true;
     writeSucceeded = writeSucceeded && updateDocumentTitle(slug, normalizedTitle);
+    if (writeSucceeded) {
+      updateReviewRoomDocumentTitleByProofSlug(slug, normalizedTitle);
+    }
   }
   if (!didUpdate) {
     res.status(400).json({ error: 'Provide title, marks, and/or markdown' });

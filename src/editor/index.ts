@@ -87,6 +87,8 @@ import { taskCheckboxesPlugin } from './plugins/task-checkboxes';
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { TextSelection } from '@milkdown/kit/prose/state';
+import { lift, setBlockType, toggleMark, wrapIn } from '@milkdown/kit/prose/commands';
+import { wrapInList } from '@milkdown/kit/prose/schema-list';
 import {
   marksPlugins,
   marksPluginKey,
@@ -1068,6 +1070,9 @@ class ProofEditorImpl implements ProofEditor {
   private shareBannerTitleEl: HTMLElement | null = null;
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
+  private reviewRoomFormatSlotEl: HTMLElement | null = null;
+  private reviewRoomSaveButtonEl: HTMLButtonElement | null = null;
+  private reviewRoomCancelButtonEl: HTMLButtonElement | null = null;
   private shareBannerSyncDotEl: HTMLElement | null = null;
   private shareBannerSyncLabelEl: HTMLElement | null = null;
   private shareBannerTitleEditing: boolean = false;
@@ -1075,6 +1080,12 @@ class ProofEditorImpl implements ProofEditor {
   private shareLastStatusLabel: string = '';
   private shareStatusTextVisibleUntilMs: number = 0;
   private shareStatusHideTimer: ReturnType<typeof setTimeout> | null = null;
+  private reviewRoomAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private reviewRoomLastSavedSnapshotKey: string | null = null;
+  private reviewRoomHasUnsavedChanges: boolean = false;
+  private reviewRoomSaveInFlight: boolean = false;
+  private reviewRoomSaveQueued: boolean = false;
+  private readonly reviewRoomAutosaveDelayMs: number = 5_000;
   private shareWsUnsubscribe: (() => void) | null = null;
   private shareEventPollTimer: ReturnType<typeof setTimeout> | null = null;
   private shareEventPollInFlight: boolean = false;
@@ -1239,6 +1250,7 @@ class ProofEditorImpl implements ProofEditor {
         // Set up listener for content changes
         ctx.get(listenerCtx).updated((_ctx, doc, prevDoc) => {
           if (prevDoc && doc.eq(prevDoc)) return;
+          this.markReviewRoomDocumentChanged();
           this.scheduleContentSync();
         });
 
@@ -1290,10 +1302,14 @@ class ProofEditorImpl implements ProofEditor {
     if (this.lifecycleHandlersInstalled) return;
     this.lifecycleHandlersInstalled = true;
 
-    window.addEventListener('beforeunload', () => {
+    window.addEventListener('beforeunload', (event) => {
       if (this.isShareMode) {
         this.flushShareMarks({ keepalive: true, persistContent: true });
         collabClient.flushPendingLocalStateForUnload();
+      }
+      if (this.shouldWarnAboutUnsavedReviewRoomChanges()) {
+        event.preventDefault();
+        event.returnValue = '';
       }
       this.clearPendingCommentDraftRestore();
       if (this.collabRefreshTimer) {
@@ -1318,12 +1334,18 @@ class ProofEditorImpl implements ProofEditor {
         this.flushShareMarks({ keepalive: true, persistContent: true });
         collabClient.flushPendingLocalStateForUnload();
       }
+      if (this.reviewRoomRestSaveMode && this.reviewRoomHasUnsavedChanges) {
+        void this.saveReviewRoomDocument({ source: 'unload', keepalive: true });
+      }
     });
 
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden' && this.isShareMode) {
         this.flushShareMarks({ keepalive: true, persistContent: true });
         collabClient.flushPendingLocalStateForUnload();
+      }
+      if (document.visibilityState === 'hidden' && this.reviewRoomRestSaveMode && this.reviewRoomHasUnsavedChanges) {
+        void this.saveReviewRoomDocument({ source: 'unload', keepalive: true });
       }
     });
 
@@ -1457,6 +1479,7 @@ class ProofEditorImpl implements ProofEditor {
           : {};
         this.collabEnabled = true;
         this.reviewRoomRestSaveMode = false;
+        this.resetReviewRoomAutosaveState();
         this.collabCanComment = Boolean(collabSession.capabilities.canComment);
         this.collabCanEdit = Boolean(collabSession.capabilities.canEdit);
         this.activeCollabSession = collabSession.session;
@@ -1591,6 +1614,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = initialMarks;
           this.initialMarksSynced = true;
         }
+        this.captureReviewRoomSavedSnapshot();
         if (reviewRoomRestSaveMode) {
           this.clearErrorBanner();
         } else {
@@ -2746,7 +2770,13 @@ class ProofEditorImpl implements ProofEditor {
 
   private getShareSyncStatus(): { label: string; color: string } {
     if (this.reviewRoomRestSaveMode) {
-      return { label: 'Manual save', color: '#266854' };
+      if (this.reviewRoomSaveInFlight) {
+        return { label: 'Autosaving...', color: '#b7791f' };
+      }
+      if (this.reviewRoomHasUnsavedChanges) {
+        return { label: 'Unsaved changes', color: '#b45309' };
+      }
+      return { label: 'Saved', color: '#266854' };
     }
     if (!this.collabEnabled) {
       return { label: 'Live sync unavailable', color: '#ef4444' };
@@ -2801,6 +2831,8 @@ class ProofEditorImpl implements ProofEditor {
       'Document is no longer shared': 'Unshared',
       'Live sync unavailable': 'No sync',
       'Manual save': 'Manual',
+      'Autosaving...': 'Saving',
+      'Unsaved changes': 'Unsaved',
     };
     return map[label] ?? 'Saved';
   }
@@ -3308,6 +3340,8 @@ class ProofEditorImpl implements ProofEditor {
       titleEl.style.cursor = '';
       titleEl.removeAttribute('role');
       titleEl.removeAttribute('tabindex');
+      titleEl.removeAttribute('aria-label');
+      titleEl.removeAttribute('title');
       if (titleEl.contentEditable === 'true') {
         this.shareBannerTitleEditing = false;
         titleEl.contentEditable = 'false';
@@ -3315,8 +3349,18 @@ class ProofEditorImpl implements ProofEditor {
       return;
     }
     titleEl.style.cursor = 'text';
-    titleEl.setAttribute('role', 'button');
+    titleEl.style.display = 'inline-flex';
+    titleEl.style.justifyContent = 'center';
+    titleEl.style.alignItems = 'center';
+    titleEl.style.maxWidth = '100%';
+    titleEl.style.minHeight = '30px';
+    titleEl.style.padding = '2px 10px';
+    titleEl.style.borderRadius = '7px';
+    titleEl.style.outline = '1px solid transparent';
+    titleEl.setAttribute('role', 'textbox');
     titleEl.setAttribute('tabindex', '0');
+    titleEl.setAttribute('aria-label', 'Document title');
+    titleEl.setAttribute('title', 'Edit title');
     if (titleEl.dataset.titleEditBound === 'true') return;
     titleEl.dataset.titleEditBound = 'true';
 
@@ -3326,7 +3370,7 @@ class ProofEditorImpl implements ProofEditor {
       this.shareBannerTitleEditing = true;
       titleEl.contentEditable = 'true';
       titleEl.style.outline = 'none';
-      titleEl.style.borderBottom = '1px solid rgba(0,0,0,0.15)';
+      titleEl.style.boxShadow = '0 0 0 2px rgba(38,104,84,0.18)';
       titleEl.style.color = '#111827';
       const range = document.createRange();
       range.selectNodeContents(titleEl);
@@ -3351,7 +3395,7 @@ class ProofEditorImpl implements ProofEditor {
         event.preventDefault();
         this.shareBannerTitleEditing = false;
         titleEl.contentEditable = 'false';
-        titleEl.style.borderBottom = '';
+        titleEl.style.boxShadow = '';
         titleEl.style.color = '#374151';
         titleEl.textContent = this.shareDocTitle || 'Untitled';
       }
@@ -3366,7 +3410,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.shareBannerTitleEditing) return;
     this.shareBannerTitleEditing = false;
     titleEl.contentEditable = 'false';
-    titleEl.style.borderBottom = '';
+    titleEl.style.boxShadow = '';
     titleEl.style.color = '#374151';
 
     const previousTitle = this.shareDocTitle || 'Untitled';
@@ -3512,14 +3556,17 @@ class ProofEditorImpl implements ProofEditor {
       const statusSlot = document.getElementById('review-room-status-slot');
       const presenceSlot = document.getElementById('review-room-presence-slot');
       const agentSlotContainer = document.getElementById('review-room-agent-slot');
+      const formatSlot = document.getElementById('review-room-format-slot');
       const saveSlot = document.getElementById('review-room-save-slot');
       const shareSlot = document.getElementById('review-room-share-slot');
-      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && saveSlot && shareSlot) {
+      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && formatSlot && saveSlot && shareSlot) {
         titleSlot.replaceChildren(title);
         statusSlot.replaceChildren(syncStatusInline);
         presenceSlot.replaceChildren(avatars);
         agentSlotContainer.replaceChildren(agentSlot);
-        saveSlot.replaceChildren(this.createReviewRoomSaveButton());
+        this.reviewRoomFormatSlotEl = formatSlot;
+        formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());
+        saveSlot.replaceChildren(this.createReviewRoomSaveControls());
         shareSlot.replaceChildren(shareBtn);
         this.scheduleBannerLayoutUpdate();
         return;
@@ -4141,33 +4188,194 @@ class ProofEditorImpl implements ProofEditor {
     return result;
   }
 
-  private async saveReviewRoomDocumentAndReturnHome(button: HTMLButtonElement): Promise<void> {
+  private getReviewRoomSnapshotKey(snapshot: { markdown: string; marks: Record<string, unknown> }): string {
+    return JSON.stringify({ markdown: snapshot.markdown, marks: snapshot.marks });
+  }
+
+  private captureReviewRoomSavedSnapshot(): void {
+    if (!this.reviewRoomRestSaveMode) return;
     const snapshot = this.serializeCurrentShareDocument();
     if (!snapshot) {
-      this.showErrorBanner('Could not read the document before saving.');
+      this.reviewRoomLastSavedSnapshotKey = null;
       return;
     }
-    const previousText = button.textContent || 'Save';
-    button.disabled = true;
-    button.textContent = 'Saving...';
-    try {
-      const ok = await shareClient.pushUpdate(snapshot.markdown, snapshot.marks, getCurrentActor());
-      if (!ok) {
-        button.disabled = false;
-        button.textContent = previousText;
-        this.showErrorBanner('Could not save this document. Try again.');
-        return;
-      }
-      window.location.href = '/review-room';
-    } catch (error) {
-      console.error('[review-room] save failed', error);
-      button.disabled = false;
-      button.textContent = previousText;
-      this.showErrorBanner('Could not save this document. Try again.');
+    this.reviewRoomLastSavedSnapshotKey = this.getReviewRoomSnapshotKey(snapshot);
+    this.reviewRoomHasUnsavedChanges = false;
+    this.updateReviewRoomSaveControls();
+    this.updateShareBannerSyncDisplay();
+  }
+
+  private resetReviewRoomAutosaveState(): void {
+    if (this.reviewRoomAutosaveTimer) {
+      clearTimeout(this.reviewRoomAutosaveTimer);
+      this.reviewRoomAutosaveTimer = null;
+    }
+    this.reviewRoomLastSavedSnapshotKey = null;
+    this.reviewRoomHasUnsavedChanges = false;
+    this.reviewRoomSaveInFlight = false;
+    this.reviewRoomSaveQueued = false;
+    this.updateReviewRoomSaveControls();
+    this.updateShareBannerSyncDisplay();
+  }
+
+  private markReviewRoomDocumentChanged(): void {
+    if (!this.reviewRoomRestSaveMode) return;
+    const snapshot = this.serializeCurrentShareDocument();
+    if (!snapshot) return;
+    const currentKey = this.getReviewRoomSnapshotKey(snapshot);
+    if (this.reviewRoomLastSavedSnapshotKey === null) {
+      this.reviewRoomLastSavedSnapshotKey = currentKey;
+      this.reviewRoomHasUnsavedChanges = false;
+      return;
+    }
+    this.reviewRoomHasUnsavedChanges = currentKey !== this.reviewRoomLastSavedSnapshotKey;
+    if (this.reviewRoomHasUnsavedChanges) {
+      this.scheduleReviewRoomAutosave();
+    } else if (this.reviewRoomAutosaveTimer) {
+      clearTimeout(this.reviewRoomAutosaveTimer);
+      this.reviewRoomAutosaveTimer = null;
+    }
+    this.updateReviewRoomSaveControls();
+    this.updateShareBannerSyncDisplay();
+  }
+
+  private scheduleReviewRoomAutosave(): void {
+    if (!this.reviewRoomRestSaveMode || !this.reviewRoomHasUnsavedChanges) return;
+    if (this.reviewRoomAutosaveTimer) {
+      clearTimeout(this.reviewRoomAutosaveTimer);
+    }
+    this.reviewRoomAutosaveTimer = setTimeout(() => {
+      this.reviewRoomAutosaveTimer = null;
+      void this.saveReviewRoomDocument({ source: 'autosave' });
+    }, this.reviewRoomAutosaveDelayMs);
+  }
+
+  private shouldWarnAboutUnsavedReviewRoomChanges(): boolean {
+    return this.reviewRoomRestSaveMode && this.reviewRoomHasUnsavedChanges;
+  }
+
+  private updateReviewRoomSaveControls(): void {
+    if (this.reviewRoomSaveButtonEl) {
+      this.reviewRoomSaveButtonEl.disabled = this.reviewRoomSaveInFlight || !this.collabCanEdit;
+      this.reviewRoomSaveButtonEl.textContent = this.reviewRoomSaveInFlight ? 'Saving' : 'Save';
+    }
+    if (this.reviewRoomCancelButtonEl) {
+      this.reviewRoomCancelButtonEl.disabled = this.reviewRoomSaveInFlight;
     }
   }
 
-  private createReviewRoomSaveButton(): HTMLElement {
+  private async saveReviewRoomDocument(options?: {
+    returnHome?: boolean;
+    source?: 'manual' | 'autosave' | 'unload';
+    keepalive?: boolean;
+  }): Promise<boolean> {
+    if (!this.collabCanEdit) return false;
+    if (!this.reviewRoomRestSaveMode) {
+      this.flushShareMarks({ keepalive: Boolean(options?.keepalive), persistContent: true });
+      if (options?.returnHome) window.location.href = '/review-room';
+      return true;
+    }
+    if (this.reviewRoomSaveInFlight) {
+      this.reviewRoomSaveQueued = true;
+      return false;
+    }
+
+    const snapshot = this.serializeCurrentShareDocument();
+    if (!snapshot) {
+      this.showErrorBanner('Could not read the document before saving.');
+      return false;
+    }
+    const snapshotKey = this.getReviewRoomSnapshotKey(snapshot);
+    if (options?.source === 'autosave' && snapshotKey === this.reviewRoomLastSavedSnapshotKey) {
+      this.reviewRoomHasUnsavedChanges = false;
+      this.updateReviewRoomSaveControls();
+      this.updateShareBannerSyncDisplay();
+      return true;
+    }
+
+    if (this.reviewRoomAutosaveTimer) {
+      clearTimeout(this.reviewRoomAutosaveTimer);
+      this.reviewRoomAutosaveTimer = null;
+    }
+
+    this.reviewRoomSaveInFlight = true;
+    this.updateReviewRoomSaveControls();
+    this.updateShareBannerSyncDisplay();
+    try {
+      const ok = await shareClient.pushUpdate(snapshot.markdown, snapshot.marks, getCurrentActor(), {
+        keepalive: Boolean(options?.keepalive),
+      });
+      if (!ok) {
+        this.reviewRoomHasUnsavedChanges = true;
+        this.scheduleReviewRoomAutosave();
+        this.showErrorBanner('Could not save this document. Try again.');
+        return false;
+      }
+      this.clearErrorBanner();
+      const currentSnapshot = this.serializeCurrentShareDocument();
+      const currentKey = currentSnapshot ? this.getReviewRoomSnapshotKey(currentSnapshot) : snapshotKey;
+      this.reviewRoomLastSavedSnapshotKey = snapshotKey;
+      this.reviewRoomHasUnsavedChanges = currentKey !== snapshotKey;
+      if (this.reviewRoomHasUnsavedChanges) this.scheduleReviewRoomAutosave();
+      if (options?.returnHome) window.location.href = '/review-room';
+      return true;
+    } catch (error) {
+      console.error('[review-room] save failed', error);
+      this.reviewRoomHasUnsavedChanges = true;
+      this.scheduleReviewRoomAutosave();
+      this.showErrorBanner('Could not save this document. Try again.');
+      return false;
+    } finally {
+      this.reviewRoomSaveInFlight = false;
+      const shouldRunQueuedSave = this.reviewRoomSaveQueued && !options?.returnHome;
+      this.reviewRoomSaveQueued = false;
+      this.updateReviewRoomSaveControls();
+      this.updateShareBannerSyncDisplay();
+      if (shouldRunQueuedSave) {
+        void this.saveReviewRoomDocument({ source: 'autosave' });
+      }
+    }
+  }
+
+  private async saveReviewRoomDocumentAndReturnHome(button: HTMLButtonElement): Promise<void> {
+    this.reviewRoomSaveButtonEl = button;
+    await this.saveReviewRoomDocument({ source: 'manual', returnHome: true });
+  }
+
+  private cancelReviewRoomDocument(): void {
+    if (this.shouldWarnAboutUnsavedReviewRoomChanges()) {
+      const discard = window.confirm('Discard unsaved changes and return to documents?');
+      if (!discard) return;
+    }
+    window.location.href = '/review-room';
+  }
+
+  private createReviewRoomSaveControls(): HTMLElement {
+    const group = document.createElement('div');
+    group.style.cssText = 'display:inline-flex;align-items:center;gap:8px;flex-shrink:0;';
+    const cancel = this.createReviewRoomCancelButton();
+    const save = this.createReviewRoomSaveButton();
+    group.append(cancel, save);
+    return group;
+  }
+
+  private createReviewRoomCancelButton(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Cancel';
+    button.setAttribute('aria-label', 'Cancel and return to documents');
+    button.style.cssText = `
+      display:inline-flex;align-items:center;justify-content:center;min-height:36px;min-width:70px;padding:0 12px;
+      border:1px solid #cbd7c6;border-radius:18px;background:#fff;color:#374151;
+      font-size:13px;font-weight:650;cursor:pointer;font-family:inherit;
+    `;
+    button.onclick = () => this.cancelReviewRoomDocument();
+    this.reviewRoomCancelButtonEl = button;
+    this.updateReviewRoomSaveControls();
+    return button;
+  }
+
+  private createReviewRoomSaveButton(): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = 'Save';
@@ -4180,7 +4388,83 @@ class ProofEditorImpl implements ProofEditor {
     button.onclick = () => {
       void this.saveReviewRoomDocumentAndReturnHome(button);
     };
+    this.reviewRoomSaveButtonEl = button;
+    this.updateReviewRoomSaveControls();
     return button;
+  }
+
+  private createReviewRoomFormattingToolbar(): HTMLElement {
+    const toolbar = document.createElement('div');
+    toolbar.setAttribute('role', 'toolbar');
+    toolbar.setAttribute('aria-label', 'Document formatting');
+    toolbar.style.cssText = `
+      display:${this.collabCanEdit ? 'inline-flex' : 'none'};align-items:center;gap:4px;max-width:100%;overflow-x:auto;
+      padding:4px;border:1px solid #dbe4d5;border-radius:8px;background:rgba(255,255,255,0.94);
+    `;
+    const actions: Array<{ label: string; title: string; action: ReviewRoomFormatAction }> = [
+      { label: 'P', title: 'Paragraph', action: 'paragraph' },
+      { label: 'H1', title: 'Heading 1', action: 'heading1' },
+      { label: 'H2', title: 'Heading 2', action: 'heading2' },
+      { label: 'B', title: 'Bold', action: 'bold' },
+      { label: 'I', title: 'Italic', action: 'italic' },
+      { label: 'Quote', title: 'Block quote', action: 'quote' },
+      { label: '• List', title: 'Bulleted list', action: 'bulletList' },
+      { label: '1. List', title: 'Numbered list', action: 'orderedList' },
+    ];
+    for (const item of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = item.label;
+      button.title = item.title;
+      button.setAttribute('aria-label', item.title);
+      button.style.cssText = `
+        display:inline-flex;align-items:center;justify-content:center;min-height:30px;min-width:34px;padding:0 9px;
+        border:1px solid transparent;border-radius:6px;background:transparent;color:#2f3b32;
+        font-size:12px;font-weight:700;white-space:nowrap;cursor:pointer;font-family:inherit;
+      `;
+      if (item.action === 'bold') button.style.fontWeight = '800';
+      if (item.action === 'italic') button.style.fontStyle = 'italic';
+      button.onmouseenter = () => {
+        button.style.background = '#eef4e9';
+        button.style.borderColor = '#d6e2ce';
+      };
+      button.onmouseleave = () => {
+        button.style.background = 'transparent';
+        button.style.borderColor = 'transparent';
+      };
+      button.onmousedown = (event) => event.preventDefault();
+      button.onclick = () => this.applyReviewRoomFormat(item.action);
+      toolbar.append(button);
+    }
+    return toolbar;
+  }
+
+  private applyReviewRoomFormat(action: ReviewRoomFormatAction): void {
+    if (!this.editor || !this.collabCanEdit || !this.shareAllowLocalEdits) return;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const { schema } = view.state;
+      const run = (command: (state: typeof view.state, dispatch?: typeof view.dispatch, view?: EditorView) => boolean): boolean => (
+        command(view.state, view.dispatch, view)
+      );
+      const commandSucceeded = (() => {
+        if (action === 'bold' && schema.marks.strong) return run(toggleMark(schema.marks.strong));
+        if (action === 'italic' && schema.marks.em) return run(toggleMark(schema.marks.em));
+        if (action === 'paragraph' && schema.nodes.paragraph) {
+          return run(setBlockType(schema.nodes.paragraph)) || run(lift);
+        }
+        if (action === 'heading1' && schema.nodes.heading) return run(setBlockType(schema.nodes.heading, { level: 1 }));
+        if (action === 'heading2' && schema.nodes.heading) return run(setBlockType(schema.nodes.heading, { level: 2 }));
+        if (action === 'quote' && schema.nodes.blockquote) return run(wrapIn(schema.nodes.blockquote));
+        if (action === 'bulletList' && schema.nodes.bullet_list) return run(wrapInList(schema.nodes.bullet_list));
+        if (action === 'orderedList' && schema.nodes.ordered_list) return run(wrapInList(schema.nodes.ordered_list));
+        return false;
+      })();
+      if (commandSucceeded) {
+        view.focus();
+        this.markReviewRoomDocumentChanged();
+      }
+    });
   }
 
   private createShareMenuButton(): HTMLElement {
@@ -4799,6 +5083,9 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerTitleEl = null;
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
+    this.reviewRoomFormatSlotEl = null;
+    this.reviewRoomSaveButtonEl = null;
+    this.reviewRoomCancelButtonEl = null;
     this.shareBannerSyncDotEl = null;
     this.shareBannerSyncLabelEl = null;
     if (this.shareStatusHideTimer) {
@@ -4821,6 +5108,8 @@ class ProofEditorImpl implements ProofEditor {
       'review-room-status-slot',
       'review-room-presence-slot',
       'review-room-agent-slot',
+      'review-room-format-slot',
+      'review-room-save-slot',
       'review-room-share-slot',
     ]) {
       document.getElementById(id)?.replaceChildren();
@@ -5652,6 +5941,7 @@ class ProofEditorImpl implements ProofEditor {
     );
     this.lastReceivedServerMarks = { ...metadata };
     this.initialMarksSynced = true;
+    this.markReviewRoomDocumentChanged();
 
     if (this.collabEnabled && this.collabCanEdit) {
       collabClient.setMarksMetadata(metadata);
@@ -10483,6 +10773,16 @@ if (window.location?.pathname?.startsWith('/d/')) {
     },
   };
 }
+
+type ReviewRoomFormatAction =
+  | 'paragraph'
+  | 'heading1'
+  | 'heading2'
+  | 'bold'
+  | 'italic'
+  | 'quote'
+  | 'bulletList'
+  | 'orderedList';
 
 // Expose freeform prompt for sidebar
 (window as any).sendAgentPrompt = (prompt: string) => {

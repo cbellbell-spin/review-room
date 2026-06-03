@@ -4161,6 +4161,18 @@ export function getReviewRoomDocumentByProofSlug(proofSlug: string): ReviewRoomD
   return row ?? null;
 }
 
+export function updateReviewRoomDocumentTitleByProofSlug(proofSlug: string, title: string | null): boolean {
+  assertWritesAllowed('updateReviewRoomDocumentTitleByProofSlug');
+  const normalizedTitle = typeof title === 'string' && title.trim().length > 0 ? title.trim() : 'Untitled';
+  const now = new Date().toISOString();
+  const result = getDb().prepare(`
+    UPDATE review_room_documents
+    SET title = ?, updated_at = ?
+    WHERE proof_slug = ?
+  `).run(normalizedTitle, now, proofSlug);
+  return result.changes > 0;
+}
+
 export function listReviewRoomDocuments(workspaceId: string = 'local', limit: number = 50): ReviewRoomDocumentRow[] {
   const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 200));
   return getDb().prepare(`
