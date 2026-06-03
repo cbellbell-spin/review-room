@@ -123,6 +123,16 @@ GET /api/agent/<slug>/action?token=<token>&type=suggestion.add&kind=replace&quot
 
 The first GET returns `CONFIRM_REQUIRED` and an `execute.href`. Fetch that URL to apply the change. This fallback only supports `comment.add` and pending `suggestion.add`; it does not support rewrites or accepted/direct-apply suggestions.
 
+For very short URL limits, fetch state with the token and switch to the short alias plus draft chunks:
+
+```text
+GET /api/agent/<slug>/state?token=<token>
+GET /api/agent/<slug>/action/draft?a=<alias>&d=s1&f=content&i=0&t=<short-urlencoded-chunk>
+GET /api/agent/<slug>/action?a=<alias>&type=suggestion.add&kind=replace&quote=<short-quote>&contentDraft=s1&by=ai:<agent>
+```
+
+Use more `i=` chunks as needed, starting at `0`. For comments, upload `f=text` and call `/action` with `textDraft=s1`.
+
 ### Poll events
 
 ```bash

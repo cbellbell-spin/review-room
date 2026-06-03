@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { createClient, type Client, type ResultSet } from '@libsql/client';
 import type {
   DocumentRow,
@@ -34,11 +34,21 @@ export type HostedDocumentEventRow = {
   acked_at: string | null;
 };
 
+export type HostedGetActionAlias = {
+  alias: string;
+  role: ShareRole;
+  expiresAt: string;
+};
+
 let client: Client | null = null;
 let initialized = false;
 
 function hashSecret(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function shortSecret(bytes: number = 9): string {
+  return randomBytes(bytes).toString('base64url');
 }
 
 export function isHostedReviewRoomDbEnabled(): boolean {
@@ -181,6 +191,25 @@ async function ensureHostedReviewRoomDatabase(): Promise<Client> {
       PRIMARY KEY (review_room_document_id, identity_id)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_review_room_members_token ON review_room_document_members(proof_access_token)`,
+    `CREATE TABLE IF NOT EXISTS get_action_aliases (
+      alias_hash TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      role TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_get_action_aliases_slug ON get_action_aliases(document_slug, expires_at)`,
+    `CREATE TABLE IF NOT EXISTS get_action_draft_chunks (
+      document_slug TEXT NOT NULL,
+      alias_hash TEXT NOT NULL,
+      draft_key TEXT NOT NULL,
+      field TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      chunk_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      PRIMARY KEY (document_slug, alias_hash, draft_key, field, chunk_index)
+    )`,
   ]);
   const now = new Date().toISOString();
   await db.batch([
@@ -450,6 +479,101 @@ export async function resolveHostedDocumentAccess(
 export async function resolveHostedDocumentAccessRole(slug: string, secret: string | null | undefined): Promise<ShareRole | null> {
   const access = await resolveHostedDocumentAccess(slug, secret);
   return access?.role ?? null;
+}
+
+export async function createHostedGetActionAlias(
+  slug: string,
+  secret: string | null | undefined,
+): Promise<HostedGetActionAlias | null> {
+  const access = await resolveHostedDocumentAccess(slug, secret);
+  if (!access) return null;
+  const db = await ensureHostedReviewRoomDatabase();
+  const now = new Date();
+  const expires = new Date(now.getTime() + 60 * 60 * 1000);
+  const alias = shortSecret();
+  await db.execute({
+    sql: `INSERT INTO get_action_aliases (alias_hash, document_slug, role, created_at, expires_at)
+          VALUES (?, ?, ?, ?, ?)`,
+    args: [hashSecret(alias), slug, access.role, now.toISOString(), expires.toISOString()],
+  });
+  return { alias, role: access.role, expiresAt: expires.toISOString() };
+}
+
+export async function resolveHostedGetActionAlias(
+  slug: string,
+  alias: string | null | undefined,
+): Promise<HostedGetActionAlias | null> {
+  const trimmed = (alias || '').trim();
+  if (!trimmed) return null;
+  const row = await execute<{ role: ShareRole; expires_at: string }>(`
+    SELECT role, expires_at
+    FROM get_action_aliases
+    WHERE document_slug = ? AND alias_hash = ? AND expires_at > ?
+    LIMIT 1
+  `, [slug, hashSecret(trimmed), new Date().toISOString()]);
+  return row ? { alias: trimmed, role: row.role, expiresAt: row.expires_at } : null;
+}
+
+export async function storeHostedGetActionDraftChunk(input: {
+  slug: string;
+  alias: string;
+  draftKey: string;
+  field: string;
+  chunkIndex: number;
+  chunkText: string;
+}): Promise<{ chunkCount: number; bytes: number; expiresAt: string }> {
+  const db = await ensureHostedReviewRoomDatabase();
+  const now = new Date();
+  const expires = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+  const aliasHash = hashSecret(input.alias);
+  await db.execute({
+    sql: `INSERT INTO get_action_draft_chunks (
+            document_slug, alias_hash, draft_key, field, chunk_index, chunk_text, created_at, expires_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (document_slug, alias_hash, draft_key, field, chunk_index)
+          DO UPDATE SET chunk_text = excluded.chunk_text, expires_at = excluded.expires_at`,
+    args: [
+      input.slug,
+      aliasHash,
+      input.draftKey,
+      input.field,
+      input.chunkIndex,
+      input.chunkText,
+      now.toISOString(),
+      expires,
+    ],
+  });
+  const rows = await executeAll<{ chunk_text: string }>(`
+    SELECT chunk_text
+    FROM get_action_draft_chunks
+    WHERE document_slug = ? AND alias_hash = ? AND draft_key = ? AND field = ? AND expires_at > ?
+    ORDER BY chunk_index ASC
+  `, [input.slug, aliasHash, input.draftKey, input.field, now.toISOString()]);
+  return {
+    chunkCount: rows.length,
+    bytes: rows.reduce((sum, row) => sum + row.chunk_text.length, 0),
+    expiresAt: expires,
+  };
+}
+
+export async function readHostedGetActionDraftField(input: {
+  slug: string;
+  alias: string;
+  draftKey: string;
+  field: string;
+}): Promise<string | null> {
+  const rows = await executeAll<{ chunk_index: number; chunk_text: string }>(`
+    SELECT chunk_index, chunk_text
+    FROM get_action_draft_chunks
+    WHERE document_slug = ? AND alias_hash = ? AND draft_key = ? AND field = ? AND expires_at > ?
+    ORDER BY chunk_index ASC
+  `, [input.slug, hashSecret(input.alias), input.draftKey, input.field, new Date().toISOString()]);
+  if (!rows.length) return null;
+  for (let i = 0; i < rows.length; i += 1) {
+    if (Number(rows[i].chunk_index) !== i) return null;
+  }
+  return rows.map((row) => row.chunk_text).join('');
 }
 
 export async function listHostedDocumentEvents(
@@ -1439,6 +1563,10 @@ export async function buildHostedAgentStateBody(
     return { status: 403, body: { success: false, error: 'Document is not currently accessible' } };
   }
   const state = await readHostedDocumentState(slug);
+  const getActionAlias = access && token ? await createHostedGetActionAlias(slug, token) : null;
+  const getActionAuthParam = getActionAlias
+    ? `a=${encodeURIComponent(getActionAlias.alias)}`
+    : 'token=<token>';
   const body = {
     ...state.body,
     capabilities: deriveReviewRoomCapabilities(
@@ -1458,10 +1586,25 @@ export async function buildHostedAgentStateBody(
       ops: { method: 'POST', href: `/api/agent/${slug}/ops` },
       getAction: {
         method: 'GET',
-        href: `/api/agent/${slug}/action?type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>&token=<token>`,
+        href: `/api/agent/${slug}/action?${getActionAuthParam}&type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>`,
         requiresConfirm: true,
         supports: ['comment.add', 'suggestion.add'],
+        ...(getActionAlias
+          ? {
+              alias: getActionAlias.alias,
+              aliasExpiresAt: getActionAlias.expiresAt,
+              shortHref: `/api/agent/${slug}/action?a=${encodeURIComponent(getActionAlias.alias)}&type=suggestion.add&kind=replace&quote=<short-quote>&contentDraft=<draft>&by=ai:<agent>`,
+            }
+          : {}),
       },
+      ...(getActionAlias
+        ? {
+            getActionDraft: {
+              method: 'GET',
+              href: `/api/agent/${slug}/action/draft?a=${encodeURIComponent(getActionAlias.alias)}&d=<draft>&f=content&i=0&t=<urlencoded-chunk>`,
+            },
+          }
+        : {}),
       comments: { method: 'POST', href: `/documents/${slug}/bridge/comments` },
       title: { method: 'PUT', href: `/api/documents/${slug}/title` },
     },
@@ -1472,6 +1615,15 @@ export async function buildHostedAgentStateBody(
       getActionApi: `/api/agent/${slug}/action`,
       getActionSupports: ['comment.add', 'suggestion.add'],
       getActionRequiresConfirm: true,
+      ...(getActionAlias
+        ? {
+            getActionAlias: getActionAlias.alias,
+            getActionAliasExpiresAt: getActionAlias.expiresAt,
+            getActionDraftApi: `/api/agent/${slug}/action/draft`,
+            getActionDraftFields: ['quote', 'content', 'text'],
+            getActionDraftUse: 'Upload chunks with action/draft, then use quoteDraft, contentDraft, or textDraft on /action.',
+          }
+        : {}),
       commentReadApi: `/documents/${slug}/state`,
       commentReadPath: 'marks',
       mutationReady: true,

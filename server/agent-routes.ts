@@ -140,8 +140,11 @@ import {
   executeHostedDocumentOperation,
   isHostedReviewRoomDbEnabled,
   listHostedDocumentEvents,
+  readHostedGetActionDraftField,
   recordHostedAgentPresence,
+  resolveHostedGetActionAlias,
   resolveHostedDocumentAccessRole,
+  storeHostedGetActionDraftChunk,
 } from './hosted-review-room-db.js';
 
 export const agentRoutes = Router({ mergeParams: true });
@@ -921,6 +924,12 @@ function readQueryString(value: unknown): string {
   return '';
 }
 
+function readQueryRawString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && typeof value[0] === 'string') return value[0];
+  return '';
+}
+
 function buildGetActionExecuteUrl(req: Request): string {
   const [pathPart] = req.originalUrl.split('?');
   const params = new URLSearchParams();
@@ -932,6 +941,14 @@ function buildGetActionExecuteUrl(req: Request): string {
   return `${pathPart}?${params.toString()}`;
 }
 
+function hasGetOnlyDraftReference(query: Request['query']): boolean {
+  return Boolean(
+    readQueryString(query.quoteDraft)
+    || readQueryString(query.contentDraft)
+    || readQueryString(query.textDraft),
+  );
+}
+
 function parseGetOnlyActionPayload(query: Request['query']): { ok: true; payload: Record<string, unknown> } | { ok: false; status: number; body: Record<string, unknown> } {
   const type = readQueryString(query.type) || readQueryString(query.op);
   const agentId = readQueryString(query.agentId) || readQueryString(query.agent) || 'ai:agent';
@@ -939,7 +956,8 @@ function parseGetOnlyActionPayload(query: Request['query']): { ok: true; payload
 
   if (type === 'comment.add') {
     const text = readQueryString(query.text);
-    if (!text) {
+    const textDraft = readQueryString(query.textDraft);
+    if (!text && !textDraft) {
       return { ok: false, status: 400, body: { success: false, code: 'MISSING_TEXT', error: 'GET action comment.add requires text' } };
     }
     return {
@@ -959,7 +977,9 @@ function parseGetOnlyActionPayload(query: Request['query']): { ok: true; payload
       return { ok: false, status: 400, body: { success: false, code: 'INVALID_KIND', error: 'suggestion.add kind must be replace, insert, or delete' } };
     }
     const quote = readQueryString(query.quote);
+    const quoteDraft = readQueryString(query.quoteDraft);
     const content = readQueryString(query.content);
+    const contentDraft = readQueryString(query.contentDraft);
     const status = readQueryString(query.status);
     if (status && status !== 'pending') {
       return {
@@ -972,10 +992,10 @@ function parseGetOnlyActionPayload(query: Request['query']): { ok: true; payload
         },
       };
     }
-    if (kind !== 'insert' && !quote) {
+    if (kind !== 'insert' && !quote && !quoteDraft) {
       return { ok: false, status: 400, body: { success: false, code: 'MISSING_QUOTE', error: 'replace/delete suggestions require quote' } };
     }
-    if ((kind === 'replace' || kind === 'insert') && !content) {
+    if ((kind === 'replace' || kind === 'insert') && !content && !contentDraft) {
       return { ok: false, status: 400, body: { success: false, code: 'MISSING_CONTENT', error: 'replace/insert suggestions require content' } };
     }
     return {
@@ -1000,6 +1020,54 @@ function parseGetOnlyActionPayload(query: Request['query']): { ok: true; payload
       supportedTypes: ['comment.add', 'suggestion.add'],
     },
   };
+}
+
+async function applyGetOnlyDraftFields(input: {
+  slug: string;
+  alias: string;
+  query: Request['query'];
+  payload: Record<string, unknown>;
+}): Promise<{ ok: true; payload: Record<string, unknown> } | { ok: false; status: number; body: Record<string, unknown> }> {
+  const payload = { ...input.payload };
+  const draftFields = [
+    ['quoteDraft', 'quote'],
+    ['contentDraft', 'content'],
+    ['textDraft', 'text'],
+  ] as const;
+  for (const [queryKey, payloadKey] of draftFields) {
+    const draftKey = readQueryString(input.query[queryKey]);
+    if (!draftKey) continue;
+    const value = await readHostedGetActionDraftField({
+      slug: input.slug,
+      alias: input.alias,
+      draftKey,
+      field: payloadKey,
+    });
+    if (value === null) {
+      return {
+        ok: false,
+        status: 400,
+        body: {
+          success: false,
+          code: 'DRAFT_NOT_READY',
+          error: `${queryKey} is missing chunks or has expired`,
+        },
+      };
+    }
+    payload[payloadKey] = value;
+  }
+  return { ok: true, payload };
+}
+
+async function resolveGetOnlyActionRole(slug: string, req: Request): Promise<{ role: ShareRole | null; alias: string | null }> {
+  const alias = readQueryString(req.query.a) || readQueryString(req.query.alias);
+  if (alias) {
+    const resolved = await resolveHostedGetActionAlias(slug, alias);
+    return { role: resolved?.role ?? null, alias: resolved ? alias : null };
+  }
+  const token = getPresentedSecret(req, slug);
+  const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+  return { role, alias: null };
 }
 
 async function enforceMutationPrecondition(
@@ -2261,6 +2329,89 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
   res.status(result.status).json(body);
 });
 
+agentRoutes.get('/:slug/action/draft', async (req: Request, res: Response) => {
+  const mutationRoute = 'GET /action/draft';
+  res.setHeader('Cache-Control', 'no-store');
+  const slug = getSlug(req);
+  if (!slug) {
+    sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
+    return;
+  }
+  if (!isHostedReviewRoomDbEnabled()) {
+    sendMutationResponse(res, 501, {
+      success: false,
+      code: 'GET_ACTION_HOSTED_ONLY',
+      error: 'GET-only action drafts are only available on hosted Review Room persistence.',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  const alias = readQueryString(req.query.a) || readQueryString(req.query.alias);
+  const resolved = await resolveHostedGetActionAlias(slug, alias);
+  if (!resolved) {
+    sendMutationResponse(res, 401, {
+      success: false,
+      code: 'UNAUTHORIZED',
+      error: 'Missing, expired, or invalid GET action alias',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  const draftKey = readQueryString(req.query.d) || readQueryString(req.query.draft);
+  const field = readQueryString(req.query.f) || readQueryString(req.query.field);
+  const chunkIndexRaw = readQueryString(req.query.i) || readQueryString(req.query.index);
+  const chunkText = readQueryRawString(req.query.t) || readQueryRawString(req.query.text);
+  const chunkIndex = Number(chunkIndexRaw);
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(draftKey)) {
+    sendMutationResponse(res, 400, {
+      success: false,
+      code: 'INVALID_DRAFT_KEY',
+      error: 'Draft keys must be 1-40 URL-safe characters.',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  if (field !== 'quote' && field !== 'content' && field !== 'text') {
+    sendMutationResponse(res, 400, {
+      success: false,
+      code: 'INVALID_FIELD',
+      error: 'Draft field must be quote, content, or text.',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  if (!/^\d+$/.test(chunkIndexRaw) || !Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex > 200) {
+    sendMutationResponse(res, 400, {
+      success: false,
+      code: 'INVALID_CHUNK_INDEX',
+      error: 'Chunk index must be an integer from 0 to 200.',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  if (!chunkText) {
+    sendMutationResponse(res, 400, {
+      success: false,
+      code: 'MISSING_CHUNK_TEXT',
+      error: 'Draft chunk text is required.',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  const result = await storeHostedGetActionDraftChunk({
+    slug,
+    alias,
+    draftKey,
+    field,
+    chunkIndex,
+    chunkText,
+  });
+  res.status(200).json({
+    success: true,
+    draftKey,
+    field,
+    chunkIndex,
+    chunkCount: result.chunkCount,
+    bytes: result.bytes,
+    expiresAt: result.expiresAt,
+    use: `${field}Draft=${draftKey}`,
+  });
+});
+
 agentRoutes.get('/:slug/action', async (req: Request, res: Response) => {
   const mutationRoute = 'GET /action';
   res.setHeader('Cache-Control', 'no-store');
@@ -2274,6 +2425,41 @@ agentRoutes.get('/:slug/action', async (req: Request, res: Response) => {
     sendMutationResponse(res, parsed.status, parsed.body, { route: mutationRoute, slug });
     return;
   }
+  const draftReferenced = hasGetOnlyDraftReference(req.query);
+  let effectivePayload = parsed.payload;
+  let auth: { role: ShareRole | null; alias: string | null } | null = null;
+  if (draftReferenced) {
+    if (!isHostedReviewRoomDbEnabled()) {
+      sendMutationResponse(res, 501, {
+        success: false,
+        code: 'GET_ACTION_HOSTED_ONLY',
+        error: 'GET-only action drafts are only available on hosted Review Room persistence.',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    auth = await resolveGetOnlyActionRole(slug, req);
+    if (!auth.alias) {
+      sendMutationResponse(res, auth.role ? 400 : 401, {
+        success: false,
+        code: auth.role ? 'DRAFT_ALIAS_REQUIRED' : 'UNAUTHORIZED',
+        error: auth.role
+          ? 'Draft-backed GET actions require a short alias from /state.'
+          : 'Missing, expired, or invalid GET action alias',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const draftPayload = await applyGetOnlyDraftFields({
+      slug,
+      alias: auth.alias,
+      query: req.query,
+      payload: parsed.payload,
+    });
+    if (!draftPayload.ok) {
+      sendMutationResponse(res, draftPayload.status, draftPayload.body, { route: mutationRoute, slug });
+      return;
+    }
+    effectivePayload = draftPayload.payload;
+  }
   if (readQueryString(req.query.confirm) !== '1') {
     res.status(200).json({
       success: false,
@@ -2283,7 +2469,7 @@ agentRoutes.get('/:slug/action', async (req: Request, res: Response) => {
         method: 'GET',
         href: buildGetActionExecuteUrl(req),
       },
-      payload: parsed.payload,
+      payload: effectivePayload,
       supportedTypes: ['comment.add', 'suggestion.add'],
       safety: {
         directRewriteSupported: false,
@@ -2300,13 +2486,13 @@ agentRoutes.get('/:slug/action', async (req: Request, res: Response) => {
     }, { route: mutationRoute, slug });
     return;
   }
-  const parsedOp = parseDocumentOpRequest(parsed.payload);
+  const parsedOp = parseDocumentOpRequest(effectivePayload);
   if ('error' in parsedOp) {
     sendMutationResponse(res, 400, { success: false, error: parsedOp.error }, { route: mutationRoute, slug });
     return;
   }
-  const token = getPresentedSecret(req, slug);
-  const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+  auth = auth ?? await resolveGetOnlyActionRole(slug, req);
+  const role = auth.role;
   const denied = authorizeDocumentOp(parsedOp.op, role, role === 'owner_bot', role ? 'ACTIVE' : 'REVOKED');
   if (denied) {
     sendMutationResponse(res, role ? 403 : 401, {
@@ -2316,7 +2502,7 @@ agentRoutes.get('/:slug/action', async (req: Request, res: Response) => {
     }, { route: mutationRoute, slug });
     return;
   }
-  const result = await executeHostedAgentOps(slug, parsed.payload);
+  const result = await executeHostedAgentOps(slug, effectivePayload);
   res.setHeader('x-proof-get-action', 'executed');
   sendMutationResponse(res, result.status, {
     ...result.body,

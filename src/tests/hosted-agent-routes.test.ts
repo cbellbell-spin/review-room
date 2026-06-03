@@ -74,7 +74,11 @@ async function run(): Promise<void> {
         && neutralCreated.agent.editingGuidance.proposedEdits.includes('suggestion.add'),
       'Expected hosted neutral create agent descriptor to guide proposed edits toward suggestions',
     );
-    const neutralState = await json<{ markdown: string; agent?: { getActionApi?: string }; _links?: { getAction?: { requiresConfirm?: boolean } } }>(
+    const neutralState = await json<{
+      markdown: string;
+      agent?: { getActionApi?: string; getActionAlias?: string; getActionDraftApi?: string };
+      _links?: { getAction?: { requiresConfirm?: boolean; shortHref?: string }; getActionDraft?: { href?: string } };
+    }>(
       await fetch(`${base}/api/agent/${neutralCreated.slug}/state?token=${encodeURIComponent(neutralCreated.accessToken)}`),
     );
     assert(neutralState.markdown.includes('Hosted neutral doc'), 'Expected hosted neutral create state to use hosted persistence');
@@ -83,12 +87,48 @@ async function run(): Promise<void> {
         && neutralState._links?.getAction?.requiresConfirm === true,
       'Expected hosted state to advertise GET-only action fallback',
     );
+    assert(
+      typeof neutralState.agent?.getActionAlias === 'string'
+        && neutralState.agent.getActionAlias.length > 0
+        && neutralState.agent.getActionDraftApi === `/api/agent/${neutralCreated.slug}/action/draft`
+        && typeof neutralState._links?.getAction?.shortHref === 'string'
+        && typeof neutralState._links?.getActionDraft?.href === 'string',
+      'Expected hosted state to advertise short GET-only action aliases and draft upload',
+    );
+    const getActionAlias = neutralState.agent?.getActionAlias ?? '';
+    const draftParams0 = new URLSearchParams({
+      a: getActionAlias,
+      d: 'draft1',
+      f: 'content',
+      i: '0',
+      t: 'Original paragraph, revised ',
+    });
+    const draftParams1 = new URLSearchParams({
+      a: getActionAlias,
+      d: 'draft1',
+      f: 'content',
+      i: '1',
+      t: 'by chunked GET-only fallback.',
+    });
+    const draft0 = await json<{ success: boolean; chunkCount?: number; use?: string }>(
+      await fetch(`${base}/api/agent/${neutralCreated.slug}/action/draft?${draftParams0.toString()}`),
+    );
+    const draft1 = await json<{ success: boolean; chunkCount?: number; use?: string }>(
+      await fetch(`${base}/api/agent/${neutralCreated.slug}/action/draft?${draftParams1.toString()}`),
+    );
+    assert(
+      draft0.success === true
+        && draft1.success === true
+        && draft1.chunkCount === 2
+        && draft1.use === 'contentDraft=draft1',
+      'Expected GET-only draft chunks to be stored under the short alias',
+    );
     const getActionParams = new URLSearchParams({
-      token: neutralCreated.accessToken,
+      a: getActionAlias,
       type: 'suggestion.add',
       kind: 'replace',
       quote: 'Original paragraph.',
-      content: 'Original paragraph, revised by GET-only fallback.',
+      contentDraft: 'draft1',
       by: 'ai:get-only-test',
     });
     const getActionPreview = await json<{
@@ -103,7 +143,9 @@ async function run(): Promise<void> {
         && getActionPreview.code === 'CONFIRM_REQUIRED'
         && getActionPreview.execute?.method === 'GET'
         && typeof getActionPreview.execute.href === 'string'
-        && getActionPreview.execute.href.includes('confirm=1'),
+        && getActionPreview.execute.href.includes('confirm=1')
+        && getActionPreview.execute.href.includes('contentDraft=draft1')
+        && !getActionPreview.execute.href.includes('token='),
       'Expected GET-only action preview to require confirmation and return execute URL',
     );
     const getActionExecuted = await json<{ success: boolean; markId?: string; getOnlyAction?: boolean }>(
@@ -122,7 +164,7 @@ async function run(): Promise<void> {
     assert(
       getActionMark?.kind === 'suggestion'
         && getActionMark.status === 'pending'
-        && getActionMark.content === 'Original paragraph, revised by GET-only fallback.',
+        && getActionMark.content === 'Original paragraph, revised by chunked GET-only fallback.',
       'Expected GET-only action suggestion mark to be visible in hosted state',
     );
     const neutralDeleted = await json<{ success: boolean; shareState: string }>(

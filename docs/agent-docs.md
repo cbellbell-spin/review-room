@@ -92,6 +92,17 @@ GET /api/agent/<slug>/action?token=<token>&type=suggestion.add&kind=replace&quot
 
 The first GET returns `CONFIRM_REQUIRED` plus an `execute.href`. Fetch that `execute.href` to apply the mutation. This endpoint only supports `comment.add` and pending `suggestion.add`; it does not support rewrites or accepted/direct-apply suggestions.
 
+If your URL length cap is tight, fetch state with the token first and use `agent.getActionAlias` plus draft chunks:
+
+```text
+GET /api/agent/<slug>/state?token=<token>
+GET /api/agent/<slug>/action/draft?a=<alias>&d=s1&f=content&i=0&t=<short-urlencoded-chunk>
+GET /api/agent/<slug>/action/draft?a=<alias>&d=s1&f=content&i=1&t=<next-urlencoded-chunk>
+GET /api/agent/<slug>/action?a=<alias>&type=suggestion.add&kind=replace&quote=<short-quote>&contentDraft=s1&by=ai:<agent>
+```
+
+For comments, upload `f=text` chunks and use `textDraft=s1`. The draft endpoint also accepts `f=quote` with `quoteDraft=s1` when the quote itself is too long. The first `/action` GET still returns `CONFIRM_REQUIRED`; fetch its `execute.href` to apply.
+
 ## Edit Via Ops (Comments, Suggestions, Rewrite)
 
 Use:
