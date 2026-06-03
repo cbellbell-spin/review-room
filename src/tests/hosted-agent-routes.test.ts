@@ -75,9 +75,7 @@ async function run(): Promise<void> {
       'Expected hosted neutral create agent descriptor to guide proposed edits toward suggestions',
     );
     const neutralState = await json<{ markdown: string; agent?: { getActionApi?: string }; _links?: { getAction?: { requiresConfirm?: boolean } } }>(
-      await fetch(`${base}/api/agent/${neutralCreated.slug}/state`, {
-        headers: { 'x-share-token': neutralCreated.accessToken },
-      }),
+      await fetch(`${base}/api/agent/${neutralCreated.slug}/state?token=${encodeURIComponent(neutralCreated.accessToken)}`),
     );
     assert(neutralState.markdown.includes('Hosted neutral doc'), 'Expected hosted neutral create state to use hosted persistence');
     assert(
@@ -118,9 +116,7 @@ async function run(): Promise<void> {
       'Expected confirmed GET-only action to create a pending suggestion',
     );
     const afterGetActionState = await json<{ marks?: Record<string, { kind?: string; status?: string; content?: string }> }>(
-      await fetch(`${base}/api/agent/${neutralCreated.slug}/state`, {
-        headers: { 'x-share-token': neutralCreated.accessToken },
-      }),
+      await fetch(`${base}/api/agent/${neutralCreated.slug}/state?token=${encodeURIComponent(neutralCreated.accessToken)}`),
     );
     const getActionMark = getActionExecuted.markId ? afterGetActionState.marks?.[getActionExecuted.markId] : null;
     assert(

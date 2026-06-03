@@ -245,6 +245,10 @@ function getPresentedSecret(req: Request, slug?: string | null): string | null {
   if (resolvedSlug) {
     const fromCookie = getCookie(req, shareTokenCookieName(resolvedSlug));
     const trimmedCookie = typeof fromCookie === 'string' ? fromCookie.trim() : '';
+    if (isHostedReviewRoomDbEnabled()) {
+      if (trimmedQueryToken) return trimmedQueryToken;
+      if (trimmedCookie) return trimmedCookie;
+    }
     if (trimmedQueryToken) {
       const roleFromQuery = resolveDocumentAccessRole(resolvedSlug, trimmedQueryToken);
       if (roleFromQuery) return trimmedQueryToken;
