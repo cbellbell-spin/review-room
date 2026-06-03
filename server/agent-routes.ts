@@ -131,9 +131,16 @@ import {
   type MutationReservation,
 } from './mutation-idempotency.js';
 import {
+  ackHostedDocumentEvents,
+  applyHostedAgentEdit,
+  applyHostedAgentEditV2,
+  buildHostedAgentSnapshot,
   buildHostedAgentStateBody,
+  executeHostedAgentOps,
   executeHostedDocumentOperation,
   isHostedReviewRoomDbEnabled,
+  listHostedDocumentEvents,
+  recordHostedAgentPresence,
   resolveHostedDocumentAccessRole,
 } from './hosted-review-room-db.js';
 
@@ -2230,6 +2237,11 @@ agentRoutes.get('/:slug/snapshot', async (req: Request, res: Response) => {
     res.status(404).json({ success: false, error: 'Edit v2 is disabled', code: 'EDIT_V2_DISABLED' });
     return;
   }
+  if (isHostedReviewRoomDbEnabled()) {
+    const result = await buildHostedAgentSnapshot(slug);
+    res.status(result.status).json(result.body);
+    return;
+  }
   if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
 
   const revisionRaw = req.query.revision;
@@ -2305,6 +2317,21 @@ agentRoutes.post('/:slug/edit/v2', async (req: Request, res: Response) => {
       { success: false, error: 'Edit v2 is disabled', code: 'EDIT_V2_DISABLED' },
       { route: mutationRoute, slug },
     );
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['editor', 'owner_bot'])) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: 'Missing or invalid editor token',
+        code: 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const result = await applyHostedAgentEditV2(slug, asPayload(req.body));
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
     return;
   }
   if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;
@@ -2436,6 +2463,21 @@ agentRoutes.post('/:slug/edit', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['editor', 'owner_bot'])) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: 'Missing or invalid editor token',
+        code: 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const result = await applyHostedAgentEdit(slug, asPayload(req.body));
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
     return;
   }
   if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;
@@ -3012,10 +3054,25 @@ agentRoutes.post('/:slug/edit', async (req: Request, res: Response) => {
   sendMutationResponse(res, 200, responseBody, { route: mutationRoute, slug });
 });
 
-agentRoutes.post('/:slug/presence', (req: Request, res: Response) => {
+agentRoutes.post('/:slug/presence', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) {
     res.status(400).json({ success: false, error: 'Invalid slug' });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['viewer', 'commenter', 'editor', 'owner_bot'])) {
+      res.status(401).json({
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      });
+      return;
+    }
+    const result = await recordHostedAgentPresence(slug, asPayload(req.body));
+    res.status(result.status).json(result.body);
     return;
   }
   if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
@@ -3161,6 +3218,27 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const parsed = parseDocumentOpRequest(req.body);
+    if ('error' in parsed) {
+      sendMutationResponse(res, 400, { success: false, error: parsed.error }, { route: mutationRoute, slug });
+      return;
+    }
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    const denied = authorizeDocumentOp(parsed.op, role, role === 'owner_bot', role ? 'ACTIVE' : 'REVOKED');
+    if (denied) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: role ? denied : 'Missing or invalid share token',
+        code: role ? 'FORBIDDEN' : 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const result = await executeHostedAgentOps(slug, asPayload(req.body));
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
     return;
   }
 
@@ -3927,16 +4005,53 @@ agentRoutes.post('/:slug/clone-from-canonical', async (req: Request, res: Respon
   sendMutationResponse(res, responseStatus, responseBody, { route: mutationRoute, slug });
 });
 
-agentRoutes.get('/:slug/events/pending', (req: Request, res: Response) => {
+agentRoutes.get('/:slug/events/pending', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) {
     recordCollabRouteLatency('events_pending', 'invalid_slug', 0);
     res.status(400).json({ success: false, error: 'Invalid slug' });
     return;
   }
-  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
   const after = Number.parseInt(String(req.query.after ?? '0'), 10);
   const limit = Number.parseInt(String(req.query.limit ?? '100'), 10);
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['viewer', 'commenter', 'editor', 'owner_bot'])) {
+      res.status(401).json({
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      });
+      return;
+    }
+    const events = await listHostedDocumentEvents(
+      slug,
+      Number.isFinite(after) ? Math.max(0, after) : 0,
+      Number.isFinite(limit) ? limit : 100,
+    );
+    res.json({
+      success: true,
+      events: events.map((event) => ({
+        id: event.id,
+        type: event.event_type,
+        data: (() => {
+          try {
+            return JSON.parse(event.event_data);
+          } catch {
+            return {};
+          }
+        })(),
+        actor: event.actor,
+        createdAt: event.created_at,
+        ackedAt: event.acked_at,
+        ackedBy: event.acked_by,
+      })),
+      cursor: events.length > 0 ? events[events.length - 1]?.id ?? after : after,
+    });
+    return;
+  }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
   const events = listDocumentEvents(slug, Number.isFinite(after) ? Math.max(0, after) : 0, Number.isFinite(limit) ? limit : 100);
   const startedAtMs = getRequestStartedAtMs(res) ?? Date.now();
   const durationMs = Math.max(0, Date.now() - startedAtMs);
@@ -3980,13 +4095,12 @@ agentRoutes.get('/:slug/events/pending', (req: Request, res: Response) => {
   });
 });
 
-agentRoutes.post('/:slug/events/ack', (req: Request, res: Response) => {
+agentRoutes.post('/:slug/events/ack', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) {
     res.status(400).json({ success: false, error: 'Invalid slug' });
     return;
   }
-  if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;
   const payload = asPayload(req.body);
   const upToId = typeof payload.upToId === 'number' ? payload.upToId : Number.NaN;
   if (!Number.isFinite(upToId) || upToId < 0) {
@@ -3994,6 +4108,22 @@ agentRoutes.post('/:slug/events/ack', (req: Request, res: Response) => {
     return;
   }
   const by = typeof payload.by === 'string' && payload.by.trim() ? payload.by.trim() : 'owner';
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['editor', 'owner_bot'])) {
+      res.status(401).json({
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      });
+      return;
+    }
+    const acked = await ackHostedDocumentEvents(slug, Math.trunc(upToId), by);
+    res.json({ success: true, acked });
+    return;
+  }
+  if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;
   const acked = ackDocumentEvents(slug, Math.trunc(upToId), by);
   res.json({ success: true, acked });
 });

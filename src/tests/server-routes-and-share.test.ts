@@ -602,9 +602,10 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(dashboard.body, 'id="new-document-button"', 'Expected dashboard to expose a one-click new document action');
       assertIncludes(dashboard.body, '/review-room/api/documents/register', 'Expected dashboard to call register API');
       assertIncludes(dashboard.body, 'Create new document', 'Expected dashboard to make document creation a first-class workflow');
-      assertIncludes(dashboard.body, 'Open an empty editor', 'Expected new document copy to describe the editor-first workflow');
+      assertIncludes(dashboard.body, 'Start with an empty editor', 'Expected new document copy to describe the editor-first workflow');
+      assertIncludes(dashboard.body, '<details class="panel" aria-labelledby="docs-heading">', 'Expected existing documents to be collapsed by default');
       assertIncludes(dashboard.body, 'Review Room slug or URL', 'Expected Review Room-owned registration copy');
-      assertIncludes(dashboard.body, 'Google Docs and SharePoint imports are not supported yet.', 'Expected dashboard to clarify supported registration inputs');
+      assertIncludes(dashboard.body, 'Direct Google Docs and SharePoint imports are not supported yet', 'Expected dashboard to clarify supported registration inputs');
       assert(!dashboard.body.includes('Document body'), 'Dashboard should not ask for document content before opening the editor');
       assert(!dashboard.body.includes('Existing Proof slug'), 'Dashboard should not expose Proof-branded slug copy');
       assert(!dashboard.body.includes('Proof slug'), 'Dashboard list metadata should not expose Proof-branded slug copy');

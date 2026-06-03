@@ -32,6 +32,14 @@ import { traceServerIncident, toErrorTraceData } from './incident-tracing.js';
 import { getMutationContractStage, validateOpPrecondition } from './mutation-stage.js';
 import { reportBugBridgeRouter } from './report-bug-bridge.js';
 import { readRequestId } from './request-context.js';
+import {
+  executeHostedDocumentOpByType,
+  executeHostedDocumentOperation,
+  getHostedDocumentBySlug,
+  isHostedReviewRoomDbEnabled,
+  resolveHostedDocumentAccessRole,
+} from './hosted-review-room-db.js';
+import { authorizeDocumentOp, type DocumentOpType } from './document-ops.js';
 
 export const bridgeRouter = Router({ mergeParams: true });
 export function createBridgeMountRouter(middleware?: RequestHandler): Router {
@@ -127,6 +135,11 @@ function getSlugParam(req: Request): string | null {
 }
 
 function getBridgeToken(req: Request): string | null {
+  const shareToken = req.header('x-share-token');
+  if (typeof shareToken === 'string' && shareToken.trim()) {
+    return shareToken.trim();
+  }
+
   const headerToken = req.header('x-bridge-token');
   if (typeof headerToken === 'string' && headerToken.trim()) {
     return headerToken.trim();
@@ -138,6 +151,11 @@ function getBridgeToken(req: Request): string | null {
     if (match && match[1]) {
       return match[1].trim();
     }
+  }
+
+  const queryToken = req.query.token;
+  if (typeof queryToken === 'string' && queryToken.trim()) {
+    return queryToken.trim();
   }
 
   return null;
@@ -400,6 +418,140 @@ function validateRoutePayload(
   return null;
 }
 
+function bridgePathToDocumentOpType(method: string, bridgePath: string): DocumentOpType | null {
+  if (method !== 'POST') return null;
+  switch (bridgePath) {
+    case '/marks/comment':
+      return 'comment.add';
+    case '/marks/reply':
+      return 'comment.reply';
+    case '/marks/resolve':
+      return 'comment.resolve';
+    case '/marks/unresolve':
+      return 'comment.unresolve';
+    case '/marks/suggest-replace':
+    case '/marks/suggest-insert':
+    case '/marks/suggest-delete':
+      return 'suggestion.add';
+    case '/marks/accept':
+      return 'suggestion.accept';
+    case '/marks/reject':
+      return 'suggestion.reject';
+    case '/rewrite':
+      return 'rewrite.apply';
+    default:
+      return null;
+  }
+}
+
+function normalizeHostedSuggestionPayload(
+  bridgePath: string,
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  if (bridgePath === '/marks/suggest-insert') return { ...body, kind: 'insert' };
+  if (bridgePath === '/marks/suggest-delete') return { ...body, kind: 'delete' };
+  if (bridgePath === '/marks/suggest-replace') return { ...body, kind: 'replace' };
+  return body;
+}
+
+function applyHostedRewriteChanges(
+  markdown: string,
+  changes: unknown[],
+): { ok: true; content: string } | { ok: false; status: number; body: Record<string, unknown> } {
+  let content = markdown;
+  for (let i = 0; i < changes.length; i += 1) {
+    const change = isRecord(changes[i]) ? changes[i] : {};
+    const find = typeof change.find === 'string' ? change.find : '';
+    const replace = typeof change.replace === 'string' ? change.replace : '';
+    if (!find) {
+      return {
+        ok: false,
+        status: 400,
+        body: buildValidationError('POST', '/rewrite', 'Each /rewrite change requires non-empty string fields "find" and "replace".', {
+          invalidIndexes: [i],
+        }),
+      };
+    }
+    if (!content.includes(find)) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          success: false,
+          code: 'ANCHOR_NOT_FOUND',
+          error: 'Rewrite find text not found in document',
+          invalidIndexes: [i],
+          nextSteps: [
+            'Fetch /state to refresh content.',
+            'Use exact text from the latest markdown snapshot.',
+            'Retry /rewrite with corrected changes.',
+          ],
+        },
+      };
+    }
+    content = content.replace(find, replace);
+  }
+  return { ok: true, content };
+}
+
+async function executeHostedBridgeRequest(
+  slug: string,
+  method: string,
+  bridgePath: string,
+  body: Record<string, unknown>,
+  req: Request,
+): Promise<{ handled: true; status: number; body: Record<string, unknown> } | { handled: false }> {
+  if (!isHostedReviewRoomDbEnabled()) return { handled: false };
+
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { handled: true, status: doc?.share_state === 'DELETED' ? 410 : 404, body: { success: false, error: 'Document not found' } };
+  }
+
+  if (method === 'GET' && (bridgePath === '/state' || bridgePath === '/marks')) {
+    const result = await executeHostedDocumentOperation(slug, method, bridgePath, body);
+    return { handled: true, status: result.status, body: result.body };
+  }
+
+  const opType = bridgePathToDocumentOpType(method, bridgePath);
+  if (!opType) return { handled: false };
+
+  const token = getBridgeToken(req);
+  const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+  const authError = authorizeDocumentOp(opType, role, role === 'owner_bot', doc.share_state);
+  if (authError) {
+    return {
+      handled: true,
+      status: role ? 403 : 401,
+      body: {
+        success: false,
+        error: authError,
+        code: role ? 'FORBIDDEN' : 'UNAUTHORIZED',
+        acceptedHeaders: [
+          'x-share-token: <ACCESS_TOKEN>',
+          'x-bridge-token: <OWNER_SECRET>',
+          'Authorization: Bearer <TOKEN>',
+        ],
+      },
+    };
+  }
+
+  let payload = normalizeHostedSuggestionPayload(bridgePath, body);
+  if (opType === 'rewrite.apply') {
+    if (typeof body.content === 'string') {
+      payload = { ...body, content: body.content };
+    } else if (Array.isArray(body.changes)) {
+      const changed = applyHostedRewriteChanges(doc.markdown, body.changes);
+      if (!changed.ok) return { handled: true, status: changed.status, body: changed.body };
+      payload = { ...body, content: changed.content };
+      delete payload.changes;
+    }
+  }
+
+  const result = await executeHostedDocumentOpByType(slug, opType, payload);
+  return { handled: true, status: result.status, body: result.body };
+}
+
 async function prepareRewriteCollabBarrier(slug: string): Promise<void> {
   const collabRuntime = getCollabRuntime();
   if (!collabRuntime.enabled) return;
@@ -485,6 +637,16 @@ bridgeRouter.use(async (req: Request, res: Response) => {
   const payloadValidation = validateRoutePayload(method, canonicalBridgePath, requestBody);
   if (payloadValidation) {
     res.status(400).json(payloadValidation);
+    return;
+  }
+
+  const hostedResult = await executeHostedBridgeRequest(slug, method, canonicalBridgePath, requestBody, req);
+  if (hostedResult.handled) {
+    res.setHeader('x-proof-bridge-execution', 'server');
+    res.status(hostedResult.status).json({
+      ...hostedResult.body,
+      execution: 'server',
+    });
     return;
   }
 

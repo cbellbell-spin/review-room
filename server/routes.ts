@@ -106,6 +106,8 @@ import {
 } from './proof-sdk-routes.js';
 import {
   buildHostedOpenContextBody,
+  deleteHostedReviewRoomDocument,
+  executeHostedDocumentOpByType,
   getHostedDocumentBySlug,
   getHostedReviewRoomDocumentMemberForProofSlugAndToken,
   isHostedReviewRoomDbEnabled,
@@ -1737,6 +1739,30 @@ apiRoutes.post('/documents/:slug/ops', opsRateLimiter, async (req: Request, res:
   const requestHash = hashRequestBody(req.body);
   const routeKey = `${mutationRoute}:${op}`;
 
+  if (isHostedReviewRoomDbEnabled()) {
+    const doc = await getHostedDocumentBySlug(slug);
+    if (!doc) {
+      sendMutationResponse(res, 404, { success: false, error: 'Document not found' }, { route: mutationRoute, slug });
+      return;
+    }
+    const token = getPresentedSecret(req);
+    const access = token ? await resolveHostedDocumentAccess(slug, token) : null;
+    const role = access?.role ?? null;
+    const denied = authorizeDocumentOp(op, role, role === 'owner_bot', doc.share_state);
+    if (denied) {
+      const status = role ? 403 : 401;
+      sendMutationResponse(res, status, {
+        success: false,
+        error: role ? denied : 'Missing or invalid share token',
+        code: role ? 'FORBIDDEN' : 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const result = await executeHostedDocumentOpByType(slug, op, payload);
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+    return;
+  }
+
   if (isIdempotencyRequired(stage) && !idempotencyKey) {
     sendMutationResponse(res, 409, {
       success: false,
@@ -1923,10 +1949,27 @@ apiRoutes.post('/documents/:slug/ops', opsRateLimiter, async (req: Request, res:
 });
 
 // DELETE is an alias for destructive delete.
-apiRoutes.delete('/documents/:slug', (req: Request, res: Response) => {
+apiRoutes.delete('/documents/:slug', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
+    return;
+  }
+
+  if (isHostedReviewRoomDbEnabled()) {
+    const doc = await getHostedDocumentBySlug(slug);
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    const token = getPresentedSecret(req);
+    const access = token ? await resolveHostedDocumentAccess(slug, token) : null;
+    if (access?.role !== 'owner_bot' && access?.role !== 'editor') {
+      res.status(403).json({ error: 'Not authorized to delete document' });
+      return;
+    }
+    const result = await deleteHostedReviewRoomDocument(slug, 'review-room:cleanup');
+    res.status(result.status).json(result.body);
     return;
   }
 
@@ -2017,10 +2060,26 @@ apiRoutes.post('/documents/:slug/revoke', (req: Request, res: Response) => {
   res.json({ success: true, shareState: 'REVOKED', snapshotUrl: null });
 });
 
-apiRoutes.post('/documents/:slug/delete', (req: Request, res: Response) => {
+apiRoutes.post('/documents/:slug/delete', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const doc = await getHostedDocumentBySlug(slug);
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    const token = getPresentedSecret(req);
+    const access = token ? await resolveHostedDocumentAccess(slug, token) : null;
+    if (access?.role !== 'owner_bot' && access?.role !== 'editor') {
+      res.status(403).json({ error: 'Not authorized to delete document' });
+      return;
+    }
+    const result = await deleteHostedReviewRoomDocument(slug, 'review-room:cleanup');
+    res.status(result.status).json(result.body);
     return;
   }
   const doc = getDocumentBySlug(slug);

@@ -9,12 +9,29 @@ import type {
 } from './db.js';
 import { deriveReviewRoomCapabilities, reviewRoomRoleToShareRole, type DocumentAccessRow } from './db.js';
 import type { ShareRole } from './share-types.js';
+import { applyAgentEditOperations, type AgentEditOperation } from './agent-edit-ops.js';
+import { parseDocumentOpRequest, resolveDocumentOpRoute, type DocumentOpType } from './document-ops.js';
 
 type SqlValue = null | string | number | bigint | ArrayBuffer | boolean | Uint8Array | Date;
 
 export type HostedEngineExecutionResult = {
   status: number;
   body: Record<string, unknown>;
+};
+
+export type HostedDocumentEventRow = {
+  id: number;
+  document_slug: string;
+  document_revision: number | null;
+  event_type: string;
+  event_data: string;
+  actor: string;
+  idempotency_key: string | null;
+  mutation_route: string | null;
+  tombstone_revision: number | null;
+  created_at: string;
+  acked_by: string | null;
+  acked_at: string | null;
 };
 
 let client: Client | null = null;
@@ -214,6 +231,192 @@ function plainText(markdown: string): string {
     .trim();
 }
 
+function hashMarkdown(markdown: string): string {
+  return createHash('sha256').update(markdown).digest('hex');
+}
+
+function splitHostedMarkdownBlocks(markdown: string): string[] {
+  const normalized = (markdown ?? '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+  return normalized
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+}
+
+function joinHostedMarkdownBlocks(blocks: string[]): string {
+  return blocks.map((block) => block.trim()).filter(Boolean).join('\n\n');
+}
+
+function parseHostedBlockRef(ref: unknown): number | null {
+  if (typeof ref !== 'string') return null;
+  const match = ref.match(/^b(\d+)$/i);
+  if (!match) return null;
+  const ordinal = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(ordinal) || ordinal < 1) return null;
+  return ordinal - 1;
+}
+
+function buildHostedSnapshotBody(doc: DocumentRow): Record<string, unknown> {
+  const blocks = splitHostedMarkdownBlocks(doc.markdown).map((markdown, index) => ({
+    ref: `b${index + 1}`,
+    id: `hosted:${doc.doc_id}:r${doc.revision}:b${index + 1}`,
+    type: markdown.startsWith('#') ? 'heading' : 'paragraph',
+    markdown,
+    markdownHash: hashMarkdown(markdown),
+    textPreview: plainText(markdown).slice(0, 200),
+  }));
+
+  return {
+    success: true,
+    slug: doc.slug,
+    revision: doc.revision,
+    readSource: 'hosted_libsql',
+    projectionFresh: true,
+    repairPending: false,
+    mutationReady: true,
+    generatedAt: new Date().toISOString(),
+    blocks,
+    _links: {
+      editV2: { method: 'POST', href: `/api/agent/${doc.slug}/edit/v2` },
+      state: `/api/agent/${doc.slug}/state`,
+      docs: '/agent-docs',
+    },
+    collab: {
+      available: false,
+      reason: 'hosted-libsql-serverless',
+    },
+  };
+}
+
+type HostedEditV2Operation =
+  | { op: 'replace_block'; ref: string; block: { markdown: string } }
+  | { op: 'insert_after'; ref: string; blocks: Array<{ markdown: string }> }
+  | { op: 'insert_before'; ref: string; blocks: Array<{ markdown: string }> }
+  | { op: 'delete_block'; ref: string }
+  | { op: 'replace_range'; fromRef: string; toRef: string; blocks: Array<{ markdown: string }> }
+  | { op: 'find_replace_in_block'; ref: string; find: string; replace: string; occurrence?: 'first' | 'all' };
+
+function normalizeHostedEditV2Operations(raw: unknown): { operations: HostedEditV2Operation[] } | { error: string; opIndex?: number } {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { error: 'operations must be a non-empty array' };
+  }
+  if (raw.length > 100) {
+    return { error: 'Too many operations', opIndex: 100 };
+  }
+
+  const operations: HostedEditV2Operation[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry = raw[i];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { error: 'Invalid operation payload', opIndex: i };
+    }
+    const op = entry as Record<string, unknown>;
+    if (op.op === 'replace_block') {
+      const block = op.block;
+      if (typeof op.ref !== 'string' || !block || typeof block !== 'object' || Array.isArray(block) || typeof (block as Record<string, unknown>).markdown !== 'string') {
+        return { error: 'replace_block requires ref + block.markdown', opIndex: i };
+      }
+      operations.push({ op: 'replace_block', ref: op.ref, block: { markdown: (block as Record<string, string>).markdown } });
+      continue;
+    }
+    if (op.op === 'insert_after' || op.op === 'insert_before') {
+      if (typeof op.ref !== 'string' || !Array.isArray(op.blocks)) {
+        return { error: `${op.op} requires ref + blocks`, opIndex: i };
+      }
+      const blocks = op.blocks.map((block) => (
+        block && typeof block === 'object' && !Array.isArray(block) && typeof (block as Record<string, unknown>).markdown === 'string'
+          ? { markdown: (block as Record<string, string>).markdown }
+          : null
+      ));
+      if (blocks.some((block) => block === null)) {
+        return { error: `${op.op} blocks must include markdown`, opIndex: i };
+      }
+      operations.push({ op: op.op, ref: op.ref, blocks: blocks as Array<{ markdown: string }> });
+      continue;
+    }
+    if (op.op === 'delete_block') {
+      if (typeof op.ref !== 'string') return { error: 'delete_block requires ref', opIndex: i };
+      operations.push({ op: 'delete_block', ref: op.ref });
+      continue;
+    }
+    if (op.op === 'replace_range') {
+      if (typeof op.fromRef !== 'string' || typeof op.toRef !== 'string' || !Array.isArray(op.blocks)) {
+        return { error: 'replace_range requires fromRef + toRef + blocks', opIndex: i };
+      }
+      const blocks = op.blocks.map((block) => (
+        block && typeof block === 'object' && !Array.isArray(block) && typeof (block as Record<string, unknown>).markdown === 'string'
+          ? { markdown: (block as Record<string, string>).markdown }
+          : null
+      ));
+      if (blocks.some((block) => block === null)) {
+        return { error: 'replace_range blocks must include markdown', opIndex: i };
+      }
+      operations.push({ op: 'replace_range', fromRef: op.fromRef, toRef: op.toRef, blocks: blocks as Array<{ markdown: string }> });
+      continue;
+    }
+    if (op.op === 'find_replace_in_block') {
+      if (typeof op.ref !== 'string' || typeof op.find !== 'string' || typeof op.replace !== 'string') {
+        return { error: 'find_replace_in_block requires ref + find + replace', opIndex: i };
+      }
+      const occurrence = op.occurrence === 'all' ? 'all' : 'first';
+      operations.push({ op: 'find_replace_in_block', ref: op.ref, find: op.find, replace: op.replace, occurrence });
+      continue;
+    }
+    return { error: `Unknown op: ${String(op.op)}`, opIndex: i };
+  }
+
+  return { operations };
+}
+
+function applyHostedEditV2Operations(markdown: string, operations: HostedEditV2Operation[]): { markdown: string } | { error: string; code: string; opIndex: number } {
+  const blocks = splitHostedMarkdownBlocks(markdown);
+  for (let opIndex = 0; opIndex < operations.length; opIndex += 1) {
+    const op = operations[opIndex];
+    if (op.op === 'replace_block') {
+      const idx = parseHostedBlockRef(op.ref);
+      if (idx === null || idx < 0 || idx >= blocks.length) return { error: 'Invalid ref', code: 'INVALID_REF', opIndex };
+      blocks.splice(idx, 1, op.block.markdown.trim());
+      continue;
+    }
+    if (op.op === 'insert_after' || op.op === 'insert_before') {
+      const idx = parseHostedBlockRef(op.ref);
+      if (idx === null || idx < 0 || idx >= blocks.length) return { error: 'Invalid ref', code: 'INVALID_REF', opIndex };
+      const inserts = op.blocks.map((block) => block.markdown.trim()).filter(Boolean);
+      blocks.splice(op.op === 'insert_after' ? idx + 1 : idx, 0, ...inserts);
+      continue;
+    }
+    if (op.op === 'delete_block') {
+      const idx = parseHostedBlockRef(op.ref);
+      if (idx === null || idx < 0 || idx >= blocks.length) return { error: 'Invalid ref', code: 'INVALID_REF', opIndex };
+      blocks.splice(idx, 1);
+      continue;
+    }
+    if (op.op === 'replace_range') {
+      const fromIdx = parseHostedBlockRef(op.fromRef);
+      const toIdx = parseHostedBlockRef(op.toRef);
+      if (fromIdx === null || toIdx === null || fromIdx < 0 || toIdx < 0 || fromIdx >= blocks.length || toIdx >= blocks.length) {
+        return { error: 'Invalid range ref', code: 'INVALID_REF', opIndex };
+      }
+      if (fromIdx > toIdx) return { error: 'fromRef must be before toRef', code: 'INVALID_RANGE', opIndex };
+      const inserts = op.blocks.map((block) => block.markdown.trim()).filter(Boolean);
+      blocks.splice(fromIdx, toIdx - fromIdx + 1, ...inserts);
+      continue;
+    }
+    if (op.op === 'find_replace_in_block') {
+      const idx = parseHostedBlockRef(op.ref);
+      if (idx === null || idx < 0 || idx >= blocks.length) return { error: 'Invalid ref', code: 'INVALID_REF', opIndex };
+      if (!op.find) return { error: 'find must be non-empty', code: 'INVALID_OPERATIONS', opIndex };
+      const current = blocks[idx];
+      if (!current.includes(op.find)) return { error: 'find target not found', code: 'FIND_TARGET_NOT_FOUND', opIndex };
+      blocks[idx] = op.occurrence === 'all'
+        ? current.split(op.find).join(op.replace)
+        : current.replace(op.find, op.replace);
+    }
+  }
+  return { markdown: joinHostedMarkdownBlocks(blocks) };
+}
+
 async function execute<T>(sql: string, args: SqlValue[] = []): Promise<T | null> {
   const db = await ensureHostedReviewRoomDatabase();
   return firstRow<T>(await db.execute({ sql, args }));
@@ -247,6 +450,37 @@ export async function resolveHostedDocumentAccess(
 export async function resolveHostedDocumentAccessRole(slug: string, secret: string | null | undefined): Promise<ShareRole | null> {
   const access = await resolveHostedDocumentAccess(slug, secret);
   return access?.role ?? null;
+}
+
+export async function listHostedDocumentEvents(
+  slug: string,
+  afterId: number,
+  limit: number = 100,
+): Promise<HostedDocumentEventRow[]> {
+  const safeAfter = Number.isFinite(afterId) ? Math.max(0, Math.trunc(afterId)) : 0;
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 100;
+  return executeAll<HostedDocumentEventRow>(`
+    SELECT *
+    FROM document_events
+    WHERE document_slug = ? AND id > ?
+    ORDER BY id ASC
+    LIMIT ?
+  `, [slug, safeAfter, safeLimit]);
+}
+
+export async function ackHostedDocumentEvents(slug: string, upToId: number, ackedBy: string): Promise<number> {
+  const db = await ensureHostedReviewRoomDatabase();
+  const safeUpTo = Number.isFinite(upToId) ? Math.max(0, Math.trunc(upToId)) : 0;
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `
+      UPDATE document_events
+      SET acked_by = ?, acked_at = ?
+      WHERE document_slug = ? AND id <= ? AND acked_at IS NULL
+    `,
+    args: [ackedBy, now, slug, safeUpTo],
+  });
+  return Number(result.rowsAffected ?? 0);
 }
 
 export async function getHostedReviewRoomIdentity(id: string = 'local-human'): Promise<ReviewRoomIdentityRow | null> {
@@ -721,6 +955,64 @@ export async function updateHostedDocument(input: {
   };
 }
 
+export async function deleteHostedReviewRoomDocument(slug: string, actor: string = 'review-room:user'): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  const db = await ensureHostedReviewRoomDatabase();
+  const now = new Date().toISOString();
+  const payload = JSON.stringify({ shareState: 'DELETED' });
+  const results = await db.batch([
+    [
+      `UPDATE documents
+       SET share_state = 'DELETED', active = 0, deleted_at = ?, updated_at = ?
+       WHERE slug = ?`,
+      [now, now, slug],
+    ],
+    [
+      `UPDATE document_access
+       SET revoked_at = COALESCE(revoked_at, ?)
+       WHERE document_slug = ?`,
+      [now, slug],
+    ],
+    [
+      `UPDATE review_room_documents
+       SET updated_at = ?
+       WHERE proof_slug = ?`,
+      [now, slug],
+    ],
+    [
+      `INSERT INTO document_events (
+        document_slug, document_revision, event_type, event_data, actor, idempotency_key, mutation_route, tombstone_revision, created_at
+      )
+      VALUES (?, ?, 'document.deleted', ?, ?, NULL, 'DELETE /documents/:slug', ?, ?)`,
+      [slug, doc.revision, payload, actor, doc.revision, now],
+    ],
+    [
+      `INSERT INTO mutation_outbox (
+        document_slug, document_revision, event_id, event_type, event_data, actor, idempotency_key, mutation_route,
+        tombstone_revision, created_at, delivered_at
+      )
+      VALUES (?, ?, last_insert_rowid(), 'document.deleted', ?, ?, NULL, 'DELETE /documents/:slug', ?, ?, NULL)`,
+      [slug, doc.revision, payload, actor, doc.revision, now],
+    ],
+  ]);
+  if (Number(results[0].rowsAffected ?? 0) <= 0) {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  return {
+    status: 200,
+    body: {
+      success: true,
+      slug,
+      shareState: 'DELETED',
+      deletedAt: now,
+      snapshotUrl: null,
+    },
+  };
+}
+
 async function persistHostedMarks(
   slug: string,
   marks: Record<string, unknown>,
@@ -811,6 +1103,246 @@ async function addHostedComment(slug: string, body: Record<string, unknown>): Pr
     resolved: false,
   };
   return persistHostedMarks(slug, marks, by, 'comment.added', { markId: id, by, quote, text });
+}
+
+async function addHostedSuggestion(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  if (doc.share_state !== 'ACTIVE') {
+    return { status: 403, body: { success: false, error: 'Document is not currently accessible' } };
+  }
+  const by = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'ai:unknown';
+  const kind = typeof body.kind === 'string' && body.kind.trim() ? body.kind.trim() : 'replace';
+  const quote = typeof body.quote === 'string' ? body.quote.trim() : '';
+  const content = typeof body.content === 'string' ? body.content : '';
+  if (!quote && kind !== 'insert') return { status: 400, body: { success: false, error: 'Missing quote' } };
+  if (quote && !doc.markdown.includes(quote)) {
+    return {
+      status: 409,
+      body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
+    };
+  }
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const marks = parseMarks(doc.marks);
+  marks[id] = {
+    kind: 'suggestion',
+    suggestionKind: kind,
+    by,
+    createdAt: now,
+    quote,
+    content,
+    status: body.status === 'accepted' ? 'accepted' : 'pending',
+  };
+  return persistHostedMarks(slug, marks, by, 'suggestion.added', { markId: id, by, kind, quote, content });
+}
+
+export async function buildHostedAgentSnapshot(slug: string): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found', code: 'NOT_FOUND' } };
+  }
+  if (doc.share_state === 'REVOKED') {
+    return { status: 403, body: { success: false, error: 'Document access revoked', code: 'FORBIDDEN' } };
+  }
+  return { status: 200, body: buildHostedSnapshotBody(doc) };
+}
+
+export async function applyHostedAgentEditV2(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, code: 'NOT_FOUND', error: 'Document not found' } };
+  }
+  if (doc.share_state !== 'ACTIVE') {
+    return { status: 403, body: { success: false, code: 'FORBIDDEN', error: 'Document is not currently editable' } };
+  }
+
+  const baseRevision = typeof body.baseRevision === 'number' ? body.baseRevision : null;
+  if (!Number.isInteger(baseRevision) || baseRevision === null || baseRevision < 1) {
+    return { status: 400, body: { success: false, code: 'INVALID_REQUEST', error: 'baseRevision is required' } };
+  }
+  if (baseRevision !== doc.revision) {
+    return {
+      status: 409,
+      body: {
+        success: false,
+        code: 'STALE_REVISION',
+        error: 'Document changed since baseRevision',
+        snapshot: buildHostedSnapshotBody(doc),
+      },
+    };
+  }
+
+  const normalized = normalizeHostedEditV2Operations(body.operations);
+  if ('error' in normalized) {
+    return {
+      status: 400,
+      body: { success: false, code: 'INVALID_OPERATIONS', error: normalized.error, opIndex: normalized.opIndex ?? null },
+    };
+  }
+
+  const applied = applyHostedEditV2Operations(doc.markdown, normalized.operations);
+  if ('error' in applied) {
+    return {
+      status: 400,
+      body: { success: false, code: applied.code, error: applied.error, opIndex: applied.opIndex },
+    };
+  }
+
+  const actor = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'ai:unknown';
+  const updated = await updateHostedDocument({ slug, markdown: applied.markdown, actor });
+  if (updated.status < 200 || updated.status >= 300) return updated;
+  const nextDoc = await getHostedDocumentBySlug(slug);
+  return {
+    status: 200,
+    body: {
+      success: true,
+      slug,
+      revision: nextDoc?.revision ?? (doc.revision + 1),
+      updatedAt: nextDoc?.updated_at ?? new Date().toISOString(),
+      collab: {
+        status: 'not_available',
+        reason: 'hosted-libsql-serverless',
+      },
+      collabApplied: false,
+      snapshot: nextDoc ? buildHostedSnapshotBody(nextDoc) : null,
+    },
+  };
+}
+
+export async function applyHostedAgentEdit(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  if (doc.share_state !== 'ACTIVE') {
+    return { status: 403, body: { success: false, error: 'Document is not currently editable' } };
+  }
+  const operationsRaw = Array.isArray(body.operations) ? body.operations : [];
+  const operations: AgentEditOperation[] = [];
+  for (let i = 0; i < operationsRaw.length; i += 1) {
+    const op = operationsRaw[i];
+    if (!op || typeof op !== 'object' || Array.isArray(op) || typeof (op as Record<string, unknown>).op !== 'string') {
+      return { status: 400, body: { success: false, code: 'INVALID_OPERATIONS', error: `Invalid operation at index ${i}` } };
+    }
+    const record = op as Record<string, unknown>;
+    if (record.op === 'append' && typeof record.section === 'string' && typeof record.content === 'string') {
+      operations.push({ op: 'append', section: record.section, content: record.content });
+      continue;
+    }
+    if (record.op === 'replace' && typeof record.content === 'string') {
+      operations.push({
+        op: 'replace',
+        search: typeof record.search === 'string' ? record.search : undefined,
+        content: record.content,
+      });
+      continue;
+    }
+    if (record.op === 'insert' && typeof record.content === 'string') {
+      operations.push({
+        op: 'insert',
+        after: typeof record.after === 'string' ? record.after : undefined,
+        content: record.content,
+      });
+      continue;
+    }
+    return { status: 400, body: { success: false, code: 'INVALID_OPERATIONS', error: `Unsupported operation at index ${i}` } };
+  }
+  if (!operations.length) {
+    return { status: 400, body: { success: false, code: 'INVALID_OPERATIONS', error: 'operations must be a non-empty array' } };
+  }
+  const actor = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'ai:unknown';
+  const applied = applyAgentEditOperations(doc.markdown, operations, { by: actor });
+  if (!applied.ok) {
+    return {
+      status: applied.code === 'ANCHOR_NOT_FOUND' ? 409 : 400,
+      body: {
+        success: false,
+        code: applied.code,
+        error: applied.message,
+        opIndex: applied.opIndex,
+        nextSteps: applied.nextSteps,
+      },
+    };
+  }
+  const updated = await updateHostedDocument({ slug, markdown: applied.markdown, actor });
+  if (updated.status < 200 || updated.status >= 300) return updated;
+  const nextDoc = await getHostedDocumentBySlug(slug);
+  return {
+    status: 200,
+    body: {
+      success: true,
+      slug,
+      updatedAt: nextDoc?.updated_at ?? new Date().toISOString(),
+      revision: nextDoc?.revision ?? (doc.revision + 1),
+      collabApplied: false,
+      collab: { status: 'not_available', reason: 'hosted-libsql-serverless' },
+      snapshot: nextDoc ? buildHostedSnapshotBody(nextDoc) : null,
+    },
+  };
+}
+
+export async function executeHostedDocumentOpByType(
+  slug: string,
+  op: DocumentOpType,
+  payload: Record<string, unknown>,
+): Promise<HostedEngineExecutionResult> {
+  const opRoute = resolveDocumentOpRoute(op, payload);
+  if (!opRoute) return { status: 400, body: { success: false, error: 'Unsupported operation payload' } };
+  if (op === 'rewrite.apply') {
+    const content = typeof payload.content === 'string' ? payload.content : '';
+    if (!content.trim()) return { status: 400, body: { success: false, error: 'rewrite.apply requires content' } };
+    const actor = typeof payload.by === 'string' && payload.by.trim() ? payload.by.trim() : 'ai:unknown';
+    const updated = await updateHostedDocument({ slug, markdown: content, actor });
+    if (updated.status < 200 || updated.status >= 300) return updated;
+    const nextDoc = await getHostedDocumentBySlug(slug);
+    return {
+      status: 200,
+      body: {
+        success: true,
+        slug,
+        updatedAt: nextDoc?.updated_at ?? new Date().toISOString(),
+        revision: nextDoc?.revision ?? null,
+        collabApplied: false,
+        collab: { status: 'not_available', reason: 'hosted-libsql-serverless' },
+      },
+    };
+  }
+  if (op === 'suggestion.add') return addHostedSuggestion(slug, payload);
+  return executeHostedDocumentOperation(slug, opRoute.method, opRoute.path, opRoute.body);
+}
+
+export async function executeHostedAgentOps(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
+  const parsed = parseDocumentOpRequest(body);
+  if ('error' in parsed) return { status: 400, body: { success: false, error: parsed.error } };
+  return executeHostedDocumentOpByType(slug, parsed.op, parsed.payload);
+}
+
+export async function recordHostedAgentPresence(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  const agentId = typeof body.agentId === 'string' && body.agentId.trim()
+    ? body.agentId.trim()
+    : typeof body.id === 'string' && body.id.trim()
+      ? body.id.trim()
+      : 'ai:agent';
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : agentId;
+  const status = typeof body.status === 'string' && body.status.trim() ? body.status.trim() : 'idle';
+  await addHostedDocumentEvent(slug, 'agent.presence', { agentId, name, status }, agentId);
+  return {
+    status: 200,
+    body: {
+      success: true,
+      slug,
+      agentId,
+      collabApplied: false,
+      collab: { status: 'not_available', reason: 'hosted-libsql-serverless' },
+    },
+  };
 }
 
 export async function executeHostedDocumentOperation(

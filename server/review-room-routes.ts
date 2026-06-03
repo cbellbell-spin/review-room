@@ -176,12 +176,12 @@ function renderReviewRoomHome(): string {
     .nav a { color: inherit; text-decoration: none; padding: 8px 10px; border-radius: 6px; }
     .nav a[aria-current="page"] { color: #1f2933; background: #e8eee2; }
     main {
-      width: min(1120px, 100%);
+      width: min(860px, 100%);
       margin: 0 auto;
       padding: 28px 24px 48px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 340px;
-      gap: 28px;
+      grid-template-columns: 1fr;
+      gap: 18px;
       align-items: start;
     }
     h1 { margin: 0 0 6px; font-size: 28px; line-height: 1.15; letter-spacing: 0; }
@@ -241,6 +241,29 @@ function renderReviewRoomHome(): string {
     .empty { padding: 24px 18px; color: #607064; border-top: 1px solid #edf1e9; }
     .error { color: #b42318; font-size: 13px; min-height: 18px; }
     .section-title { font-size: 16px; font-weight: 700; margin: 0; }
+    details.panel { overflow: hidden; }
+    summary.panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      cursor: pointer;
+      padding-bottom: 18px;
+      list-style: none;
+    }
+    summary.panel-header::-webkit-details-marker { display: none; }
+    summary.panel-header::after {
+      content: "Open";
+      border: 1px solid #cbd7c6;
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: #266854;
+      font-size: 13px;
+      font-weight: 650;
+      background: #fff;
+      flex-shrink: 0;
+    }
+    details[open] summary.panel-header::after { content: "Close"; }
     @media (max-width: 840px) {
       main { grid-template-columns: 1fr; padding: 20px 16px 40px; }
       .topbar { padding: 0 16px; }
@@ -258,29 +281,18 @@ function renderReviewRoomHome(): string {
       </nav>
     </header>
     <main>
-      <section class="panel" aria-labelledby="docs-heading">
-        <div class="panel-header">
-          <h1 id="docs-heading">Documents</h1>
-          <p>Open documents already in Review Room, or start a new one from the workspace panel.</p>
-        </div>
-        <div id="documents" class="doc-list" aria-live="polite">
-          <div class="empty">Loading documents...</div>
-        </div>
-      </section>
       <aside class="panel" aria-labelledby="create-heading">
         <div class="panel-header">
-          <h1 id="create-heading">Workspace</h1>
-          <p>Start writing in a new Review Room document, or add a Review Room link you already have.</p>
+          <h1 id="create-heading">Create new document</h1>
+          <p>Start with an empty editor, write the document, then save it back to this workspace.</p>
         </div>
         <div class="primary-action">
-          <h2 class="section-title">New document</h2>
-          <p class="form-note">Open an empty editor, write the document, then save back to this workspace.</p>
           <button id="new-document-button" class="button" type="button">Create new document</button>
           <div id="form-error" class="error" role="alert"></div>
         </div>
         <form id="register-form">
           <h2 class="section-title">Add existing document</h2>
-          <p class="form-note">Accepts Review Room document slugs or /d/... links. Google Docs and SharePoint imports are not supported yet.</p>
+          <p class="form-note">Accepts Review Room document slugs or /d/... links. Direct Google Docs and SharePoint imports are not supported yet; paste a Review Room share URL or create a fresh document here.</p>
           <label>
             Review Room slug or URL
             <input id="proof-slug" name="proofSlug" placeholder="abc123 or /d/abc123?token=..." autocomplete="off">
@@ -294,6 +306,17 @@ function renderReviewRoomHome(): string {
         </form>
         <div class="identity" id="identity"></div>
       </aside>
+      <details class="panel" aria-labelledby="docs-heading">
+        <summary class="panel-header">
+          <div>
+            <h1 id="docs-heading">Open a document</h1>
+            <p>Browse documents already in this Review Room workspace.</p>
+          </div>
+        </summary>
+        <div id="documents" class="doc-list" aria-live="polite">
+          <div class="empty">Loading documents...</div>
+        </div>
+      </details>
     </main>
   </div>
   <script>

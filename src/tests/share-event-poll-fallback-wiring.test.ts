@@ -46,7 +46,7 @@ assert(
     && editorSource.includes('this.pendingShareMarksRefresh = true;')
     && editorSource.includes('clearTimeout(this.shareMarksRefreshTimer);')
     && editorSource.includes('void shareClient.fetchOpenContext()')
-    && editorSource.includes('this.applyAuthoritativeShareMarks(serverMarks);'),
+    && editorSource.includes('this.applyExternalMarks(serverMarks);'),
   'Expected pending comment/suggestion events to refresh authoritative marks for healthy share sessions',
 );
 

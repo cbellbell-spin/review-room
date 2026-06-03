@@ -43,6 +43,22 @@ function getHeader(req: Request, name: string): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function hasAgentOrShareCredential(req: Request): boolean {
+  const shareToken = getHeader(req, 'x-share-token');
+  if (shareToken) return true;
+
+  const bridgeToken = getHeader(req, 'x-bridge-token');
+  if (bridgeToken) return true;
+
+  const authorization = getHeader(req, 'authorization');
+  if (authorization && /^Bearer\s+\S+/i.test(authorization)) return true;
+
+  const queryToken = req.query.token;
+  if (typeof queryToken === 'string' && queryToken.trim()) return true;
+
+  return false;
+}
+
 function buildUpgradePayload(reason: string, details?: Record<string, unknown>): Record<string, unknown> {
   return {
     error: 'Client upgrade required',
@@ -146,6 +162,11 @@ export function enforceApiClientCompatibility(req: Request, res: Response, next:
 }
 
 export function enforceBridgeClientCompatibility(req: Request, res: Response, next: NextFunction): void {
+  if (hasAgentOrShareCredential(req)) {
+    next();
+    return;
+  }
+
   const validation = validateClientHeaders(req);
   if (!validation.ok) {
     respondUpgradeRequired(res, validation.payload);

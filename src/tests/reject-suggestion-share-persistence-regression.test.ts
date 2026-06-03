@@ -16,26 +16,21 @@ function run(): void {
   assert(markRejectEnd !== -1, 'Expected to isolate markReject body');
 
   const markRejectBlock = editorSource.slice(markRejectStart, markRejectEnd);
-  const markRejectShareStart = markRejectBlock.indexOf('if (this.isShareMode) {');
-  const markRejectShareEnd = markRejectBlock.indexOf('\n    let success = false;');
-  assert(markRejectShareStart !== -1 && markRejectShareEnd !== -1, 'Expected to isolate markReject share-mode branch');
-  const markRejectShareBlock = markRejectBlock.slice(markRejectShareStart, markRejectShareEnd);
 
-  assert(markRejectBlock.includes('if (this.isShareMode) {'), 'Regression guard: rejecting a suggestion in share mode must avoid local collab-only mutations');
   assert(
-    markRejectShareBlock.includes('let rejected = false;')
-      && markRejectShareBlock.includes('rejected = rejectMark(view, markId);')
-      && markRejectShareBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
-      && markRejectShareBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
-      && markRejectShareBlock.includes("console.warn('[markReject] Suggestion not pending in share mode:'")
-      && markRejectShareBlock.includes('const actor = getCurrentActor();')
-      && markRejectShareBlock.includes('void shareClient.rejectSuggestion(markId, actor).then(async (result) => {')
-      && markRejectShareBlock.includes('this.applyAuthoritativeShareMarks(serverMarks);'),
-    'Expected markReject share mode to optimistically tombstone the local suggestion, snapshot local marks, and then refresh from the authoritative reject mutation response',
+    markRejectBlock.includes('success = rejectMark(view, markId);')
+      && markRejectBlock.includes('if (success && this.isShareMode) {')
+      && markRejectBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
+      && markRejectBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
+      && markRejectBlock.includes('const actor = getCurrentActor();')
+      && markRejectBlock.includes('void shareClient.rejectSuggestion(markId, actor).then((result) => {')
+      && markRejectBlock.includes('const mergedMetadata = mergePendingServerMarks(getMarkMetadataWithQuotes(innerView.state), serverMarks);')
+      && markRejectBlock.includes('setMarkMetadata(innerView, mergedMetadata);'),
+    'Expected markReject share mode to use the dedicated reject mutation and merge authoritative server marks',
   );
   assert(
-    !markRejectShareBlock.includes('shareClient.pushUpdate(')
-      && !markRejectShareBlock.includes('shareClient.pushMarks('),
+    !markRejectBlock.includes('shareClient.pushUpdate(')
+      && !markRejectBlock.includes('shareClient.pushMarks('),
     'Expected markReject share mode not to fall back to broad content or marks writes for suggestion rejection',
   );
   assert(
@@ -61,24 +56,21 @@ function run(): void {
   assert(markRejectAllEnd !== -1, 'Expected to isolate markRejectAll body');
 
   const markRejectAllBlock = editorSource.slice(markRejectAllStart, markRejectAllEnd);
-  const markRejectAllShareStart = markRejectAllBlock.indexOf('if (this.isShareMode) {');
-  const markRejectAllShareEnd = markRejectAllBlock.indexOf('\n    let count = 0;');
-  assert(markRejectAllShareStart !== -1 && markRejectAllShareEnd !== -1, 'Expected to isolate markRejectAll share-mode branch');
-  const markRejectAllShareBlock = markRejectAllBlock.slice(markRejectAllShareStart, markRejectAllShareEnd);
-  assert(markRejectAllBlock.includes('if (this.isShareMode) {'), 'Expected markRejectAll share mode branch');
   assert(
-    markRejectAllShareBlock.includes('rejectedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);')
-      && markRejectAllShareBlock.includes('rejectedCount = rejectAll(view);')
-      && markRejectAllShareBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
-      && markRejectAllShareBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
-      && markRejectAllShareBlock.includes('const actor = getCurrentActor();')
-      && markRejectAllShareBlock.includes('const result = await shareClient.rejectSuggestion(suggestionId, actor);')
-      && markRejectAllShareBlock.includes('this.applyAuthoritativeShareMarks(latestServerMarks);'),
-    'Expected markRejectAll share mode to optimistically reject local suggestions, snapshot local marks, and then apply authoritative server marks',
+    markRejectAllBlock.includes('rejectedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);')
+      && markRejectAllBlock.includes('count = rejectAll(view);')
+      && markRejectAllBlock.includes('if (count > 0 && this.isShareMode && rejectedIds.length > 0) {')
+      && markRejectAllBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
+      && markRejectAllBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
+      && markRejectAllBlock.includes('const actor = getCurrentActor();')
+      && markRejectAllBlock.includes('const result = await shareClient.rejectSuggestion(suggestionId, actor);')
+      && markRejectAllBlock.includes('const mergedMetadata = mergePendingServerMarks(getMarkMetadataWithQuotes(innerView.state), latestServerMarks!);')
+      && markRejectAllBlock.includes('setMarkMetadata(innerView, mergedMetadata);'),
+    'Expected markRejectAll share mode to use dedicated reject mutations and merge authoritative server marks',
   );
   assert(
-    !markRejectAllShareBlock.includes('shareClient.pushUpdate(')
-      && !markRejectAllShareBlock.includes('shareClient.pushMarks('),
+    !markRejectAllBlock.includes('shareClient.pushUpdate(')
+      && !markRejectAllBlock.includes('shareClient.pushMarks('),
     'Expected markRejectAll share mode not to depend on broad content or marks writes for suggestion rejection',
   );
 

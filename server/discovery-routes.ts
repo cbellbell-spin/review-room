@@ -133,7 +133,20 @@ discoveryRoutes.get('/AGENT_CONTRACT.md', (_req: Request, res: Response) => {
 discoveryRoutes.get('/agent-docs', (_req: Request, res: Response) => {
   const doc = loadAgentDocsMarkdown();
   if (!doc) {
-    res.status(404).type('text/plain').send('agent-docs not found');
+    res.status(200).type('text/markdown; charset=utf-8').send(`# Review Room Agent API
+
+The full documentation bundle is unavailable in this deployment, but the Agent API is available.
+
+Start from a shared Review Room document URL:
+
+- \`GET /api/agent/:slug/state\`
+- \`GET /api/agent/:slug/snapshot\`
+- \`POST /api/agent/:slug/edit/v2\`
+- \`POST /api/agent/:slug/ops\`
+- \`POST /api/agent/:slug/presence\`
+
+Use the document URL token as \`Authorization: Bearer <token>\` or \`x-share-token: <token>\`.
+`);
     return;
   }
   res.type('text/markdown; charset=utf-8').send(doc);

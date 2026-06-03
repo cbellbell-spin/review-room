@@ -2716,6 +2716,16 @@ class ProofEditorImpl implements ProofEditor {
         .then((doc) => {
           if (!doc) return;
           this.applyShareTitle(doc.title);
+          if (this.reviewRoomRestSaveMode && !this.reviewRoomHasUnsavedChanges && typeof doc.markdown === 'string') {
+            const serverMarks = (doc.marks && typeof doc.marks === 'object' && !Array.isArray(doc.marks))
+              ? doc.marks as Record<string, StoredMark>
+              : {};
+            const contentWithMarks = embedMarks(doc.markdown, serverMarks);
+            this.loadDocument(contentWithMarks, { allowShareContentMutation: true });
+            this.lastReceivedServerMarks = { ...serverMarks };
+            this.initialMarksSynced = true;
+            this.captureReviewRoomSavedSnapshot();
+          }
           if (typeof doc.viewers === 'number') {
             this.shareOtherViewerCount = Math.max(0, Math.floor(doc.viewers) - 1);
             this.updateShareBannerTitleDisplay();
@@ -2736,11 +2746,11 @@ class ProofEditorImpl implements ProofEditor {
     this.shareMarksRefreshTimer = setTimeout(() => {
       this.shareMarksRefreshTimer = null;
       if (!this.pendingShareMarksRefresh) return;
-      if (!this.isShareMode || !this.collabEnabled) {
+      if (!this.isShareMode) {
         this.pendingShareMarksRefresh = false;
         return;
       }
-      if (shouldDeferShareMarksRefresh({
+      if (this.collabEnabled && shouldDeferShareMarksRefresh({
         collabCanEdit: this.collabCanEdit,
         collabUnsyncedChanges: this.collabUnsyncedChanges,
         collabPendingLocalUpdates: this.collabPendingLocalUpdates,
@@ -2756,7 +2766,12 @@ class ProofEditorImpl implements ProofEditor {
             ? context.doc.marks as Record<string, StoredMark>
             : null;
           if (!serverMarks) return;
-          this.applyAuthoritativeShareMarks(serverMarks);
+          this.lastReceivedServerMarks = { ...serverMarks };
+          this.initialMarksSynced = true;
+          this.applyExternalMarks(serverMarks);
+          if (this.reviewRoomRestSaveMode && !this.reviewRoomHasUnsavedChanges) {
+            this.captureReviewRoomSavedSnapshot();
+          }
         })
         .catch(() => {
           // best-effort refresh for server-originated mark updates
@@ -3194,10 +3209,13 @@ class ProofEditorImpl implements ProofEditor {
       }
       @media (max-width: 560px) {
         #review-room-bar .share-pill-agent-trigger {
-          padding:0 10px !important;
+          padding:0 9px !important;
         }
         #review-room-bar .share-pill-agent-trigger .agent-btn-label,
-        #review-room-bar .share-pill-share-btn button span:first-child,
+        #review-room-bar .share-pill-share-btn button span:first-child {
+          display:inline !important;
+          font-size:11px !important;
+        }
         #review-room-bar .proof-avatar-tooltip {
           display:none !important;
         }
@@ -4064,6 +4082,8 @@ class ProofEditorImpl implements ProofEditor {
     const encodedSlug = encodeURIComponent(slug);
     const presenceUrl = `${origin}/api/agent/${encodedSlug}/presence`;
     const stateUrl = `${origin}/api/agent/${encodedSlug}/state`;
+    const snapshotUrl = `${origin}/api/agent/${encodedSlug}/snapshot`;
+    const editV2Url = `${origin}/api/agent/${encodedSlug}/edit/v2`;
     const opsUrl = `${origin}/api/agent/${encodedSlug}/ops`;
     const editUrl = `${origin}/api/agent/${encodedSlug}/edit`;
 
@@ -4084,10 +4104,15 @@ class ProofEditorImpl implements ProofEditor {
       '2) Optionally set your friendly name in presence:',
       `   POST ${presenceUrl}`,
       '   body: {"agentId":"<your-agent-id>","name":"<your-name>","status":"active"}',
-      '3) If edits/comments are useful based on state, apply them with:',
+      '3) For edits, prefer block edits:',
+      `   GET ${snapshotUrl}`,
+      `   POST ${editV2Url}`,
+      '   body: {"by":"ai:<your-agent-id>","baseRevision":<revision>,"operations":[{"op":"insert_after","ref":"b1","blocks":[{"markdown":"New paragraph."}]}]}',
+      '4) For comments or whole-document rewrites, use ops:',
       `   POST ${opsUrl}`,
-      `   or POST ${editUrl}`,
-      '4) Then reply briefly with what you changed or suggest next steps.',
+      '   body: {"type":"comment.add","by":"ai:<your-agent-id>","quote":"text to anchor","text":"comment body"}',
+      `   fallback structured edit endpoint: POST ${editUrl}`,
+      '5) Then reply briefly with what you changed or suggest next steps.',
     ].join('\n');
   }
 
@@ -4809,7 +4834,7 @@ class ProofEditorImpl implements ProofEditor {
         btn.style.background = 'transparent';
       };
     } else {
-      btn.setAttribute('aria-label', 'Add agent');
+      btn.setAttribute('aria-label', 'Agent options');
       btn.style.cssText = `
         display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 12px;
         background:rgba(255,255,255,0.7);border:1px solid rgba(17,24,39,0.10);border-radius:22px;color:#111827;
@@ -4823,7 +4848,7 @@ class ProofEditorImpl implements ProofEditor {
 
       const label = document.createElement('span');
       label.className = 'agent-btn-label';
-      label.textContent = 'Add agent';
+      label.textContent = 'Agent';
       label.style.cssText = 'font-size:12px;font-weight:600;line-height:1;';
       btn.appendChild(label);
 
