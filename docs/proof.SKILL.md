@@ -12,6 +12,7 @@ Proof is the hosted product. Proof SDK is the open-source editor, collaboration 
 - Include `by` on every write. Use `ai:<agent-name>`.
 - Treat `slug + token` as the document address and auth pair.
 - Prefer HTTP APIs over local runtime assumptions.
+- Use `suggestion.add` for proposed edits the human should review. `rewrite.apply` and `/bridge/rewrite` apply content directly and should only be used when the user explicitly asks you to apply changes without review.
 
 ## Authentication
 
@@ -89,6 +90,8 @@ curl -sS -X POST "http://localhost:4000/documents/<slug>/edit/v2" \
 {"type":"rewrite.apply","by":"ai:codex","content":"# Rewritten markdown"}
 ```
 
+When the human asks for revisions, proposed changes, review, or edits they should accept/reject, use one or more `suggestion.add` calls. Do not use `rewrite.apply` for that flow because it rewrites the document directly.
+
 Endpoint:
 
 ```text
@@ -107,6 +110,8 @@ POST /documents/<slug>/bridge/presence
 GET  /documents/<slug>/events
 POST /documents/<slug>/events/ack
 ```
+
+For bridge-compatible review flows, use `/bridge/suggestions`. `/bridge/rewrite` is a direct apply endpoint, not a proposed-edit endpoint.
 
 ### Poll events
 
@@ -127,9 +132,10 @@ curl -sS -X POST "http://localhost:4000/documents/<slug>/presence" \
 
 ## Choosing an Edit Strategy
 
+- Use `suggestion.add` for reviewable proposed edits.
 - Use `edit/v2` for deterministic block-level edits.
 - Use `edit` for simple string-based operations.
-- Use `ops` for reviewable suggestions, comments, and rewrites.
+- Use `ops` for comments, suggestions, and explicit direct rewrites.
 
 ## Error Handling
 

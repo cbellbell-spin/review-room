@@ -97,8 +97,17 @@ export function buildProofSdkLinks(
       state: paths.bridgeState,
       marks: paths.bridgeMarks,
       comment: { method: 'POST', href: paths.bridgeComments },
-      suggestion: { method: 'POST', href: paths.bridgeSuggestions },
-      rewrite: { method: 'POST', href: paths.bridgeRewrite },
+      suggestion: {
+        method: 'POST',
+        href: paths.bridgeSuggestions,
+        useFor: 'reviewable proposed edits the human can accept or reject',
+      },
+      rewrite: {
+        method: 'POST',
+        href: paths.bridgeRewrite,
+        directApply: true,
+        warning: 'Applies document content directly; use bridge.suggestion for proposed edits.',
+      },
       presence: { method: 'POST', href: paths.bridgePresence },
     };
   }
@@ -145,6 +154,10 @@ export function buildProofSdkAgentDescriptor(
       presence: paths.bridgePresence,
       events: paths.events,
       ack: paths.eventsAck,
+    };
+    agent.editingGuidance = {
+      proposedEdits: 'Use bridgeApi.suggestions or POST /documents/:slug/ops with suggestion.add when the human should review changes.',
+      directApply: 'bridgeApi.rewrite and rewrite.apply replace document content directly and should only be used when the user explicitly asks you to apply changes without review.',
     };
   }
   return agent;

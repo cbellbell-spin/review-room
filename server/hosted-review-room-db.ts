@@ -888,6 +888,7 @@ export async function updateHostedDocument(input: {
     markdownUpdated: hasMarkdown,
     marksUpdated: hasMarks,
     titleUpdated: hasTitle,
+    directApply: hasMarkdown && actor.startsWith('ai:'),
   });
 
   const results = await db.batch([
@@ -1307,6 +1308,13 @@ export async function executeHostedDocumentOpByType(
         revision: nextDoc?.revision ?? null,
         collabApplied: false,
         collab: { status: 'not_available', reason: 'hosted-libsql-serverless' },
+        directApply: true,
+        proposedEdits: false,
+        reviewableAlternative: {
+          type: 'suggestion.add',
+          endpoint: `/documents/${encodeURIComponent(slug)}/ops`,
+          bridgeEndpoint: `/documents/${encodeURIComponent(slug)}/bridge/suggestions`,
+        },
       },
     };
   }

@@ -129,19 +129,37 @@ async function run(): Promise<void> {
         content: '# Hosted doc\n\nRewritten through hosted bridge.',
       }),
     });
-    const bridgeRewrite = await json<{ success: boolean; revision: number }>(bridgeRewriteResponse);
+    const bridgeRewrite = await json<{
+      success: boolean;
+      revision: number;
+      directApply?: boolean;
+      proposedEdits?: boolean;
+      reviewableAlternative?: { type?: string; bridgeEndpoint?: string };
+    }>(bridgeRewriteResponse);
     assert(bridgeRewrite.success === true, 'Expected hosted bridge rewrite success');
+    assert(bridgeRewrite.directApply === true, 'Expected hosted bridge rewrite to identify direct apply semantics');
+    assert(bridgeRewrite.proposedEdits === false, 'Expected hosted bridge rewrite to distinguish itself from proposed edits');
+    assert(
+      bridgeRewrite.reviewableAlternative?.type === 'suggestion.add'
+        && typeof bridgeRewrite.reviewableAlternative.bridgeEndpoint === 'string'
+        && bridgeRewrite.reviewableAlternative.bridgeEndpoint.includes('/bridge/suggestions'),
+      'Expected hosted bridge rewrite to point agents at reviewable suggestions',
+    );
 
     const bridgeState = await json<{ markdown: string }>(
       await fetch(`${base}/api/agent/${slug}/state`, { headers: authHeaders }),
     );
     assert(bridgeState.markdown.includes('Rewritten through hosted bridge.'), 'Expected hosted bridge rewrite content');
 
-    const events = await json<{ success: boolean; events: Array<{ type: string }> }>(
+    const events = await json<{ success: boolean; events: Array<{ type: string; data?: Record<string, unknown> }> }>(
       await fetch(`${base}/api/agent/${slug}/events/pending?after=0&limit=100`, { headers: authHeaders }),
     );
     assert(events.success === true, 'Expected hosted pending events success');
     assert(events.events.some((event) => event.type === 'document.updated'), 'Expected hosted document.updated event');
+    assert(
+      events.events.some((event) => event.type === 'document.updated' && event.data?.directApply === true),
+      'Expected hosted document.updated event to identify agent direct apply semantics',
+    );
     assert(events.events.some((event) => event.type === 'comment.added'), 'Expected hosted comment.added event');
 
     const rewritten = await json<{ success: boolean; revision: number }>(

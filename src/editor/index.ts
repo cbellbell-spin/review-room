@@ -1092,6 +1092,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareEventPollInFlight: boolean = false;
   private shareEventCursor: number = 0;
   private shareLastForcedCollabEventId: number = 0;
+  private pendingShareAgentDirectUpdate: { eventId: number; actor: string } | null = null;
   private shareDocumentUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
   private shareMarksRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingShareMarksRefresh: boolean = false;
@@ -2654,8 +2655,26 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.shouldForceCollabRefreshFromPendingEvent(event)) return;
     if (event.id <= this.shareLastForcedCollabEventId) return;
     this.shareLastForcedCollabEventId = event.id;
+    if (this.isAgentDirectMarkdownUpdateEvent(event)) {
+      this.pendingShareAgentDirectUpdate = { eventId: event.id, actor: event.actor || 'ai:agent' };
+    }
     if (this.shouldSkipForcedCollabRefreshFromPendingEvent()) return;
     this.scheduleShareDocumentUpdatedRefresh(true);
+  }
+
+  private isAgentDirectMarkdownUpdateEvent(event: SharePendingEvent): boolean {
+    const actor = typeof event.actor === 'string' ? event.actor.trim() : '';
+    return event.type === 'document.updated'
+      && actor.startsWith('ai:')
+      && event.data?.markdownUpdated === true;
+  }
+
+  private computeMarkdownChangeStats(previousMarkdown: string, nextMarkdown: string): ChangeStats | undefined {
+    const oldLines = previousMarkdown.split('\n');
+    const newLines = nextMarkdown.split('\n');
+    const changes = computeLineDiff(oldLines, newLines);
+    if (changes.length === 0) return undefined;
+    return computeChangeStats(changes, oldLines, newLines);
   }
 
   private startShareEventPoll(): void {
@@ -2699,6 +2718,7 @@ class ProofEditorImpl implements ProofEditor {
     this.shareEventPollInFlight = false;
     this.shareEventCursor = 0;
     this.shareLastForcedCollabEventId = 0;
+    this.pendingShareAgentDirectUpdate = null;
   }
 
   private scheduleShareDocumentUpdatedRefresh(forceCollabRefresh: boolean = false): void {
@@ -2720,11 +2740,25 @@ class ProofEditorImpl implements ProofEditor {
             const serverMarks = (doc.marks && typeof doc.marks === 'object' && !Array.isArray(doc.marks))
               ? doc.marks as Record<string, StoredMark>
               : {};
+            const directAgentUpdate = this.pendingShareAgentDirectUpdate;
+            const previousMarkdown = this.lastMarkdown;
+            const nextMarkdown = this.normalizeMarkdownForRuntime(doc.markdown);
             const contentWithMarks = embedMarks(doc.markdown, serverMarks);
             this.loadDocument(contentWithMarks, { allowShareContentMutation: true });
             this.lastReceivedServerMarks = { ...serverMarks };
             this.initialMarksSynced = true;
             this.captureReviewRoomSavedSnapshot();
+            if (directAgentUpdate && previousMarkdown !== nextMarkdown) {
+              this.preRefreshRevertContent = previousMarkdown;
+              this.preRefreshRevertTimestamp = Date.now();
+              this.showRefreshBanner(
+                directAgentUpdate.actor,
+                this.computeMarkdownChangeStats(previousMarkdown, nextMarkdown),
+              );
+            }
+            if (directAgentUpdate) {
+              this.pendingShareAgentDirectUpdate = null;
+            }
           }
           if (typeof doc.viewers === 'number') {
             this.shareOtherViewerCount = Math.max(0, Math.floor(doc.viewers) - 1);

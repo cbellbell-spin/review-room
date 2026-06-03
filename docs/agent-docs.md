@@ -26,16 +26,19 @@ Review Room has three editing approaches. **Pick one — don't mix them.**
 
 | Goal | Method | Endpoint |
 |------|--------|----------|
+| **Propose edits for human review** | Suggestion marks | `POST /ops` with `suggestion.add` or `POST /bridge/suggestions` |
 | **Add/replace/insert a few lines** (recommended) | Edit V2 (block-level) | `GET /snapshot` → `POST /edit/v2` |
 | **Simple text replacement** | Structured edit | `POST /edit` |
-| **Replace entire document** | Rewrite | `POST /ops` with `rewrite.apply` |
+| **Replace entire document directly** | Rewrite | `POST /ops` with `rewrite.apply` |
 | **Add a comment** | Ops | `POST /ops` with `comment.add` |
+
+If the human asked for revisions, proposed edits, review, or anything they should accept/reject, use `suggestion.add`. Do not use `rewrite.apply` or `/bridge/rewrite` for that flow: rewrite applies content directly and the human will see it as an agent-authored document update, not as pending proposed edits.
 
 **Start with Edit V2** for most tasks. It uses stable block refs, handles concurrent edits cleanly, and returns clean markdown without internal HTML annotations.
 
 `suggestion.add` now matches against annotated documents correctly and preserves stable anchors, but `edit/v2` is still the better default for programmatic content changes.
 
-`rewrite.apply` is still disruptive. Avoid it if anyone might have the document open: hosted environments block rewrites while live authenticated collaborators are connected, and `force` is ignored there.
+`rewrite.apply` is still disruptive. It is a direct apply operation, not track changes. Avoid it if anyone might have the document open: hosted environments block rewrites while live authenticated collaborators are connected, and `force` is ignored there.
 
 ## I Just Received A Review Room Link
 
@@ -114,6 +117,8 @@ Rewrite the whole document:
     -H "Content-Type: application/json" \
     -H "X-Agent-Id: your-agent" \
     -d '{"type":"rewrite.apply","by":"ai:your-agent","content":"# New markdown..."}'
+
+Only use rewrite when the user explicitly wants direct application. For reviewable revisions, send one or more `suggestion.add` operations instead.
 
 ## Edit Via Structured Operations (Append, Replace, Insert)
 
