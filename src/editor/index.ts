@@ -1085,6 +1085,7 @@ class ProofEditorImpl implements ProofEditor {
   private reviewRoomHasUnsavedChanges: boolean = false;
   private reviewRoomSaveInFlight: boolean = false;
   private reviewRoomSaveQueued: boolean = false;
+  private reviewRoomDiscardingChanges: boolean = false;
   private readonly reviewRoomAutosaveDelayMs: number = 5_000;
   private shareWsUnsubscribe: (() => void) | null = null;
   private shareEventPollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1303,7 +1304,7 @@ class ProofEditorImpl implements ProofEditor {
     this.lifecycleHandlersInstalled = true;
 
     window.addEventListener('beforeunload', (event) => {
-      if (this.isShareMode) {
+      if (this.isShareMode && !this.reviewRoomRestSaveMode) {
         this.flushShareMarks({ keepalive: true, persistContent: true });
         collabClient.flushPendingLocalStateForUnload();
       }
@@ -1330,21 +1331,21 @@ class ProofEditorImpl implements ProofEditor {
     });
 
     window.addEventListener('pagehide', () => {
-      if (this.isShareMode) {
+      if (this.isShareMode && !this.reviewRoomRestSaveMode) {
         this.flushShareMarks({ keepalive: true, persistContent: true });
         collabClient.flushPendingLocalStateForUnload();
       }
-      if (this.reviewRoomRestSaveMode && this.reviewRoomHasUnsavedChanges) {
+      if (this.reviewRoomRestSaveMode && !this.reviewRoomDiscardingChanges && this.reviewRoomHasUnsavedChanges) {
         void this.saveReviewRoomDocument({ source: 'unload', keepalive: true });
       }
     });
 
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden' && this.isShareMode) {
+      if (document.visibilityState === 'hidden' && this.isShareMode && !this.reviewRoomRestSaveMode) {
         this.flushShareMarks({ keepalive: true, persistContent: true });
         collabClient.flushPendingLocalStateForUnload();
       }
-      if (document.visibilityState === 'hidden' && this.reviewRoomRestSaveMode && this.reviewRoomHasUnsavedChanges) {
+      if (document.visibilityState === 'hidden' && this.reviewRoomRestSaveMode && !this.reviewRoomDiscardingChanges && this.reviewRoomHasUnsavedChanges) {
         void this.saveReviewRoomDocument({ source: 'unload', keepalive: true });
       }
     });
@@ -1444,18 +1445,17 @@ class ProofEditorImpl implements ProofEditor {
 
       let collabTemplateMarkdown: string | null = null;
 
-	      if (!preserveCurrentDocument) {
-	        collabTemplateMarkdown = this.normalizeMarkdownForCollab(doc.markdown);
-	        this.lastMarkdown = this.normalizeMarkdownForRuntime(doc.markdown);
-	      } else {
-	        collabTemplateMarkdown = this.captureCollabTemplateFromCurrentDocument();
-	      }
-	      if (collabTemplateMarkdown !== null && collabTemplateMarkdown.trim().length === 0) {
-	        collabTemplateMarkdown = null;
-	      }
+      if (!preserveCurrentDocument) {
+        collabTemplateMarkdown = this.normalizeMarkdownForCollab(doc.markdown);
+        this.lastMarkdown = this.normalizeMarkdownForRuntime(doc.markdown);
+      } else {
+        collabTemplateMarkdown = this.captureCollabTemplateFromCurrentDocument();
+      }
+      if (collabTemplateMarkdown !== null && collabTemplateMarkdown.trim().length === 0) {
+        collabTemplateMarkdown = null;
+      }
 
       this.showShareBanner(doc.viewers ?? 0);
-      this.ensureShareWebSocketConnection();
 
       // Prefer collab runtime path when available.
       const collabSession = context
@@ -1470,6 +1470,7 @@ class ProofEditorImpl implements ProofEditor {
       this.showShareWelcomeToastOnce(shareCapabilities);
 
       if (collabSession && 'session' in collabSession && collabSession.session) {
+        this.ensureShareWebSocketConnection();
         if (this.collabRefreshTimer) {
           clearInterval(this.collabRefreshTimer);
           this.collabRefreshTimer = null;
@@ -4214,6 +4215,7 @@ class ProofEditorImpl implements ProofEditor {
     this.reviewRoomHasUnsavedChanges = false;
     this.reviewRoomSaveInFlight = false;
     this.reviewRoomSaveQueued = false;
+    this.reviewRoomDiscardingChanges = false;
     this.updateReviewRoomSaveControls();
     this.updateShareBannerSyncDisplay();
   }
@@ -4230,6 +4232,7 @@ class ProofEditorImpl implements ProofEditor {
     }
     this.reviewRoomHasUnsavedChanges = currentKey !== this.reviewRoomLastSavedSnapshotKey;
     if (this.reviewRoomHasUnsavedChanges) {
+      this.reviewRoomDiscardingChanges = false;
       this.scheduleReviewRoomAutosave();
     } else if (this.reviewRoomAutosaveTimer) {
       clearTimeout(this.reviewRoomAutosaveTimer);
@@ -4251,7 +4254,20 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private shouldWarnAboutUnsavedReviewRoomChanges(): boolean {
-    return this.reviewRoomRestSaveMode && this.reviewRoomHasUnsavedChanges;
+    if (!this.reviewRoomRestSaveMode || this.reviewRoomDiscardingChanges) return false;
+    const snapshot = this.serializeCurrentShareDocument();
+    if (!snapshot) return this.reviewRoomHasUnsavedChanges;
+    const currentKey = this.getReviewRoomSnapshotKey(snapshot);
+    const hasUnsavedChanges = this.reviewRoomLastSavedSnapshotKey === null
+      ? this.reviewRoomHasUnsavedChanges
+      : currentKey !== this.reviewRoomLastSavedSnapshotKey;
+    this.reviewRoomHasUnsavedChanges = hasUnsavedChanges;
+    if (hasUnsavedChanges) {
+      this.scheduleReviewRoomAutosave();
+    }
+    this.updateReviewRoomSaveControls();
+    this.updateShareBannerSyncDisplay();
+    return hasUnsavedChanges;
   }
 
   private updateReviewRoomSaveControls(): void {
@@ -4270,6 +4286,7 @@ class ProofEditorImpl implements ProofEditor {
     keepalive?: boolean;
   }): Promise<boolean> {
     if (!this.collabCanEdit) return false;
+    this.reviewRoomDiscardingChanges = false;
     if (!this.reviewRoomRestSaveMode) {
       this.flushShareMarks({ keepalive: Boolean(options?.keepalive), persistContent: true });
       if (options?.returnHome) window.location.href = '/review-room';
@@ -4346,6 +4363,12 @@ class ProofEditorImpl implements ProofEditor {
     if (this.shouldWarnAboutUnsavedReviewRoomChanges()) {
       const discard = window.confirm('Discard unsaved changes and return to documents?');
       if (!discard) return;
+      this.reviewRoomDiscardingChanges = true;
+      this.reviewRoomHasUnsavedChanges = false;
+      if (this.reviewRoomAutosaveTimer) {
+        clearTimeout(this.reviewRoomAutosaveTimer);
+        this.reviewRoomAutosaveTimer = null;
+      }
     }
     window.location.href = '/review-room';
   }
