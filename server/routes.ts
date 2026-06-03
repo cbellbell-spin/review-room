@@ -107,6 +107,7 @@ import {
 import {
   buildHostedOpenContextBody,
   deleteHostedReviewRoomDocument,
+  createHostedReviewRoomDocument,
   executeHostedDocumentOpByType,
   getHostedDocumentBySlug,
   getHostedReviewRoomDocumentMemberForProofSlugAndToken,
@@ -817,7 +818,7 @@ function buildReviewRoomOpenPayload(slug: string, presentedSecret: string | null
 }
 
 // Create a shared document
-apiRoutes.post('/documents', (req: Request, res: Response) => {
+apiRoutes.post('/documents', async (req: Request, res: Response) => {
   const legacyCreateMode = resolveLegacyCreateMode(getPublicBaseUrl(req));
   if (legacyCreateMode === 'disabled') {
     recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'blocked_disabled');
@@ -859,6 +860,67 @@ apiRoutes.post('/documents', (req: Request, res: Response) => {
   const slug = generateSlug();
   const ownerSecret = randomUUID();
   const normalizedMarks = canonicalizeStoredMarks(marks ?? {});
+  if (isHostedReviewRoomDbEnabled()) {
+    const owner = typeof ownerId === 'string' && ownerId.trim() ? ownerId.trim() : 'anonymous';
+    const titleValue = typeof title === 'string' && title.trim() ? title.trim() : 'Untitled document';
+    const hosted = await createHostedReviewRoomDocument({
+      slug,
+      title: titleValue,
+      markdown: sanitizedMarkdown,
+      marks: normalizedMarks,
+      ownerId: owner,
+      ownerSecret,
+    });
+    const links = buildShareLink(req, hosted.proofDoc.slug);
+    const shareUrlWithToken = withShareToken(links.shareUrl, hosted.editorAccess.secret);
+    const urlWithToken = withShareToken(links.url, hosted.editorAccess.secret);
+    captureDocumentCreatedTelemetry({
+      slug: hosted.proofDoc.slug,
+      source: 'api.documents',
+      ownerId: owner,
+      title: titleValue,
+      shareState: hosted.proofDoc.share_state,
+      accessRole: 'editor',
+      authMode: 'none',
+      authenticated: false,
+      contentChars: sanitizedMarkdown.length,
+    });
+    res.json({
+      success: true,
+      slug: hosted.proofDoc.slug,
+      docId: hosted.proofDoc.doc_id,
+      url: links.url,
+      shareUrl: links.shareUrl,
+      tokenPath: urlWithToken,
+      tokenUrl: shareUrlWithToken,
+      viewUrl: links.shareUrl,
+      viewPath: links.url,
+      ownerSecret,
+      accessToken: hosted.editorAccess.secret,
+      accessRole: 'editor',
+      active: true,
+      shareState: hosted.proofDoc.share_state,
+      snapshotUrl: getSnapshotPublicUrl(hosted.proofDoc.slug),
+      createdAt: hosted.proofDoc.created_at,
+      _links: {
+        view: links.url,
+        web: links.shareUrl,
+        tokenUrl: shareUrlWithToken,
+        ...buildProofSdkLinks(hosted.proofDoc.slug, {
+          includeMutationRoutes: true,
+          includeBridgeRoutes: true,
+        }),
+      },
+      agent: buildProofSdkAgentDescriptor(hosted.proofDoc.slug, {
+        includeMutationRoutes: true,
+        includeBridgeRoutes: true,
+      }),
+      ...(legacyCreateMode === 'warn'
+        ? { deprecation: buildLegacyCreateDeprecationPayload(legacyCreateMode) }
+        : {}),
+    });
+    return;
+  }
   const doc = createDocument(slug, sanitizedMarkdown, normalizedMarks, title, ownerId, ownerSecret);
   const defaultAccess = createDocumentAccessToken(slug, 'editor');
   const links = buildShareLink(req, doc.slug);

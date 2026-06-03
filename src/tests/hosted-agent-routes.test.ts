@@ -42,6 +42,52 @@ async function run(): Promise<void> {
   const base = `http://127.0.0.1:${port}`;
 
   try {
+    const neutralCreated = await json<{
+      success: boolean;
+      slug: string;
+      accessToken: string;
+      agent?: { editingGuidance?: { proposedEdits?: string; directApply?: string } };
+      _links?: {
+        bridge?: {
+          suggestion?: { href?: string; useFor?: string };
+          rewrite?: { href?: string; directApply?: boolean; warning?: string };
+        };
+      };
+    }>(await fetch(`${base}/documents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Hosted neutral create test',
+        markdown: '# Hosted neutral doc\n\nOriginal paragraph.',
+      }),
+    }));
+    assert(neutralCreated.success === true, 'Expected hosted neutral create success');
+    assert(typeof neutralCreated.slug === 'string' && neutralCreated.slug.length > 0, 'Expected hosted neutral create slug');
+    assert(typeof neutralCreated.accessToken === 'string' && neutralCreated.accessToken.length > 0, 'Expected hosted neutral create access token');
+    assert(
+      neutralCreated._links?.bridge?.suggestion?.useFor?.includes('reviewable')
+        && neutralCreated._links?.bridge?.rewrite?.directApply === true,
+      'Expected hosted neutral create links to distinguish suggestions from direct rewrites',
+    );
+    assert(
+      typeof neutralCreated.agent?.editingGuidance?.proposedEdits === 'string'
+        && neutralCreated.agent.editingGuidance.proposedEdits.includes('suggestion.add'),
+      'Expected hosted neutral create agent descriptor to guide proposed edits toward suggestions',
+    );
+    const neutralState = await json<{ markdown: string }>(
+      await fetch(`${base}/api/agent/${neutralCreated.slug}/state`, {
+        headers: { 'x-share-token': neutralCreated.accessToken },
+      }),
+    );
+    assert(neutralState.markdown.includes('Hosted neutral doc'), 'Expected hosted neutral create state to use hosted persistence');
+    const neutralDeleted = await json<{ success: boolean; shareState: string }>(
+      await fetch(`${base}/documents/${neutralCreated.slug}`, {
+        method: 'DELETE',
+        headers: { 'x-share-token': neutralCreated.accessToken },
+      }),
+    );
+    assert(neutralDeleted.success === true && neutralDeleted.shareState === 'DELETED', 'Expected hosted neutral create cleanup');
+
     const created = await json<{
       proof: { slug: string; accessToken: string };
     }>(await fetch(`${base}/review-room/api/documents`, {

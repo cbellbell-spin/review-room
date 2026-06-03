@@ -693,6 +693,7 @@ export async function createHostedReviewRoomDocument(input: {
   slug: string;
   title: string;
   markdown: string;
+  marks?: Record<string, unknown>;
   ownerId: string;
   ownerSecret: string;
   workspaceId?: string;
@@ -711,7 +712,7 @@ export async function createHostedReviewRoomDocument(input: {
   const reviewRoomDocumentId = randomUUID();
   const workspaceId = input.workspaceId || 'local';
   const identityId = input.identityId || 'local-human';
-  const marksJson = '{}';
+  const marksJson = JSON.stringify(input.marks ?? {});
   const eventPayload = JSON.stringify({ title: input.title, ownerId: input.ownerId, reviewRoom: true });
 
   await db.batch([
