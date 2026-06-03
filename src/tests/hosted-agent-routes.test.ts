@@ -74,12 +74,61 @@ async function run(): Promise<void> {
         && neutralCreated.agent.editingGuidance.proposedEdits.includes('suggestion.add'),
       'Expected hosted neutral create agent descriptor to guide proposed edits toward suggestions',
     );
-    const neutralState = await json<{ markdown: string }>(
+    const neutralState = await json<{ markdown: string; agent?: { getActionApi?: string }; _links?: { getAction?: { requiresConfirm?: boolean } } }>(
       await fetch(`${base}/api/agent/${neutralCreated.slug}/state`, {
         headers: { 'x-share-token': neutralCreated.accessToken },
       }),
     );
     assert(neutralState.markdown.includes('Hosted neutral doc'), 'Expected hosted neutral create state to use hosted persistence');
+    assert(
+      neutralState.agent?.getActionApi === `/api/agent/${neutralCreated.slug}/action`
+        && neutralState._links?.getAction?.requiresConfirm === true,
+      'Expected hosted state to advertise GET-only action fallback',
+    );
+    const getActionParams = new URLSearchParams({
+      token: neutralCreated.accessToken,
+      type: 'suggestion.add',
+      kind: 'replace',
+      quote: 'Original paragraph.',
+      content: 'Original paragraph, revised by GET-only fallback.',
+      by: 'ai:get-only-test',
+    });
+    const getActionPreview = await json<{
+      success: boolean;
+      code?: string;
+      execute?: { method?: string; href?: string };
+    }>(
+      await fetch(`${base}/api/agent/${neutralCreated.slug}/action?${getActionParams.toString()}`),
+    );
+    assert(
+      getActionPreview.success === false
+        && getActionPreview.code === 'CONFIRM_REQUIRED'
+        && getActionPreview.execute?.method === 'GET'
+        && typeof getActionPreview.execute.href === 'string'
+        && getActionPreview.execute.href.includes('confirm=1'),
+      'Expected GET-only action preview to require confirmation and return execute URL',
+    );
+    const getActionExecuted = await json<{ success: boolean; markId?: string; getOnlyAction?: boolean }>(
+      await fetch(`${base}${getActionPreview.execute!.href}`),
+    );
+    assert(
+      getActionExecuted.success === true
+        && typeof getActionExecuted.markId === 'string'
+        && getActionExecuted.getOnlyAction === true,
+      'Expected confirmed GET-only action to create a pending suggestion',
+    );
+    const afterGetActionState = await json<{ marks?: Record<string, { kind?: string; status?: string; content?: string }> }>(
+      await fetch(`${base}/api/agent/${neutralCreated.slug}/state`, {
+        headers: { 'x-share-token': neutralCreated.accessToken },
+      }),
+    );
+    const getActionMark = getActionExecuted.markId ? afterGetActionState.marks?.[getActionExecuted.markId] : null;
+    assert(
+      getActionMark?.kind === 'suggestion'
+        && getActionMark.status === 'pending'
+        && getActionMark.content === 'Original paragraph, revised by GET-only fallback.',
+      'Expected GET-only action suggestion mark to be visible in hosted state',
+    );
     const neutralDeleted = await json<{ success: boolean; shareState: string }>(
       await fetch(`${base}/documents/${neutralCreated.slug}`, {
         method: 'DELETE',

@@ -18,6 +18,7 @@ export interface ProofSdkDocumentPaths {
   events: string;
   eventsPending: string;
   eventsAck: string;
+  getAction: string;
   bridgeBase: string;
   bridgeState: string;
   bridgeMarks: string;
@@ -52,6 +53,7 @@ export function buildProofSdkDocumentPaths(slug: string, origin?: string): Proof
     events: withOrigin(`${base}/events/pending`, origin),
     eventsPending: withOrigin(`${base}/events/pending?after=0`, origin),
     eventsAck: withOrigin(`${base}/events/ack`, origin),
+    getAction: withOrigin(`${base}/action`, origin),
     bridgeBase: withOrigin(`${base}/bridge`, origin),
     bridgeState: withOrigin(`${base}/bridge/state`, origin),
     bridgeMarks: withOrigin(`${base}/bridge/marks`, origin),
@@ -78,6 +80,12 @@ export function buildProofSdkLinks(
     create: canonicalCreateLink(origin),
     state: paths.state,
     presence: { method: 'POST', href: paths.presence },
+    getAction: {
+      method: 'GET',
+      href: `${paths.getAction}?type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>&token=<token>`,
+      requiresConfirm: true,
+      supports: ['comment.add', 'suggestion.add'],
+    },
     events: paths.eventsPending,
     docs: paths.docs,
   };
@@ -131,6 +139,9 @@ export function buildProofSdkAgentDescriptor(
     createApi: paths.create,
     stateApi: paths.state,
     presenceApi: paths.presence,
+    getActionApi: paths.getAction,
+    getActionSupports: ['comment.add', 'suggestion.add'],
+    getActionRequiresConfirm: true,
     eventsApi: paths.events,
   };
   if (includeMutationRoutes) {

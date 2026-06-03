@@ -113,6 +113,16 @@ POST /documents/<slug>/events/ack
 
 For bridge-compatible review flows, use `/bridge/suggestions`. `/bridge/rewrite` is a direct apply endpoint, not a proposed-edit endpoint.
 
+### GET-only fallback
+
+If your environment can read URLs but cannot send POST requests, use the constrained GET action endpoint for comments and pending suggestions:
+
+```text
+GET /api/agent/<slug>/action?token=<token>&type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>
+```
+
+The first GET returns `CONFIRM_REQUIRED` and an `execute.href`. Fetch that URL to apply the change. This fallback only supports `comment.add` and pending `suggestion.add`; it does not support rewrites or accepted/direct-apply suggestions.
+
 ### Poll events
 
 ```bash

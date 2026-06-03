@@ -911,6 +911,93 @@ function asPayload(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+function readQueryString(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value) && typeof value[0] === 'string') return value[0].trim();
+  return '';
+}
+
+function buildGetActionExecuteUrl(req: Request): string {
+  const [pathPart] = req.originalUrl.split('?');
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query)) {
+    const str = readQueryString(value);
+    if (str) params.set(key, str);
+  }
+  params.set('confirm', '1');
+  return `${pathPart}?${params.toString()}`;
+}
+
+function parseGetOnlyActionPayload(query: Request['query']): { ok: true; payload: Record<string, unknown> } | { ok: false; status: number; body: Record<string, unknown> } {
+  const type = readQueryString(query.type) || readQueryString(query.op);
+  const agentId = readQueryString(query.agentId) || readQueryString(query.agent) || 'ai:agent';
+  const by = readQueryString(query.by) || normalizeAgentId(agentId);
+
+  if (type === 'comment.add') {
+    const text = readQueryString(query.text);
+    if (!text) {
+      return { ok: false, status: 400, body: { success: false, code: 'MISSING_TEXT', error: 'GET action comment.add requires text' } };
+    }
+    return {
+      ok: true,
+      payload: {
+        type,
+        by,
+        quote: readQueryString(query.quote),
+        text,
+      },
+    };
+  }
+
+  if (type === 'suggestion.add') {
+    const kind = readQueryString(query.kind) || 'replace';
+    if (kind !== 'replace' && kind !== 'insert' && kind !== 'delete') {
+      return { ok: false, status: 400, body: { success: false, code: 'INVALID_KIND', error: 'suggestion.add kind must be replace, insert, or delete' } };
+    }
+    const quote = readQueryString(query.quote);
+    const content = readQueryString(query.content);
+    const status = readQueryString(query.status);
+    if (status && status !== 'pending') {
+      return {
+        ok: false,
+        status: 400,
+        body: {
+          success: false,
+          code: 'UNSUPPORTED_STATUS',
+          error: 'GET-only actions only create pending suggestions. Use POST for accepted/direct application.',
+        },
+      };
+    }
+    if (kind !== 'insert' && !quote) {
+      return { ok: false, status: 400, body: { success: false, code: 'MISSING_QUOTE', error: 'replace/delete suggestions require quote' } };
+    }
+    if ((kind === 'replace' || kind === 'insert') && !content) {
+      return { ok: false, status: 400, body: { success: false, code: 'MISSING_CONTENT', error: 'replace/insert suggestions require content' } };
+    }
+    return {
+      ok: true,
+      payload: {
+        type,
+        by,
+        kind,
+        quote,
+        content,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    status: 400,
+    body: {
+      success: false,
+      code: 'UNSUPPORTED_GET_ACTION',
+      error: 'GET-only actions support comment.add and pending suggestion.add only',
+      supportedTypes: ['comment.add', 'suggestion.add'],
+    },
+  };
+}
+
 async function enforceMutationPrecondition(
   res: Response,
   slug: string,
@@ -2041,6 +2128,12 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
     state: `/documents/${slug}/state`,
     agentState: `/api/agent/${slug}/state`,
     presence: { method: 'POST', href: `/api/agent/${slug}/presence` },
+    getAction: {
+      method: 'GET',
+      href: `/api/agent/${slug}/action?type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>&token=<token>`,
+      requiresConfirm: true,
+      supports: ['comment.add', 'suggestion.add'],
+    },
     events: `/api/agent/${slug}/events/pending?after=0`,
     docs: AGENT_DOCS_PATH,
   };
@@ -2070,6 +2163,9 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
     createApi: CANONICAL_CREATE_API_PATH,
     stateApi: `/documents/${slug}/state`,
     agentStateApi: `/api/agent/${slug}/state`,
+    getActionApi: `/api/agent/${slug}/action`,
+    getActionSupports: ['comment.add', 'suggestion.add'],
+    getActionRequiresConfirm: true,
     commentReadApi: `/documents/${slug}/state`,
     commentReadPath: 'marks',
     presenceApi: `/api/agent/${slug}/presence`,
@@ -2159,6 +2255,69 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
   }
 
   res.status(result.status).json(body);
+});
+
+agentRoutes.get('/:slug/action', async (req: Request, res: Response) => {
+  const mutationRoute = 'GET /action';
+  res.setHeader('Cache-Control', 'no-store');
+  const slug = getSlug(req);
+  if (!slug) {
+    res.status(400).json({ success: false, error: 'Invalid slug' });
+    return;
+  }
+  const parsed = parseGetOnlyActionPayload(req.query);
+  if (!parsed.ok) {
+    sendMutationResponse(res, parsed.status, parsed.body, { route: mutationRoute, slug });
+    return;
+  }
+  if (readQueryString(req.query.confirm) !== '1') {
+    res.status(200).json({
+      success: false,
+      code: 'CONFIRM_REQUIRED',
+      error: 'GET-only actions require a second GET with confirm=1 before mutating the document.',
+      execute: {
+        method: 'GET',
+        href: buildGetActionExecuteUrl(req),
+      },
+      payload: parsed.payload,
+      supportedTypes: ['comment.add', 'suggestion.add'],
+      safety: {
+        directRewriteSupported: false,
+        acceptedSuggestionSupported: false,
+      },
+    });
+    return;
+  }
+  if (!isHostedReviewRoomDbEnabled()) {
+    sendMutationResponse(res, 501, {
+      success: false,
+      code: 'GET_ACTION_HOSTED_ONLY',
+      error: 'GET-only actions are only available on hosted Review Room persistence.',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  const parsedOp = parseDocumentOpRequest(parsed.payload);
+  if ('error' in parsedOp) {
+    sendMutationResponse(res, 400, { success: false, error: parsedOp.error }, { route: mutationRoute, slug });
+    return;
+  }
+  const token = getPresentedSecret(req, slug);
+  const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+  const denied = authorizeDocumentOp(parsedOp.op, role, role === 'owner_bot', role ? 'ACTIVE' : 'REVOKED');
+  if (denied) {
+    sendMutationResponse(res, role ? 403 : 401, {
+      success: false,
+      error: role ? denied : 'Missing or invalid share token',
+      code: role ? 'FORBIDDEN' : 'UNAUTHORIZED',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  const result = await executeHostedAgentOps(slug, parsed.payload);
+  res.setHeader('x-proof-get-action', 'executed');
+  sendMutationResponse(res, result.status, {
+    ...result.body,
+    getOnlyAction: true,
+  }, { route: mutationRoute, slug });
 });
 
 agentRoutes.post('/:slug/quarantine', async (req: Request, res: Response) => {

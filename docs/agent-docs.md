@@ -82,6 +82,16 @@ If a URL contains `?token=`, treat it as an access token:
 - Preferred: `Authorization: Bearer <token>`
 - Also accepted: `x-share-token: <token>`
 
+## GET-only Agent Fallback
+
+Some agent sandboxes can read URLs but cannot send POST requests with headers or bodies. In that environment, use the constrained GET action endpoint for comments and pending suggestions:
+
+```text
+GET /api/agent/<slug>/action?token=<token>&type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>
+```
+
+The first GET returns `CONFIRM_REQUIRED` plus an `execute.href`. Fetch that `execute.href` to apply the mutation. This endpoint only supports `comment.add` and pending `suggestion.add`; it does not support rewrites or accepted/direct-apply suggestions.
+
 ## Edit Via Ops (Comments, Suggestions, Rewrite)
 
 Use:
