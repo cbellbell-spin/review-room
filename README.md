@@ -4,6 +4,10 @@ Review Room is a collaborative document review app with human and agent comments
 
 The current app is intentionally small: it gives Review Room its own dashboard, document registry, review-oriented editor chrome, and agent/comment lifecycle while reusing the Proof SDK editor, collaboration server, provenance model, and HTTP bridge.
 
+## Agent integration
+
+A [Cowork plugin](./cowork-plugin/) lives alongside this app. It connects Claude agents to Review Room through the MCP server, so an agent in Cowork can read, comment, and propose edits on shared documents using the same `review_room_*` tools the app's own bridge uses. See [`cowork-plugin/README.md`](./cowork-plugin/README.md).
+
 ## What Is Included
 
 - Review Room dashboard at `/review-room`
