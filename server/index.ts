@@ -74,8 +74,11 @@ export function createReviewRoomExpressApp(): express.Express {
         'X-Document-Id',
         'Idempotency-Key',
         'X-Idempotency-Key',
+        'MCP-Protocol-Version',
+        'Mcp-Session-Id',
       ].join(', '),
     );
+    res.setHeader('Access-Control-Expose-Headers', 'MCP-Protocol-Version, Mcp-Session-Id');
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;

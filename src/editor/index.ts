@@ -4597,6 +4597,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let selectedReviewText = options.useSelection ? this.getReviewRoomSelectedText() : null;
     let focusedMarkId = options.focusMarkId ?? null;
+    let commentFilter: 'open' | 'resolved' | 'all' = 'open';
 
     const panel = document.createElement('aside');
     panel.id = 'review-room-review-sidebar';
@@ -4651,15 +4652,33 @@ class ProofEditorImpl implements ProofEditor {
     };
 
     const renderLoading = () => {
-      body.innerHTML = '<div style="padding:18px;color:#607064;font-size:14px;">Loading review items...</div>';
+      body.innerHTML = '<div style="padding:18px;color:#607064;font-size:14px;line-height:1.45;">Loading review items...</div>';
+    };
+
+    const renderState = (titleText: string, message: string, tone: 'neutral' | 'error' = 'neutral', action?: HTMLButtonElement) => {
+      body.innerHTML = '';
+      const state = document.createElement('div');
+      state.style.cssText = 'padding:22px 18px;display:grid;gap:8px;';
+      const titleEl = document.createElement('div');
+      titleEl.textContent = titleText;
+      titleEl.style.cssText = `font-size:15px;font-weight:750;color:${tone === 'error' ? '#8f1f17' : '#1f2933'};`;
+      const copy = document.createElement('div');
+      copy.textContent = message;
+      copy.style.cssText = `font-size:14px;line-height:1.45;color:${tone === 'error' ? '#b42318' : '#607064'};`;
+      state.append(titleEl, copy);
+      if (action) {
+        const actionRow = document.createElement('div');
+        actionRow.style.cssText = 'padding-top:4px;';
+        actionRow.appendChild(action);
+        state.appendChild(actionRow);
+      }
+      body.appendChild(state);
     };
 
     const renderError = (message: string) => {
-      body.innerHTML = '';
-      const error = document.createElement('div');
-      error.textContent = message;
-      error.style.cssText = 'padding:18px;color:#b42318;font-size:14px;line-height:1.45;';
-      body.appendChild(error);
+      const retry = smallButton('Retry');
+      retry.onclick = () => { void loadPanel(); };
+      renderState('Review items could not load', message, 'error', retry);
     };
 
     const smallButton = (label: string, variant: 'primary' | 'secondary' | 'danger' = 'secondary'): HTMLButtonElement => {
@@ -4673,6 +4692,67 @@ class ProofEditorImpl implements ProofEditor {
           : 'border:1px solid #cbd7c6;background:#fff;color:#374151;';
       button.style.cssText = `${palette}border-radius:6px;min-height:32px;padding:0 10px;font-size:13px;font-weight:650;cursor:pointer;font-family:inherit;`;
       return button;
+    };
+
+    const applyFocusedItemStyle = (item: HTMLElement, active: boolean) => {
+      item.style.background = active ? '#fbfcf8' : '#fff';
+      item.style.boxShadow = active ? 'inset 4px 0 0 #266854' : 'none';
+      item.style.outline = active ? '1px solid rgba(38,104,84,0.22)' : '0';
+      item.style.outlineOffset = active ? '-1px' : '0';
+    };
+
+    const activateReviewItem = (markId: string) => {
+      focusedMarkId = markId;
+      for (const candidate of body.querySelectorAll<HTMLElement>('[data-review-mark-id]')) {
+        applyFocusedItemStyle(candidate, candidate.dataset.reviewMarkId === markId);
+      }
+      this.focusReviewRoomMark(markId);
+    };
+
+    const attachReviewItemFocus = (item: HTMLElement, markId: string) => {
+      item.dataset.reviewMarkId = markId;
+      item.tabIndex = 0;
+      item.setAttribute('role', 'button');
+      item.setAttribute('aria-label', 'Focus linked document text');
+      applyFocusedItemStyle(item, markId === focusedMarkId);
+      const maybeFocus = (event: Event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement && target.closest('button, textarea, input, a')) return;
+        activateReviewItem(markId);
+      };
+      item.addEventListener('click', maybeFocus);
+      item.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        activateReviewItem(markId);
+      });
+    };
+
+    const renderCommentFilterControls = (counts: { open: number; resolved: number; all: number }) => {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;padding:8px 18px 12px;border-top:1px solid #edf1e9;';
+      const labels: Array<{ value: 'open' | 'resolved' | 'all'; label: string; count: number }> = [
+        { value: 'open', label: 'Open', count: counts.open },
+        { value: 'resolved', label: 'Resolved', count: counts.resolved },
+        { value: 'all', label: 'All', count: counts.all },
+      ];
+      for (const option of labels) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `${option.label} ${option.count}`;
+        button.setAttribute('aria-pressed', String(commentFilter === option.value));
+        const active = commentFilter === option.value;
+        button.style.cssText = active
+          ? 'border:1px solid #266854;background:#266854;color:#fff;border-radius:999px;min-height:30px;padding:0 10px;font-size:12px;font-weight:750;cursor:pointer;font-family:inherit;'
+          : 'border:1px solid #cbd7c6;background:#fff;color:#374151;border-radius:999px;min-height:30px;padding:0 10px;font-size:12px;font-weight:650;cursor:pointer;font-family:inherit;';
+        button.onclick = () => {
+          commentFilter = option.value;
+          focusedMarkId = null;
+          void loadPanel();
+        };
+        wrap.appendChild(button);
+      }
+      body.appendChild(wrap);
     };
 
     const renderSelectedTextComposer = (): HTMLElement | null => {
@@ -4738,6 +4818,7 @@ class ProofEditorImpl implements ProofEditor {
           quote: string;
           text: string;
           replies: Array<{ by: string; at: string; text: string }>;
+          resolved: boolean;
         }> = [];
         for (const [id, raw] of Object.entries(marks)) {
           if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
@@ -4757,7 +4838,7 @@ class ProofEditorImpl implements ProofEditor {
             });
             continue;
           }
-          if (rawKind === 'comment' && mark.resolved !== true) {
+          if (rawKind === 'comment') {
             const rawReplies = Array.isArray(mark.replies)
               ? mark.replies
               : Array.isArray(mark.thread)
@@ -4778,6 +4859,7 @@ class ProofEditorImpl implements ProofEditor {
               quote: typeof mark.quote === 'string' ? mark.quote : '',
               text: typeof mark.text === 'string' ? mark.text : '',
               replies,
+              resolved: mark.resolved === true,
             });
           }
         }
@@ -4785,10 +4867,7 @@ class ProofEditorImpl implements ProofEditor {
         const selectedComposer = renderSelectedTextComposer();
         if (selectedComposer) body.appendChild(selectedComposer);
         if (suggestions.length === 0 && comments.length === 0 && !selectedComposer) {
-          const empty = document.createElement('div');
-          empty.textContent = 'No open review items.';
-          empty.style.cssText = 'padding:22px 18px;color:#607064;font-size:14px;';
-          body.appendChild(empty);
+          renderState('No review items', 'Comments and suggestions will appear here when someone adds feedback to this document.');
           return;
         }
 
@@ -4801,6 +4880,13 @@ class ProofEditorImpl implements ProofEditor {
         }
         for (const suggestion of suggestions) {
           const item = row();
+          attachReviewItemFocus(item, suggestion.id);
+          if (suggestion.id === focusedMarkId) {
+            requestAnimationFrame(() => {
+              item.scrollIntoView({ block: 'nearest' });
+              this.focusReviewRoomMark(suggestion.id);
+            });
+          }
           const meta = document.createElement('div');
           meta.textContent = `${suggestion.kind} by ${suggestion.by}`;
           meta.style.cssText = 'font-size:12px;font-weight:750;color:#607064;';
@@ -4841,26 +4927,40 @@ class ProofEditorImpl implements ProofEditor {
           body.appendChild(item);
         }
 
-        body.appendChild(sectionHeading(`Comments (${comments.length})`));
-        if (comments.length === 0) {
+        const openComments = comments.filter((comment) => !comment.resolved);
+        const resolvedComments = comments.filter((comment) => comment.resolved);
+        const visibleComments = commentFilter === 'open'
+          ? openComments
+          : commentFilter === 'resolved'
+            ? resolvedComments
+            : comments;
+        body.appendChild(sectionHeading(`Comments (${visibleComments.length})`));
+        renderCommentFilterControls({
+          open: openComments.length,
+          resolved: resolvedComments.length,
+          all: comments.length,
+        });
+        if (visibleComments.length === 0) {
           const empty = document.createElement('div');
-          empty.textContent = 'No open comment threads.';
-          empty.style.cssText = 'padding:8px 18px 14px;color:#607064;font-size:13px;';
+          empty.textContent = commentFilter === 'resolved'
+            ? 'No resolved comment threads.'
+            : commentFilter === 'all'
+              ? 'No comment threads yet.'
+              : 'No open comment threads.';
+          empty.style.cssText = 'padding:8px 18px 16px;color:#607064;font-size:13px;line-height:1.45;';
           body.appendChild(empty);
         }
-        for (const comment of comments) {
+        for (const comment of visibleComments) {
           const item = row();
-          item.dataset.reviewMarkId = comment.id;
+          attachReviewItemFocus(item, comment.id);
           if (comment.id === focusedMarkId) {
-            item.style.background = '#fbfcf8';
-            item.style.boxShadow = 'inset 3px 0 0 #266854';
             requestAnimationFrame(() => {
               item.scrollIntoView({ block: 'nearest' });
               this.focusReviewRoomMark(comment.id);
             });
           }
           const meta = document.createElement('div');
-          meta.textContent = `${comment.by}${comment.replies.length > 0 ? ` · ${comment.replies.length} replies` : ''}`;
+          meta.textContent = `${comment.by}${comment.replies.length > 0 ? ` · ${comment.replies.length} replies` : ''}${comment.resolved ? ' · Resolved' : ''}`;
           meta.style.cssText = 'font-size:12px;font-weight:750;color:#607064;';
           const quote = document.createElement('div');
           quote.textContent = comment.quote || 'Document comment';
@@ -4892,6 +4992,8 @@ class ProofEditorImpl implements ProofEditor {
           const reply = smallButton('Reply', 'primary');
           const resolve = smallButton('Resolve');
           const del = smallButton('Delete', 'danger');
+          reply.disabled = comment.resolved;
+          resolve.disabled = comment.resolved;
           reply.onclick = () => {
             void (async () => {
               const text = replyBox.value.trim();

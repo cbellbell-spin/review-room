@@ -60,6 +60,7 @@ function renderAgentDocsHtml(input: { docsMarkdown: string; docsUrl: string; dis
   const markdownDocsUrl = escapeHtml(`${input.docsUrl}?format=markdown`);
   const discoveryUrl = escapeHtml(input.discoveryUrl);
   const mcpUrl = escapeHtml(input.mcpUrl);
+  const pluginUrl = escapeHtml(input.docsUrl.replace(/\/agent-docs$/, '/review-room/claude-plugin.zip'));
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -231,6 +232,9 @@ function renderAgentDocsHtml(input: { docsMarkdown: string; docsUrl: string; dis
         <li>Paste the MCP URL above.</li>
         <li>Use a document share token in the tool arguments or as <code>Authorization: Bearer &lt;token&gt;</code>.</li>
       </ol>
+      <h2>Plugin download</h2>
+      <p>Install the Review Room Cowork plugin to add the MCP server and skill instructions in one step.</p>
+      <p><a href="${pluginUrl}" download>Download Claude/Cowork plugin</a></p>
     </section>
     <section class="panel docs" aria-labelledby="docs-heading">
       <h2 id="docs-heading">Full Agent Reference</h2>

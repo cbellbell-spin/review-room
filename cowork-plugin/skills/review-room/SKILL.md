@@ -9,6 +9,8 @@ The Review Room MCP server is configured via `.mcp.json` and exposes these tools
 
 - `review_room_get_state` — read a document (markdown, marks, revision, links)
 - `review_room_add_comment` — add an anchored human-review comment
+- `review_room_reply_comment` — reply to an existing comment thread
+- `review_room_resolve_comment` — resolve an existing comment thread
 - `review_room_add_suggestion` — add a pending suggestion (replace/insert/delete)
 - `review_room_accept_suggestion` — accept and apply a pending suggestion
 - `review_room_reject_suggestion` — reject a pending suggestion without applying it
@@ -65,6 +67,8 @@ The response includes the new document's slug and a share URL. Save the slug and
 ## Submit review items
 
 - **Comment**: `review_room_add_comment` with `{ slug, token, quote, text, by }`. `quote` anchors the comment to exact text in the document.
+- **Reply**: `review_room_reply_comment` with `{ slug, token, markId, text, by }`. Use the comment mark id from `review_room_get_state`.
+- **Resolve**: `review_room_resolve_comment` with `{ slug, token, markId, by }`. Only resolve when the user asks you to close a thread or the issue has clearly been addressed.
 - **Suggested edit**: `review_room_add_suggestion` with `{ slug, token, kind, quote, content, by }`. `kind` is `replace`, `insert`, or `delete`. `quote` is the text to anchor; `content` is the replacement (omit for `delete`).
 
 ## Mark IDs

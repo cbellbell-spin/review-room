@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Router, type Request, type Response } from 'express';
+import { buildClaudePluginZip } from './claude-plugin-package.js';
 import { generateSlug } from './slug.js';
 import {
   addEvent,
@@ -244,6 +245,16 @@ function renderReviewRoomHome(): string {
     .empty { padding: 24px 18px; color: #607064; border-top: 1px solid #edf1e9; }
     .error { color: #b42318; font-size: 13px; min-height: 18px; }
     .section-title { font-size: 16px; font-weight: 700; margin: 0; }
+    .download-list { display: grid; gap: 10px; padding: 18px; border-top: 1px solid #edf1e9; }
+    .download-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .download-copy { display: grid; gap: 3px; min-width: 0; }
+    .download-title { font-weight: 700; }
+    .download-note { color: #607064; font-size: 13px; line-height: 1.45; }
     details.panel { overflow: hidden; }
     summary.panel-header {
       display: flex;
@@ -271,6 +282,7 @@ function renderReviewRoomHome(): string {
       main { grid-template-columns: 1fr; padding: 20px 16px 40px; }
       .topbar { padding: 0 16px; }
       .doc-row { grid-template-columns: 1fr; }
+      .download-row { align-items: flex-start; flex-direction: column; }
     }
   </style>
 </head>
@@ -320,6 +332,22 @@ function renderReviewRoomHome(): string {
           <div class="empty">Loading documents...</div>
         </div>
       </details>
+      <section class="panel" aria-labelledby="agent-plugin-heading">
+        <div class="panel-header">
+          <h1 id="agent-plugin-heading">Use Claude with Review Room</h1>
+          <p>Install the Cowork plugin to give Claude the Review Room MCP tools for reading, commenting, replying, resolving, and proposing edits.</p>
+        </div>
+        <div class="download-list">
+          <div class="download-row">
+            <div class="download-copy">
+              <div class="download-title">Claude/Cowork plugin</div>
+              <div class="download-note">Includes the MCP connection and Review Room skill instructions.</div>
+            </div>
+            <a class="button secondary" href="/review-room/claude-plugin.zip" download>Download plugin</a>
+          </div>
+          <p class="form-note">Setup details are in <a href="/agent-docs">Agent API</a>.</p>
+        </div>
+      </section>
     </main>
   </div>
   <script>
@@ -426,6 +454,19 @@ function renderReviewRoomHome(): string {
 
 reviewRoomRoutes.get('/review-room', (_req: Request, res: Response) => {
   res.type('html').send(renderReviewRoomHome());
+});
+
+reviewRoomRoutes.get('/review-room/claude-plugin.zip', (_req: Request, res: Response) => {
+  try {
+    const archive = buildClaudePluginZip();
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="review-room-claude-plugin.zip"');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(archive);
+  } catch (error) {
+    console.error('[review-room] failed to build Claude plugin zip', error);
+    res.status(500).type('text/plain').send('Could not build the Claude plugin download.');
+  }
 });
 
 reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Response) => {

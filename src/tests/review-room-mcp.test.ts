@@ -44,6 +44,7 @@ async function mcpResponse(base: string, body: Record<string, unknown>, token?: 
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
+      'MCP-Protocol-Version': '2024-11-05',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), ...body }),
@@ -110,6 +111,7 @@ async function run(): Promise<void> {
     assert(htmlDocs.status === 200 && htmlDocs.headers.get('content-type')?.includes('text/html'), 'Expected HTML agent docs for browser Accept');
     assert(htmlDocsText.includes('Copy MCP URL'), 'Expected HTML docs to include Copy MCP URL button');
     assert(htmlDocsText.includes('https://proof-sdk-psi.vercel.app/mcp'), 'Expected HTML docs to show HTTPS MCP URL');
+    assert(htmlDocsText.includes('/review-room/claude-plugin.zip'), 'Expected HTML docs to link the Claude plugin download');
 
     const markdownDocs = await fetch(`${base}/agent-docs`, { headers: { Accept: 'text/markdown' } });
     const markdownDocsText = await markdownDocs.text();
@@ -147,10 +149,37 @@ async function run(): Promise<void> {
       initializedResponse.headers.get('content-type')?.includes('application/json') === true,
       `Expected initialize JSON response, got ${initializedResponse.headers.get('content-type')}`,
     );
+    assert(
+      initializedResponse.headers.get('mcp-protocol-version') === '2024-11-05',
+      `Expected MCP protocol response header, got ${String(initializedResponse.headers.get('mcp-protocol-version'))}`,
+    );
+    const sessionId = initializedResponse.headers.get('mcp-session-id');
+    assert(typeof sessionId === 'string' && sessionId.length > 0, 'Expected initialize to return Mcp-Session-Id');
     const initialized = await json<McpResponse>(initializedResponse);
     assert(!initialized.error, initialized.error?.message || 'Expected MCP initialize success');
 
-    const listed = await mcp(base, { method: 'tools/list' });
+    const initializedNotification = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'Mcp-Session-Id': sessionId,
+        'MCP-Protocol-Version': '2024-11-05',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+    assert(initializedNotification.status === 204, `Expected initialized notification 204, got ${initializedNotification.status}`);
+
+    const listed = await json<McpResponse>(await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'Mcp-Session-Id': sessionId,
+        'MCP-Protocol-Version': '2024-11-05',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/list' }),
+    }));
     assert(
       listed.result?.tools?.some((tool) => tool.name === 'review_room_get_state') === true,
       'Expected MCP tools/list to include review_room_get_state',

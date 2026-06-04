@@ -1265,9 +1265,25 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const docs = await get(baseUrl, '/agent-docs', { Accept: 'text/markdown' });
       assert(docs.status === 200, `Expected agent-docs 200, got ${docs.status}`);
       assertIncludes(docs.body || '', '/documents', 'Expected agent-docs to mention document endpoint');
+      assertIncludes(docs.body || '', '/review-room/claude-plugin.zip', 'Expected agent-docs to link the Claude plugin download');
+      assertIncludes(docs.body || '', 'review_room_reply_comment', 'Expected agent-docs to mention MCP reply tool');
+      assertIncludes(docs.body || '', 'review_room_resolve_comment', 'Expected agent-docs to mention MCP resolve tool');
       assertIncludes(docs.body || '', 'X-Agent-Id', 'Expected agent-docs to require explicit agent identity for presence');
       assert(!(docs.body || '').includes('a `by` field identifying the agent'), 'Did not expect agent-docs to derive presence identity from by');
       assert(!(docs.body || '').includes('"presenceApplied": true'), 'Did not expect agent-docs to imply presence is automatic');
+
+      const dashboard = await get(baseUrl, '/review-room', { Accept: 'text/html' });
+      assert(dashboard.status === 200, `Expected review-room dashboard 200, got ${dashboard.status}`);
+      assertIncludes(dashboard.body || '', '/review-room/claude-plugin.zip', 'Expected Review Room dashboard to link plugin download');
+
+      const plugin = await getBinary(baseUrl, '/review-room/claude-plugin.zip');
+      assert(plugin.status === 200, `Expected Claude plugin zip 200, got ${plugin.status}`);
+      assert(plugin.headers.get('content-type')?.includes('application/zip') === true, 'Expected Claude plugin zip content type');
+      assert(plugin.body.subarray(0, 4).toString('hex') === '504b0304', 'Expected plugin download to be a ZIP archive');
+      const zipText = plugin.body.toString('latin1');
+      assertIncludes(zipText, '.claude-plugin/plugin.json', 'Expected plugin zip to include Claude plugin manifest');
+      assertIncludes(zipText, '.mcp.json', 'Expected plugin zip to include MCP config');
+      assertIncludes(zipText, 'skills/review-room/SKILL.md', 'Expected plugin zip to include Review Room skill');
     });
 
     await test('D2: /d/:slug token query sets cookie (no redirect; token stays in URL)', async () => {

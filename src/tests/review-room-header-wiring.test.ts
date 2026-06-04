@@ -57,9 +57,16 @@ assert(
     && editorSource.includes('this.markReply(comment.id, getCurrentActor(), text)')
     && editorSource.includes('this.markResolve(comment.id)')
     && editorSource.includes('this.markDeleteThread(comment.id)')
+    && editorSource.includes("let commentFilter: 'open' | 'resolved' | 'all' = 'open';")
+    && editorSource.includes('renderCommentFilterControls')
+    && editorSource.includes('attachReviewItemFocus(item, comment.id)')
+    && editorSource.includes('activateReviewItem(markId)')
+    && editorSource.includes('Comments (${visibleComments.length})')
+    && editorSource.includes('No resolved comment threads.')
+    && editorSource.includes('Review items could not load')
     && markPopoverSource.includes('proof?.isReviewRoomRuntime?.()')
     && markPopoverSource.includes('proof.openReviewRoomReviewSidebar({ focusMarkId: markId })'),
-  'Expected Review Room comment threads to open and resolve inside the Review sidebar',
+  'Expected Review Room comment threads to open, filter, focus, and resolve inside the Review sidebar',
 );
 assert(
   editorSource.includes('private createReviewRoomSaveButton()')

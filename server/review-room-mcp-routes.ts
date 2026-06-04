@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { getDocumentBySlug, resolveDocumentAccessRole } from './db.js';
 import { executeDocumentOperationAsync } from './document-engine.js';
@@ -45,6 +46,12 @@ function readBearerToken(req: Request): string {
   const authHeader = req.header('authorization') || '';
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() ?? '';
+}
+
+function setMcpResponseHeaders(res: Response, sessionId?: string): void {
+  res.setHeader('MCP-Protocol-Version', MCP_PROTOCOL_VERSION);
+  res.setHeader('Access-Control-Expose-Headers', 'MCP-Protocol-Version, Mcp-Session-Id');
+  if (sessionId) res.setHeader('Mcp-Session-Id', sessionId);
 }
 
 function jsonRpcResult(id: unknown, result: JsonRecord): JsonRecord {
@@ -275,6 +282,7 @@ async function executeReviewRoomTool(req: Request, name: string, args: JsonRecor
 }
 
 reviewRoomMcpRoutes.get('/mcp', (_req: Request, res: Response) => {
+  setMcpResponseHeaders(res);
   res.json({
     name: 'review-room-mcp',
     protocolVersion: MCP_PROTOCOL_VERSION,
@@ -284,6 +292,7 @@ reviewRoomMcpRoutes.get('/mcp', (_req: Request, res: Response) => {
 });
 
 reviewRoomMcpRoutes.post('/mcp', async (req: Request, res: Response) => {
+  setMcpResponseHeaders(res);
   const request = isRecord(req.body) ? req.body as JsonRpcRequest : {};
   const id = hasOwn(request, 'id') ? request.id : null;
   const method = readString(request.method);
@@ -299,6 +308,7 @@ reviewRoomMcpRoutes.post('/mcp', async (req: Request, res: Response) => {
   }
 
   if (method === 'initialize') {
+    setMcpResponseHeaders(res, randomUUID());
     res.json(jsonRpcResult(id, {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { tools: {} },

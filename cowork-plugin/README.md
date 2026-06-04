@@ -8,6 +8,8 @@ The plugin exposes the Review Room MCP (`https://proof-sdk-psi.vercel.app/mcp`) 
 
 - `review_room_get_state` — read a document (markdown, marks, revision, links)
 - `review_room_add_comment` — add an anchored human-review comment
+- `review_room_reply_comment` — reply to an existing comment thread
+- `review_room_resolve_comment` — resolve an existing comment thread
 - `review_room_add_suggestion` — add a pending suggestion (replace/insert/delete)
 - `review_room_accept_suggestion` — accept and apply a pending suggestion
 - `review_room_reject_suggestion` — reject a pending suggestion without applying it
@@ -20,9 +22,10 @@ Two options.
 
 **From the prebuilt zip:**
 
-1. Open Cowork → Plugins → Upload.
-2. Pick `review-room.zip` from this directory.
-3. The plugin auto-connects to the MCP server on next agent start.
+1. Download `https://proof-sdk-psi.vercel.app/review-room/claude-plugin.zip`.
+2. Open Cowork → Plugins → Upload.
+3. Pick the downloaded zip.
+4. The plugin auto-connects to the MCP server on next agent start.
 
 **From source:**
 
