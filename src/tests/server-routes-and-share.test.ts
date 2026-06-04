@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import * as Y from 'yjs';
+import { buildClaudePluginZip } from '../../server/claude-plugin-package';
 import { buildSharePreviewModel, resolveOgTextLayout } from '../../server/share-preview';
 
 const SHARE_BASE = process.env.SHARE_BASE_URL ?? 'http://localhost:4000';
@@ -1284,6 +1285,13 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(zipText, '.claude-plugin/plugin.json', 'Expected plugin zip to include Claude plugin manifest');
       assertIncludes(zipText, '.mcp.json', 'Expected plugin zip to include MCP config');
       assertIncludes(zipText, 'skills/review-room/SKILL.md', 'Expected plugin zip to include Review Room skill');
+
+      const fallbackZip = buildClaudePluginZip(path.join(os.tmpdir(), 'review-room-missing-plugin-root'));
+      assert(fallbackZip.subarray(0, 4).toString('hex') === '504b0304', 'Expected embedded fallback plugin package to be a ZIP archive');
+      const fallbackZipText = fallbackZip.toString('latin1');
+      assertIncludes(fallbackZipText, '.claude-plugin/plugin.json', 'Expected embedded fallback package to include Claude plugin manifest');
+      assertIncludes(fallbackZipText, '.mcp.json', 'Expected embedded fallback package to include MCP config');
+      assertIncludes(fallbackZipText, 'skills/review-room/SKILL.md', 'Expected embedded fallback package to include Review Room skill');
     });
 
     await test('D2: /d/:slug token query sets cookie (no redirect; token stays in URL)', async () => {
