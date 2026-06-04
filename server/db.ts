@@ -10,6 +10,14 @@ import {
   summarizeParseError,
 } from './milkdown-headless.js';
 import { recordMutationBackfill, recordMutationIdempotencyDualRead } from './metrics.js';
+import {
+  REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+  REVIEW_ROOM_LOCAL_AGENT_ID,
+  REVIEW_ROOM_LOCAL_AGENT_NAME,
+  REVIEW_ROOM_LOCAL_HUMAN_ID,
+  REVIEW_ROOM_LOCAL_HUMAN_NAME,
+  REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
+} from './review-room-identity.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1490,21 +1498,28 @@ function ensureReviewRoomDefaults(d: Database.Database): void {
   const now = new Date().toISOString();
   d.prepare(`
     INSERT INTO review_room_workspaces (id, name, created_at, updated_at)
-    VALUES ('local', 'Local Review Room', ?, ?)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT (id) DO NOTHING
-  `).run(now, now);
+  `).run(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, REVIEW_ROOM_LOCAL_WORKSPACE_NAME, now, now);
 
   d.prepare(`
     INSERT INTO review_room_identities (id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at)
-    VALUES ('local-human', 'local', 'human', 'Local reviewer', NULL, ?, ?)
+    VALUES (?, ?, 'human', ?, NULL, ?, ?)
     ON CONFLICT (id) DO NOTHING
-  `).run(now, now);
+  `).run(REVIEW_ROOM_LOCAL_HUMAN_ID, REVIEW_ROOM_DEFAULT_WORKSPACE_ID, REVIEW_ROOM_LOCAL_HUMAN_NAME, now, now);
 
   d.prepare(`
     INSERT INTO review_room_identities (id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at)
-    VALUES ('agent-reviewer', 'local', 'agent', 'Review agent', 'local-human', ?, ?)
+    VALUES (?, ?, 'agent', ?, ?, ?, ?)
     ON CONFLICT (id) DO NOTHING
-  `).run(now, now);
+  `).run(
+    REVIEW_ROOM_LOCAL_AGENT_ID,
+    REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+    REVIEW_ROOM_LOCAL_AGENT_NAME,
+    REVIEW_ROOM_LOCAL_HUMAN_ID,
+    now,
+    now,
+  );
 }
 
 function backfillReviewRoomDocumentOwnerMemberships(d: Database.Database): void {
@@ -3953,7 +3968,7 @@ export interface DashboardDocumentRow {
   copy_url?: string;
 }
 
-export function getReviewRoomIdentity(id: string = 'local-human'): ReviewRoomIdentityRow | null {
+export function getReviewRoomIdentity(id: string = REVIEW_ROOM_LOCAL_HUMAN_ID): ReviewRoomIdentityRow | null {
   const row = getDb().prepare(`
     SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
     FROM review_room_identities
@@ -3963,7 +3978,7 @@ export function getReviewRoomIdentity(id: string = 'local-human'): ReviewRoomIde
   return row ?? null;
 }
 
-export function listReviewRoomIdentities(workspaceId: string = 'local'): ReviewRoomIdentityRow[] {
+export function listReviewRoomIdentities(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID): ReviewRoomIdentityRow[] {
   return getDb().prepare(`
     SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
     FROM review_room_identities
@@ -3983,8 +3998,8 @@ export function createReviewRoomDocumentRecord(input: {
 }): ReviewRoomDocumentRow {
   assertWritesAllowed('createReviewRoomDocumentRecord');
   const now = new Date().toISOString();
-  const workspaceId = input.workspaceId || 'local';
-  const ownerIdentityId = input.ownerIdentityId || 'local-human';
+  const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
+  const ownerIdentityId = input.ownerIdentityId || REVIEW_ROOM_LOCAL_HUMAN_ID;
   const createdByIdentityId = input.createdByIdentityId || ownerIdentityId;
   const id = randomUUID();
   getDb().prepare(`
@@ -4090,7 +4105,7 @@ export function getReviewRoomDocumentMember(
 
 export function getReviewRoomDocumentMemberForProofSlug(
   proofSlug: string,
-  identityId: string = 'local-human',
+  identityId: string = REVIEW_ROOM_LOCAL_HUMAN_ID,
 ): ReviewRoomDocumentMemberRow | null {
   const row = getDb().prepare(`
     SELECT
@@ -4173,7 +4188,7 @@ export function updateReviewRoomDocumentTitleByProofSlug(proofSlug: string, titl
   return result.changes > 0;
 }
 
-export function listReviewRoomDocuments(workspaceId: string = 'local', limit: number = 50): ReviewRoomDocumentRow[] {
+export function listReviewRoomDocuments(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID, limit: number = 50): ReviewRoomDocumentRow[] {
   const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 200));
   return getDb().prepare(`
     SELECT

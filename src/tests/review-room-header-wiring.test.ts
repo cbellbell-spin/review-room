@@ -16,6 +16,7 @@ const vercelConfig = JSON.parse(readFileSync(path.join(root, 'vercel.json'), 'ut
 
 assert(indexHtml.includes('id="review-room-title-slot"'), 'Expected Review Room header to expose a title slot');
 assert(indexHtml.includes('id="review-room-status-slot"'), 'Expected Review Room header to expose a sync status slot');
+assert(indexHtml.includes('id="review-room-review-slot"'), 'Expected Review Room header to expose a review sidebar slot');
 assert(indexHtml.includes('id="review-room-agent-slot"'), 'Expected Review Room header to expose an agent control slot');
 assert(indexHtml.includes('id="review-room-format-slot"'), 'Expected Review Room header to expose a formatting toolbar slot');
 assert(indexHtml.includes('id="review-room-save-slot"'), 'Expected Review Room header to expose a save slot');
@@ -33,11 +34,20 @@ assert(
 assert(
   editorSource.includes("titleSlot.replaceChildren(title);")
     && editorSource.includes("statusSlot.replaceChildren(syncStatusInline);")
+    && editorSource.includes("reviewSlot.replaceChildren(this.createReviewRoomReviewButton());")
     && editorSource.includes("agentSlotContainer.replaceChildren(agentSlot);")
     && editorSource.includes("formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());")
     && editorSource.includes("saveSlot.replaceChildren(this.createReviewRoomSaveControls());")
     && editorSource.includes("shareSlot.replaceChildren(shareBtn);"),
   'Expected existing share controls to be mounted into Review Room header slots',
+);
+assert(
+  editorSource.includes("panel.id = 'review-room-review-sidebar';")
+    && editorSource.includes("button.setAttribute('aria-controls', 'review-room-review-sidebar');")
+    && editorSource.includes("button.setAttribute('aria-expanded', 'false');")
+    && editorSource.includes("top:var(--review-room-bar-height, 64px);right:0;bottom:0;")
+    && !editorSource.includes('background:rgba(31,41,51,0.46);'),
+  'Expected Review Room review items to open as a docked sidebar, not a dimmed overlay',
 );
 assert(
   editorSource.includes('private createReviewRoomSaveButton()')

@@ -73,6 +73,7 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
   const docsUrl = base ? `${base}${AGENT_DOCS_PATH}` : AGENT_DOCS_PATH;
   const skillUrl = base ? `${base}/proof.SKILL.md` : '/proof.SKILL.md';
   const setupUrl = base ? `${base}/agent-setup` : '/agent-setup';
+  const mcpUrl = base ? `${base}/mcp` : '/mcp';
   const shareBase = base || '';
 
   const authMode = resolveShareMarkdownAuthMode(base);
@@ -92,7 +93,8 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
     docs_url: docsUrl,
     skill_url: skillUrl,
     setup_url: setupUrl,
-    capabilities: ['create_document', 'share', 'comment', 'suggest', 'rewrite', 'collab', 'provenance'],
+    mcp_url: mcpUrl,
+    capabilities: ['create_document', 'share', 'comment', 'suggest', 'rewrite', 'collab', 'provenance', 'mcp'],
     auth: {
       methods: authMethods,
       api_key_header: 'Authorization: Bearer <key>',
@@ -117,6 +119,17 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
         body: { markdown: '# Hello World', title: 'My Document' },
         returns: 'shareUrl (editable link to share with anyone)',
       },
+    },
+    mcp: {
+      transport: 'streamable-http',
+      url: mcpUrl,
+      tools: [
+        'review_room_get_state',
+        'review_room_add_comment',
+        'review_room_add_suggestion',
+        'review_room_accept_suggestion',
+        'review_room_reject_suggestion',
+      ],
     },
   });
 });

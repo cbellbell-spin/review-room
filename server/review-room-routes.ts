@@ -34,11 +34,14 @@ import {
   resolveHostedDocumentAccess,
   upsertHostedReviewRoomDocumentMember,
 } from './hosted-review-room-db.js';
+import {
+  REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+  REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
+  normalizeReviewRoomIdentityId,
+  reviewRoomActorForIdentity,
+} from './review-room-identity.js';
 
 export const reviewRoomRoutes = Router();
-
-const DEFAULT_WORKSPACE_ID = 'local';
-const DEFAULT_HUMAN_ID = 'local-human';
 
 function escapeHtml(value: string): string {
   return value
@@ -60,9 +63,9 @@ function appendTokenToPath(path: string, token: string | null): string {
 
 function getCurrentReviewRoomIdentityId(req: Request): string {
   const fromHeader = req.header('x-review-room-identity-id');
-  if (fromHeader && fromHeader.trim()) return fromHeader.trim();
+  if (fromHeader && fromHeader.trim()) return normalizeReviewRoomIdentityId(fromHeader);
   const fromQuery = typeof req.query.identityId === 'string' ? req.query.identityId.trim() : '';
-  return fromQuery || DEFAULT_HUMAN_ID;
+  return normalizeReviewRoomIdentityId(fromQuery);
 }
 
 function parseProofSlugInput(value: string): { slug: string; token: string | null } {
@@ -431,22 +434,22 @@ reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Resp
     res.json({
       success: true,
       workspace: {
-        id: DEFAULT_WORKSPACE_ID,
-        name: 'Local Review Room',
+        id: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+        name: REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
       },
       currentIdentity: await getHostedReviewRoomIdentity(identityId),
-      identities: await listHostedReviewRoomIdentities(DEFAULT_WORKSPACE_ID),
+      identities: await listHostedReviewRoomIdentities(REVIEW_ROOM_DEFAULT_WORKSPACE_ID),
     });
     return;
   }
   res.json({
     success: true,
     workspace: {
-      id: DEFAULT_WORKSPACE_ID,
-      name: 'Local Review Room',
+      id: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+      name: REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
     },
     currentIdentity: getReviewRoomIdentity(identityId),
-    identities: listReviewRoomIdentities(DEFAULT_WORKSPACE_ID),
+    identities: listReviewRoomIdentities(REVIEW_ROOM_DEFAULT_WORKSPACE_ID),
   });
 });
 
@@ -454,7 +457,7 @@ reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Res
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 50;
   const identityId = getCurrentReviewRoomIdentityId(req);
   if (isHostedReviewRoomDbEnabled()) {
-    const rows = await listHostedReviewRoomDocuments(DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50);
+    const rows = await listHostedReviewRoomDocuments(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50);
     const documents = await Promise.all(
       rows.map(async (row) => serializeDocument(row, await getHostedReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
     );
@@ -468,7 +471,7 @@ reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Res
   res.json({
     success: true,
     currentIdentity: getReviewRoomIdentity(identityId),
-    documents: listReviewRoomDocuments(DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50)
+    documents: listReviewRoomDocuments(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50)
       .map((row) => serializeDocument(row, getReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
   });
 });
@@ -481,7 +484,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
 
   const slug = generateSlug();
   const ownerSecret = randomUUID();
-  const ownerId = `review-room:${DEFAULT_HUMAN_ID}`;
+  const ownerId = reviewRoomActorForIdentity(identityId);
   if (isHostedReviewRoomDbEnabled()) {
     const hosted = await createHostedReviewRoomDocument({
       slug,
@@ -489,7 +492,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
       markdown,
       ownerId,
       ownerSecret,
-      workspaceId: DEFAULT_WORKSPACE_ID,
+      workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
       identityId,
     });
     const openPath = appendTokenToPath(
@@ -520,7 +523,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
   }, ownerId);
 
   const reviewRoomDocument = createReviewRoomDocumentRecord({
-    workspaceId: DEFAULT_WORKSPACE_ID,
+    workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
     title,
     proofSlug: proofDoc.slug,
     proofDocId: proofDoc.doc_id,
@@ -604,7 +607,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
       return;
     }
     const reviewRoomDocument = await createHostedReviewRoomDocumentRecord({
-      workspaceId: DEFAULT_WORKSPACE_ID,
+      workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
       title: proofDoc.title?.trim() || 'Untitled review',
       proofSlug: proofDoc.slug,
       proofDocId: proofDoc.doc_id,
@@ -679,7 +682,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
   }
 
   const reviewRoomDocument = createReviewRoomDocumentRecord({
-    workspaceId: DEFAULT_WORKSPACE_ID,
+    workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
     title: proofDoc.title?.trim() || 'Untitled review',
     proofSlug: proofDoc.slug,
     proofDocId: proofDoc.doc_id,

@@ -11,6 +11,14 @@ import { deriveReviewRoomCapabilities, reviewRoomRoleToShareRole, type DocumentA
 import type { ShareRole } from './share-types.js';
 import { applyAgentEditOperations, type AgentEditOperation } from './agent-edit-ops.js';
 import { parseDocumentOpRequest, resolveDocumentOpRoute, type DocumentOpType } from './document-ops.js';
+import {
+  REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+  REVIEW_ROOM_LOCAL_AGENT_ID,
+  REVIEW_ROOM_LOCAL_AGENT_NAME,
+  REVIEW_ROOM_LOCAL_HUMAN_ID,
+  REVIEW_ROOM_LOCAL_HUMAN_NAME,
+  REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
+} from './review-room-identity.js';
 
 type SqlValue = null | string | number | bigint | ArrayBuffer | boolean | Uint8Array | Date;
 
@@ -215,21 +223,28 @@ async function ensureHostedReviewRoomDatabase(): Promise<Client> {
   await db.batch([
     [
       `INSERT INTO review_room_workspaces (id, name, created_at, updated_at)
-       VALUES ('local', 'Local Review Room', ?, ?)
+       VALUES (?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`,
-      [now, now],
+      [REVIEW_ROOM_DEFAULT_WORKSPACE_ID, REVIEW_ROOM_LOCAL_WORKSPACE_NAME, now, now],
     ],
     [
       `INSERT INTO review_room_identities (id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at)
-       VALUES ('local-human', 'local', 'human', 'Local reviewer', NULL, ?, ?)
+       VALUES (?, ?, 'human', ?, NULL, ?, ?)
        ON CONFLICT (id) DO NOTHING`,
-      [now, now],
+      [REVIEW_ROOM_LOCAL_HUMAN_ID, REVIEW_ROOM_DEFAULT_WORKSPACE_ID, REVIEW_ROOM_LOCAL_HUMAN_NAME, now, now],
     ],
     [
       `INSERT INTO review_room_identities (id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at)
-       VALUES ('agent-reviewer', 'local', 'agent', 'Review agent', 'local-human', ?, ?)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`,
-      [now, now],
+      [
+        REVIEW_ROOM_LOCAL_AGENT_ID,
+        REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+        REVIEW_ROOM_LOCAL_AGENT_NAME,
+        REVIEW_ROOM_LOCAL_HUMAN_ID,
+        now,
+        now,
+      ],
     ],
   ]);
   initialized = true;
@@ -607,7 +622,7 @@ export async function ackHostedDocumentEvents(slug: string, upToId: number, acke
   return Number(result.rowsAffected ?? 0);
 }
 
-export async function getHostedReviewRoomIdentity(id: string = 'local-human'): Promise<ReviewRoomIdentityRow | null> {
+export async function getHostedReviewRoomIdentity(id: string = REVIEW_ROOM_LOCAL_HUMAN_ID): Promise<ReviewRoomIdentityRow | null> {
   return execute<ReviewRoomIdentityRow>(`
     SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
     FROM review_room_identities
@@ -616,7 +631,7 @@ export async function getHostedReviewRoomIdentity(id: string = 'local-human'): P
   `, [id]);
 }
 
-export async function listHostedReviewRoomIdentities(workspaceId: string = 'local'): Promise<ReviewRoomIdentityRow[]> {
+export async function listHostedReviewRoomIdentities(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID): Promise<ReviewRoomIdentityRow[]> {
   return executeAll<ReviewRoomIdentityRow>(`
     SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
     FROM review_room_identities
@@ -627,7 +642,7 @@ export async function listHostedReviewRoomIdentities(workspaceId: string = 'loca
 
 export async function getHostedReviewRoomDocumentMemberForProofSlug(
   proofSlug: string,
-  identityId: string = 'local-human',
+  identityId: string = REVIEW_ROOM_LOCAL_HUMAN_ID,
 ): Promise<ReviewRoomDocumentMemberRow | null> {
   return execute<ReviewRoomDocumentMemberRow>(`
     SELECT
@@ -695,7 +710,7 @@ export async function getHostedReviewRoomDocumentByProofSlug(proofSlug: string):
   `, [proofSlug]);
 }
 
-export async function listHostedReviewRoomDocuments(workspaceId: string = 'local', limit: number = 50): Promise<ReviewRoomDocumentRow[]> {
+export async function listHostedReviewRoomDocuments(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID, limit: number = 50): Promise<ReviewRoomDocumentRow[]> {
   const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 200));
   return executeAll<ReviewRoomDocumentRow>(`
     SELECT
@@ -781,8 +796,8 @@ export async function createHostedReviewRoomDocumentRecord(input: {
   const db = await ensureHostedReviewRoomDatabase();
   const now = new Date().toISOString();
   const id = randomUUID();
-  const workspaceId = input.workspaceId || 'local';
-  const ownerIdentityId = input.ownerIdentityId || 'local-human';
+  const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
+  const ownerIdentityId = input.ownerIdentityId || REVIEW_ROOM_LOCAL_HUMAN_ID;
   const createdByIdentityId = input.createdByIdentityId || ownerIdentityId;
   await db.execute({
     sql: `INSERT INTO review_room_documents (
@@ -834,8 +849,8 @@ export async function createHostedReviewRoomDocument(input: {
   const editorAccess = { tokenId: randomUUID(), secret: randomUUID() };
   const ownerAccess = { tokenId: randomUUID(), secret: randomUUID() };
   const reviewRoomDocumentId = randomUUID();
-  const workspaceId = input.workspaceId || 'local';
-  const identityId = input.identityId || 'local-human';
+  const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
+  const identityId = input.identityId || REVIEW_ROOM_LOCAL_HUMAN_ID;
   const marksJson = JSON.stringify(input.marks ?? {});
   const eventPayload = JSON.stringify({ title: input.title, ownerId: input.ownerId, reviewRoom: true });
 

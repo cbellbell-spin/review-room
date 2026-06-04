@@ -4452,6 +4452,8 @@ class ProofEditorImpl implements ProofEditor {
     button.type = 'button';
     button.textContent = 'Review';
     button.setAttribute('aria-label', 'Open review items');
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('aria-controls', 'review-room-review-sidebar');
     button.style.cssText = `
       display:inline-flex;align-items:center;justify-content:center;min-height:36px;min-width:76px;padding:0 12px;
       border:1px solid #cbd7c6;border-radius:18px;background:#fff;color:#266854;
@@ -4510,17 +4512,19 @@ class ProofEditorImpl implements ProofEditor {
   private async openReviewRoomReviewPanel(): Promise<void> {
     if (!this.isShareMode) return;
 
-    const overlay = document.createElement('div');
-    overlay.style.cssText = `
-      position:fixed;inset:0;z-index:1200;
-      background:rgba(31,41,51,0.46);
-      display:flex;align-items:stretch;justify-content:flex-end;
-    `;
+    const existing = document.getElementById('review-room-review-sidebar');
+    if (existing) {
+      existing.remove();
+      this.reviewRoomReviewButtonEl?.setAttribute('aria-expanded', 'false');
+      return;
+    }
 
     const panel = document.createElement('aside');
+    panel.id = 'review-room-review-sidebar';
     panel.setAttribute('aria-label', 'Review items');
     panel.style.cssText = `
-      width:min(420px, 100vw);height:100%;background:#ffffff;color:#1f2933;
+      position:fixed;top:var(--review-room-bar-height, 64px);right:0;bottom:0;z-index:1200;
+      width:min(440px, 100vw);background:#ffffff;color:#1f2933;
       border-left:1px solid #dfe5d7;box-shadow:-16px 0 44px rgba(31,41,51,0.18);
       display:grid;grid-template-rows:auto 1fr;overflow:hidden;
     `;
@@ -4539,21 +4543,19 @@ class ProofEditorImpl implements ProofEditor {
     const body = document.createElement('div');
     body.style.cssText = 'overflow:auto;padding:0;';
     panel.append(header, body);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
+    document.body.appendChild(panel);
+    this.reviewRoomReviewButtonEl?.setAttribute('aria-expanded', 'true');
 
     const cleanup = () => {
-      if (!overlay.isConnected) return;
-      overlay.remove();
+      if (!panel.isConnected) return;
+      panel.remove();
+      this.reviewRoomReviewButtonEl?.setAttribute('aria-expanded', 'false');
       document.removeEventListener('keydown', onKeyDown, true);
     };
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') cleanup();
     };
     document.addEventListener('keydown', onKeyDown, true);
-    overlay.addEventListener('mousedown', (ev) => {
-      if (ev.target === overlay) cleanup();
-    });
     close.onclick = cleanup;
 
     const sectionHeading = (label: string): HTMLElement => {
