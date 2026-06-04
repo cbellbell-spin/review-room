@@ -1,0 +1,5 @@
+{
+  "name": "review-room",
+  "version": "0.3.0",
+  "description": "Read, create, and review shared Review Room documents via the document server's MCP. Submits comments and suggested edits for human review, and can accept or reject pending suggestions."
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "review-room": {
+      "type": "http",
+      "url": "https://proof-sdk-psi.vercel.app/mcp"
+    }
+  }
+}
