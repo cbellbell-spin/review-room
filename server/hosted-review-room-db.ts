@@ -1265,6 +1265,114 @@ async function addHostedSuggestion(slug: string, body: Record<string, unknown>):
   return persistHostedMarks(slug, marks, by, 'suggestion.added', { markId: id, by, kind, quote, content });
 }
 
+function getHostedSuggestionKind(mark: Record<string, unknown>): 'insert' | 'delete' | 'replace' | null {
+  const kind = typeof mark.kind === 'string' ? mark.kind : '';
+  if (kind === 'insert' || kind === 'delete' || kind === 'replace') return kind;
+  const suggestionKind = typeof mark.suggestionKind === 'string' ? mark.suggestionKind : '';
+  if (suggestionKind === 'insert' || suggestionKind === 'delete' || suggestionKind === 'replace') return suggestionKind;
+  return null;
+}
+
+function applyHostedAcceptedSuggestion(
+  markdown: string,
+  mark: Record<string, unknown>,
+): { ok: true; markdown: string } | { ok: false; body: Record<string, unknown> } {
+  const kind = getHostedSuggestionKind(mark);
+  if (!kind) {
+    return { ok: false, body: { success: false, code: 'INVALID_SUGGESTION', error: 'Mark is not an actionable suggestion' } };
+  }
+  const quote = typeof mark.quote === 'string' ? mark.quote : '';
+  const content = typeof mark.content === 'string' ? mark.content : '';
+  if (kind === 'insert') {
+    if (!quote) return { ok: true, markdown: `${markdown}${markdown.endsWith('\n') ? '' : '\n\n'}${content}` };
+    const index = markdown.indexOf(quote);
+    if (index < 0) {
+      return { ok: false, body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' } };
+    }
+    const insertAt = index + quote.length;
+    return { ok: true, markdown: `${markdown.slice(0, insertAt)}${content}${markdown.slice(insertAt)}` };
+  }
+  if (!quote) {
+    return { ok: false, body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion requires a quote anchor' } };
+  }
+  const index = markdown.indexOf(quote);
+  if (index < 0) {
+    return { ok: false, body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' } };
+  }
+  if (kind === 'delete') {
+    return { ok: true, markdown: `${markdown.slice(0, index)}${markdown.slice(index + quote.length)}` };
+  }
+  return {
+    ok: true,
+    markdown: `${markdown.slice(0, index)}${content}${markdown.slice(index + quote.length)}`,
+  };
+}
+
+async function updateHostedSuggestionStatus(
+  slug: string,
+  body: Record<string, unknown>,
+  status: 'accepted' | 'rejected',
+): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  if (doc.share_state !== 'ACTIVE') {
+    return { status: 403, body: { success: false, error: 'Document is not currently accessible' } };
+  }
+  const markId = typeof body.markId === 'string' && body.markId.trim()
+    ? body.markId.trim()
+    : typeof body.id === 'string' && body.id.trim()
+      ? body.id.trim()
+      : '';
+  if (!markId) return { status: 400, body: { success: false, error: 'Missing markId' } };
+  const marks = parseMarks(doc.marks);
+  const existing = marks[markId];
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return { status: 404, body: { success: false, error: 'Mark not found' } };
+  }
+  const existingRecord = existing as Record<string, unknown>;
+  if (!getHostedSuggestionKind(existingRecord)) {
+    return { status: 400, body: { success: false, code: 'INVALID_MARK', error: 'Mark is not a suggestion' } };
+  }
+  const by = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'review-room:user';
+  const nextMarks = {
+    ...marks,
+    [markId]: {
+      ...existingRecord,
+      status,
+    },
+  };
+  if (status === 'rejected') {
+    return persistHostedMarks(slug, nextMarks, by, 'suggestion.rejected', { markId, status, by });
+  }
+
+  const applied = applyHostedAcceptedSuggestion(doc.markdown, existingRecord);
+  if (!applied.ok) return { status: 409, body: applied.body };
+  const updated = await updateHostedDocument({
+    slug,
+    markdown: applied.markdown,
+    marks: nextMarks,
+    actor: by,
+  });
+  if (updated.status < 200 || updated.status >= 300) return updated;
+  await addHostedDocumentEvent(slug, 'suggestion.accepted', { markId, status, by }, by);
+  const nextDoc = await getHostedDocumentBySlug(slug);
+  return {
+    status: 200,
+    body: {
+      success: true,
+      markId,
+      status,
+      shareState: nextDoc?.share_state ?? doc.share_state,
+      updatedAt: nextDoc?.updated_at ?? new Date().toISOString(),
+      content: nextDoc?.markdown ?? applied.markdown,
+      markdown: nextDoc?.markdown ?? applied.markdown,
+      marks: nextMarks,
+    },
+  };
+}
+
 export async function buildHostedAgentSnapshot(slug: string): Promise<HostedEngineExecutionResult> {
   const doc = await getHostedDocumentBySlug(slug);
   if (!doc || doc.share_state === 'DELETED') {
@@ -1494,6 +1602,8 @@ export async function executeHostedDocumentOperation(
     return { status: 200, body: { success: true, marks: parseMarks(doc.marks) } };
   }
   if (method === 'POST' && routePath === '/marks/comment') return addHostedComment(slug, body);
+  if (method === 'POST' && routePath === '/marks/accept') return updateHostedSuggestionStatus(slug, body, 'accepted');
+  if (method === 'POST' && routePath === '/marks/reject') return updateHostedSuggestionStatus(slug, body, 'rejected');
   return { status: 404, body: { success: false, error: `Unsupported hosted document operation: ${method} ${routePath}` } };
 }
 
@@ -1563,7 +1673,8 @@ export async function buildHostedAgentStateBody(
     return { status: 403, body: { success: false, error: 'Document is not currently accessible' } };
   }
   const state = await readHostedDocumentState(slug);
-  const getActionAlias = access && token ? await createHostedGetActionAlias(slug, token) : null;
+  const advertiseGetOnlyActions = (process.env.PROOF_ADVERTISE_GET_ONLY_ACTIONS || '').trim() === '1';
+  const getActionAlias = advertiseGetOnlyActions && access && token ? await createHostedGetActionAlias(slug, token) : null;
   const getActionAuthParam = getActionAlias
     ? `a=${encodeURIComponent(getActionAlias.alias)}`
     : 'token=<token>';
@@ -1584,19 +1695,23 @@ export async function buildHostedAgentStateBody(
       state: `/documents/${slug}/state`,
       agentState: `/api/agent/${slug}/state`,
       ops: { method: 'POST', href: `/api/agent/${slug}/ops` },
-      getAction: {
-        method: 'GET',
-        href: `/api/agent/${slug}/action?${getActionAuthParam}&type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>`,
-        requiresConfirm: true,
-        supports: ['comment.add', 'suggestion.add'],
-        ...(getActionAlias
-          ? {
-              alias: getActionAlias.alias,
-              aliasExpiresAt: getActionAlias.expiresAt,
-              shortHref: `/api/agent/${slug}/action?a=${encodeURIComponent(getActionAlias.alias)}&type=suggestion.add&kind=replace&quote=<short-quote>&contentDraft=<draft>&by=ai:<agent>`,
-            }
-          : {}),
-      },
+      ...(advertiseGetOnlyActions
+        ? {
+            getAction: {
+              method: 'GET',
+              href: `/api/agent/${slug}/action?${getActionAuthParam}&type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>`,
+              requiresConfirm: true,
+              supports: ['comment.add', 'suggestion.add'],
+              ...(getActionAlias
+                ? {
+                    alias: getActionAlias.alias,
+                    aliasExpiresAt: getActionAlias.expiresAt,
+                    shortHref: `/api/agent/${slug}/action?a=${encodeURIComponent(getActionAlias.alias)}&type=suggestion.add&kind=replace&quote=<short-quote>&contentDraft=<draft>&by=ai:<agent>`,
+                  }
+                : {}),
+            },
+          }
+        : {}),
       ...(getActionAlias
         ? {
             getActionDraft: {
@@ -1612,9 +1727,21 @@ export async function buildHostedAgentStateBody(
       what: 'Review Room is a collaborative document review editor.',
       stateApi: `/documents/${slug}/state`,
       agentStateApi: `/api/agent/${slug}/state`,
-      getActionApi: `/api/agent/${slug}/action`,
-      getActionSupports: ['comment.add', 'suggestion.add'],
-      getActionRequiresConfirm: true,
+      opsApi: `/api/agent/${slug}/ops`,
+      primaryMutationApi: `/api/agent/${slug}/ops`,
+      primaryMutationMethod: 'POST',
+      editingGuidance: {
+        proposedEdits: 'Use POST /api/agent/:slug/ops with type "suggestion.add" so humans can accept or reject changes.',
+        comments: 'Use POST /api/agent/:slug/ops with type "comment.add" for anchored comments.',
+        directApply: 'Use edit/v2, edit, or rewrite.apply only when the human explicitly asks for direct application.',
+      },
+      ...(advertiseGetOnlyActions
+        ? {
+            getActionApi: `/api/agent/${slug}/action`,
+            getActionSupports: ['comment.add', 'suggestion.add'],
+            getActionRequiresConfirm: true,
+          }
+        : {}),
       ...(getActionAlias
         ? {
             getActionAlias: getActionAlias.alias,

@@ -3941,6 +3941,22 @@ agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
     return;
   }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['editor', 'owner_bot'])) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const payload = asPayload(req.body);
+    const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/accept', payload);
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+    return;
+  }
   if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
@@ -4008,6 +4024,22 @@ agentRoutes.post('/:slug/marks/reject', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['editor', 'owner_bot'])) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const payload = asPayload(req.body);
+    const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/reject', payload);
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
     return;
   }
   if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;

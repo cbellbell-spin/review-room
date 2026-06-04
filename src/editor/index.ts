@@ -1071,6 +1071,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private reviewRoomFormatSlotEl: HTMLElement | null = null;
+  private reviewRoomReviewButtonEl: HTMLButtonElement | null = null;
   private reviewRoomSaveButtonEl: HTMLButtonElement | null = null;
   private reviewRoomCancelButtonEl: HTMLButtonElement | null = null;
   private shareBannerSyncDotEl: HTMLElement | null = null;
@@ -3609,13 +3610,15 @@ class ProofEditorImpl implements ProofEditor {
       const statusSlot = document.getElementById('review-room-status-slot');
       const presenceSlot = document.getElementById('review-room-presence-slot');
       const agentSlotContainer = document.getElementById('review-room-agent-slot');
+      const reviewSlot = document.getElementById('review-room-review-slot');
       const formatSlot = document.getElementById('review-room-format-slot');
       const saveSlot = document.getElementById('review-room-save-slot');
       const shareSlot = document.getElementById('review-room-share-slot');
-      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && formatSlot && saveSlot && shareSlot) {
+      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && reviewSlot && formatSlot && saveSlot && shareSlot) {
         titleSlot.replaceChildren(title);
         statusSlot.replaceChildren(syncStatusInline);
         presenceSlot.replaceChildren(avatars);
+        reviewSlot.replaceChildren(this.createReviewRoomReviewButton());
         agentSlotContainer.replaceChildren(agentSlot);
         this.reviewRoomFormatSlotEl = formatSlot;
         formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());
@@ -4138,15 +4141,18 @@ class ProofEditorImpl implements ProofEditor {
       '2) Optionally set your friendly name in presence:',
       `   POST ${presenceUrl}`,
       '   body: {"agentId":"<your-agent-id>","name":"<your-name>","status":"active"}',
-      '3) For edits, prefer block edits:',
+      '3) For proposed edits the human should review, use suggestions:',
+      `   POST ${opsUrl}`,
+      '   body: {"type":"suggestion.add","by":"ai:<your-agent-id>","kind":"replace","quote":"old text","content":"new text"}',
+      '4) For comments, use ops:',
+      `   POST ${opsUrl}`,
+      '   body: {"type":"comment.add","by":"ai:<your-agent-id>","quote":"text to anchor","text":"comment body"}',
+      '5) Use direct edits only when the human explicitly asks you to apply changes without review:',
       `   GET ${snapshotUrl}`,
       `   POST ${editV2Url}`,
       '   body: {"by":"ai:<your-agent-id>","baseRevision":<revision>,"operations":[{"op":"insert_after","ref":"b1","blocks":[{"markdown":"New paragraph."}]}]}',
-      '4) For comments or whole-document rewrites, use ops:',
-      `   POST ${opsUrl}`,
-      '   body: {"type":"comment.add","by":"ai:<your-agent-id>","quote":"text to anchor","text":"comment body"}',
-      `   fallback structured edit endpoint: POST ${editUrl}`,
-      '5) Then reply briefly with what you changed or suggest next steps.',
+      `   legacy direct edit endpoint: POST ${editUrl}`,
+      '6) Then reply briefly with what you changed or suggest next steps.',
     ].join('\n');
   }
 
@@ -4439,6 +4445,267 @@ class ProofEditorImpl implements ProofEditor {
     const save = this.createReviewRoomSaveButton();
     group.append(cancel, save);
     return group;
+  }
+
+  private createReviewRoomReviewButton(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Review';
+    button.setAttribute('aria-label', 'Open review items');
+    button.style.cssText = `
+      display:inline-flex;align-items:center;justify-content:center;min-height:36px;min-width:76px;padding:0 12px;
+      border:1px solid #cbd7c6;border-radius:18px;background:#fff;color:#266854;
+      font-size:13px;font-weight:650;cursor:pointer;font-family:inherit;
+    `;
+    button.onclick = () => {
+      void this.openReviewRoomReviewPanel();
+    };
+    this.reviewRoomReviewButtonEl = button;
+    void this.updateReviewRoomReviewButtonCount();
+    return button;
+  }
+
+  private async updateReviewRoomReviewButtonCount(): Promise<void> {
+    const button = this.reviewRoomReviewButtonEl;
+    if (!button || !this.isShareMode) return;
+    try {
+      const doc = await shareClient.fetchDocument();
+      if (!doc || this.reviewRoomReviewButtonEl !== button) return;
+      const marks = doc.marks ?? {};
+      let count = 0;
+      for (const mark of Object.values(marks)) {
+        if (!mark || typeof mark !== 'object' || Array.isArray(mark)) continue;
+        const record = mark as Record<string, unknown>;
+        const kind = typeof record.kind === 'string' ? record.kind : '';
+        const status = typeof record.status === 'string' ? record.status : '';
+        const resolved = record.resolved === true;
+        if ((kind === 'insert' || kind === 'delete' || kind === 'replace' || kind === 'suggestion') && status !== 'accepted' && status !== 'rejected') {
+          count += 1;
+        } else if (kind === 'comment' && !resolved) {
+          count += 1;
+        }
+      }
+      button.textContent = count > 0 ? `Review ${count}` : 'Review';
+    } catch {
+      button.textContent = 'Review';
+    }
+  }
+
+  private async refreshReviewRoomDocumentFromServer(): Promise<void> {
+    const doc = await shareClient.fetchDocument();
+    if (!doc) return;
+    this.applyShareTitle(doc.title);
+    const serverMarks = doc.marks as Record<string, StoredMark>;
+    this.lastReceivedServerMarks = { ...serverMarks };
+    this.initialMarksSynced = true;
+    const contentWithMarks = embedMarks(doc.markdown, serverMarks);
+    this.loadDocument(contentWithMarks, { allowShareContentMutation: true });
+    if (Object.keys(serverMarks).length > 0) {
+      this.applyExternalMarks(serverMarks);
+    }
+    this.captureReviewRoomSavedSnapshot();
+    void this.updateReviewRoomReviewButtonCount();
+  }
+
+  private async openReviewRoomReviewPanel(): Promise<void> {
+    if (!this.isShareMode) return;
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position:fixed;inset:0;z-index:1200;
+      background:rgba(31,41,51,0.46);
+      display:flex;align-items:stretch;justify-content:flex-end;
+    `;
+
+    const panel = document.createElement('aside');
+    panel.setAttribute('aria-label', 'Review items');
+    panel.style.cssText = `
+      width:min(420px, 100vw);height:100%;background:#ffffff;color:#1f2933;
+      border-left:1px solid #dfe5d7;box-shadow:-16px 0 44px rgba(31,41,51,0.18);
+      display:grid;grid-template-rows:auto 1fr;overflow:hidden;
+    `;
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid #edf1e9;';
+    const title = document.createElement('div');
+    title.textContent = 'Review';
+    title.style.cssText = 'font-size:17px;font-weight:750;letter-spacing:0;color:#1f2933;';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.style.cssText = 'border:1px solid #cbd7c6;background:#fff;color:#374151;border-radius:18px;min-height:32px;padding:0 11px;font-size:13px;font-weight:650;cursor:pointer;';
+    header.append(title, close);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'overflow:auto;padding:0;';
+    panel.append(header, body);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    const cleanup = () => {
+      if (!overlay.isConnected) return;
+      overlay.remove();
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') cleanup();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    overlay.addEventListener('mousedown', (ev) => {
+      if (ev.target === overlay) cleanup();
+    });
+    close.onclick = cleanup;
+
+    const sectionHeading = (label: string): HTMLElement => {
+      const heading = document.createElement('div');
+      heading.textContent = label;
+      heading.style.cssText = 'padding:16px 18px 8px;font-size:12px;font-weight:750;text-transform:uppercase;letter-spacing:0.04em;color:#607064;';
+      return heading;
+    };
+
+    const row = (): HTMLElement => {
+      const el = document.createElement('article');
+      el.style.cssText = 'padding:14px 18px;border-top:1px solid #edf1e9;display:grid;gap:9px;';
+      return el;
+    };
+
+    const renderLoading = () => {
+      body.innerHTML = '<div style="padding:18px;color:#607064;font-size:14px;">Loading review items...</div>';
+    };
+
+    const renderError = (message: string) => {
+      body.innerHTML = '';
+      const error = document.createElement('div');
+      error.textContent = message;
+      error.style.cssText = 'padding:18px;color:#b42318;font-size:14px;line-height:1.45;';
+      body.appendChild(error);
+    };
+
+    const loadPanel = async () => {
+      renderLoading();
+      try {
+        const doc = await shareClient.fetchDocument();
+        if (!doc) {
+          renderError('Could not load this document.');
+          return;
+        }
+        const marks = doc.marks ?? {};
+        const suggestions: Array<{ id: string; kind: string; by: string; quote: string; content: string }> = [];
+        const comments: Array<{ id: string; by: string; quote: string; text: string; replies: number }> = [];
+        for (const [id, raw] of Object.entries(marks)) {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+          const mark = raw as Record<string, unknown>;
+          const rawKind = typeof mark.kind === 'string' ? mark.kind : '';
+          const kind = rawKind === 'suggestion' && typeof mark.suggestionKind === 'string'
+            ? mark.suggestionKind
+            : rawKind;
+          const status = typeof mark.status === 'string' ? mark.status : 'pending';
+          if ((kind === 'insert' || kind === 'delete' || kind === 'replace') && status !== 'accepted' && status !== 'rejected') {
+            suggestions.push({
+              id,
+              kind,
+              by: typeof mark.by === 'string' ? mark.by : 'ai:agent',
+              quote: typeof mark.quote === 'string' ? mark.quote : '',
+              content: typeof mark.content === 'string' ? mark.content : '',
+            });
+            continue;
+          }
+          if (rawKind === 'comment' && mark.resolved !== true) {
+            const thread = Array.isArray(mark.thread) ? mark.thread : [];
+            comments.push({
+              id,
+              by: typeof mark.by === 'string' ? mark.by : 'unknown',
+              quote: typeof mark.quote === 'string' ? mark.quote : '',
+              text: typeof mark.text === 'string' ? mark.text : '',
+              replies: thread.length,
+            });
+          }
+        }
+        body.innerHTML = '';
+        if (suggestions.length === 0 && comments.length === 0) {
+          const empty = document.createElement('div');
+          empty.textContent = 'No open review items.';
+          empty.style.cssText = 'padding:22px 18px;color:#607064;font-size:14px;';
+          body.appendChild(empty);
+          return;
+        }
+
+        body.appendChild(sectionHeading(`Suggestions (${suggestions.length})`));
+        if (suggestions.length === 0) {
+          const empty = document.createElement('div');
+          empty.textContent = 'No pending suggestions.';
+          empty.style.cssText = 'padding:8px 18px 14px;color:#607064;font-size:13px;';
+          body.appendChild(empty);
+        }
+        for (const suggestion of suggestions) {
+          const item = row();
+          const meta = document.createElement('div');
+          meta.textContent = `${suggestion.kind} by ${suggestion.by}`;
+          meta.style.cssText = 'font-size:12px;font-weight:750;color:#607064;';
+          const quote = document.createElement('div');
+          quote.textContent = suggestion.quote || '(insert at document end)';
+          quote.style.cssText = 'font-size:13px;line-height:1.4;color:#374151;background:#f7f8f3;border:1px solid #edf1e9;border-radius:6px;padding:8px;overflow-wrap:anywhere;';
+          const content = document.createElement('div');
+          content.textContent = suggestion.kind === 'delete' ? 'Delete selected text' : suggestion.content;
+          content.style.cssText = 'font-size:14px;line-height:1.45;color:#1f2933;overflow-wrap:anywhere;';
+          const actions = document.createElement('div');
+          actions.style.cssText = 'display:flex;gap:8px;align-items:center;';
+          const accept = document.createElement('button');
+          accept.type = 'button';
+          accept.textContent = 'Accept';
+          accept.style.cssText = 'border:1px solid #266854;background:#266854;color:#fff;border-radius:6px;min-height:32px;padding:0 10px;font-size:13px;font-weight:650;cursor:pointer;';
+          const reject = document.createElement('button');
+          reject.type = 'button';
+          reject.textContent = 'Reject';
+          reject.style.cssText = 'border:1px solid #cbd7c6;background:#fff;color:#374151;border-radius:6px;min-height:32px;padding:0 10px;font-size:13px;font-weight:650;cursor:pointer;';
+          const runAction = async (action: 'accept' | 'reject') => {
+            accept.disabled = true;
+            reject.disabled = true;
+            const actor = getCurrentActor();
+            const result = action === 'accept'
+              ? await shareClient.acceptSuggestion(suggestion.id, actor)
+              : await shareClient.rejectSuggestion(suggestion.id, actor);
+            if (!result || 'error' in result || result.success !== true) {
+              renderError(`Could not ${action} this suggestion.`);
+              return;
+            }
+            await this.refreshReviewRoomDocumentFromServer();
+            await loadPanel();
+          };
+          accept.onclick = () => { void runAction('accept'); };
+          reject.onclick = () => { void runAction('reject'); };
+          actions.append(accept, reject);
+          item.append(meta, quote, content, actions);
+          body.appendChild(item);
+        }
+
+        body.appendChild(sectionHeading(`Comments (${comments.length})`));
+        if (comments.length === 0) {
+          const empty = document.createElement('div');
+          empty.textContent = 'No open comment threads.';
+          empty.style.cssText = 'padding:8px 18px 14px;color:#607064;font-size:13px;';
+          body.appendChild(empty);
+        }
+        for (const comment of comments) {
+          const item = row();
+          const meta = document.createElement('div');
+          meta.textContent = `${comment.by}${comment.replies > 0 ? ` · ${comment.replies} replies` : ''}`;
+          meta.style.cssText = 'font-size:12px;font-weight:750;color:#607064;';
+          const text = document.createElement('div');
+          text.textContent = comment.text;
+          text.style.cssText = 'font-size:14px;line-height:1.45;color:#1f2933;overflow-wrap:anywhere;';
+          const quote = document.createElement('div');
+          quote.textContent = comment.quote;
+          quote.style.cssText = 'font-size:13px;line-height:1.4;color:#607064;overflow-wrap:anywhere;';
+          item.append(meta, text, quote);
+          body.appendChild(item);
+        }
+      } catch (error) {
+        renderError(error instanceof Error ? error.message : 'Could not load review items.');
+      }
+    };
+
+    await loadPanel();
   }
 
   private createReviewRoomCancelButton(): HTMLButtonElement {
@@ -5166,6 +5433,7 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
     this.reviewRoomFormatSlotEl = null;
+    this.reviewRoomReviewButtonEl = null;
     this.reviewRoomSaveButtonEl = null;
     this.reviewRoomCancelButtonEl = null;
     this.shareBannerSyncDotEl = null;
@@ -5189,6 +5457,7 @@ class ProofEditorImpl implements ProofEditor {
       'review-room-title-slot',
       'review-room-status-slot',
       'review-room-presence-slot',
+      'review-room-review-slot',
       'review-room-agent-slot',
       'review-room-format-slot',
       'review-room-save-slot',

@@ -1251,10 +1251,48 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
 }
 
 // Get a shared document
-apiRoutes.get('/documents/:slug', (req: Request, res: Response) => {
+apiRoutes.get('/documents/:slug', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
+    return;
+  }
+
+  if (isHostedReviewRoomDbEnabled()) {
+    const doc = await getHostedDocumentBySlug(slug);
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    if (doc.share_state === 'DELETED') {
+      res.status(410).json({ error: 'Document deleted' });
+      return;
+    }
+    const presentedSecret = getPresentedSecret(req);
+    const access = presentedSecret ? await resolveHostedDocumentAccess(slug, presentedSecret) : null;
+    if (presentedSecret && !access) {
+      res.status(401).json({ error: 'Invalid share token', code: 'UNAUTHORIZED' });
+      return;
+    }
+    const role = access?.role ?? 'editor';
+    if (doc.share_state === 'REVOKED' && role !== 'owner_bot') {
+      res.status(403).json({ error: 'Document access has been revoked' });
+      return;
+    }
+    if (doc.share_state === 'PAUSED' && role !== 'owner_bot') {
+      res.status(403).json({ error: 'Document is not currently accessible' });
+      return;
+    }
+    const hostedBody = buildHostedOpenContextBody({
+      doc,
+      role,
+      reviewRoom: await getHostedReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret),
+    });
+    res.json({
+      ...hostedBody.doc,
+      capabilities: hostedBody.capabilities,
+      reviewRoom: hostedBody.reviewRoom,
+    });
     return;
   }
 

@@ -34,6 +34,7 @@ async function run(): Promise<void> {
   process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
   process.env.TURSO_AUTH_TOKEN = '';
   process.env.PROOF_TRUST_PROXY_HEADERS = '1';
+  process.env.PROOF_ADVERTISE_GET_ONLY_ACTIONS = '1';
 
   const { createReviewRoomExpressApp } = await import('../../server/index.js');
   const app = createReviewRoomExpressApp();
@@ -190,6 +191,9 @@ async function run(): Promise<void> {
       'Content-Type': 'application/json',
       'x-share-token': accessToken,
       'X-Agent-Id': 'hosted-route-test',
+      'X-Proof-Client-Version': '0.31.0',
+      'X-Proof-Client-Build': 'test',
+      'X-Proof-Client-Protocol': '3',
     };
 
     const state = await json<{ success: boolean; revision: number; markdown: string }>(
@@ -197,6 +201,13 @@ async function run(): Promise<void> {
     );
     assert(state.success === true, 'Expected hosted state success');
     assert(state.markdown.includes('Original paragraph.'), 'Expected state markdown');
+
+    const shareDocument = await json<{ slug: string; markdown: string; marks?: Record<string, unknown> }>(
+      await fetch(`${base}/api/documents/${slug}`, { headers: authHeaders }),
+    );
+    assert(shareDocument.slug === slug, 'Expected hosted /api/documents/:slug to return the document');
+    assert(shareDocument.markdown.includes('Original paragraph.'), 'Expected hosted /api/documents/:slug markdown');
+    assert(shareDocument.marks && typeof shareDocument.marks === 'object', 'Expected hosted /api/documents/:slug marks');
 
     const snapshot = await json<{ success: boolean; revision: number; blocks: Array<{ ref: string; markdown: string }> }>(
       await fetch(`${base}/api/agent/${slug}/snapshot`, { headers: authHeaders }),
@@ -253,6 +264,95 @@ async function run(): Promise<void> {
     });
     const bridgeComment = await json<{ success: boolean; markId?: string }>(bridgeCommentResponse);
     assert(bridgeComment.success === true && typeof bridgeComment.markId === 'string', 'Expected hosted bridge comment mark');
+
+    const missingAnchorResponse = await fetch(`${base}/api/agent/${slug}/ops`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        type: 'suggestion.add',
+        by: 'ai:hosted-route-test',
+        kind: 'replace',
+        quote: 'This quote is not in the hosted document.',
+        content: 'This should not be accepted.',
+      }),
+    });
+    assert(missingAnchorResponse.status === 409, `Expected missing-anchor suggestion to fail with 409, got ${missingAnchorResponse.status}`);
+    const missingAnchor = await missingAnchorResponse.json() as { success?: boolean; code?: string };
+    assert(
+      missingAnchor.success === false && missingAnchor.code === 'ANCHOR_NOT_FOUND',
+      'Expected hosted POST suggestion.add to reject bad anchors before mutation',
+    );
+
+    const bridgeSuggestionResponse = await fetch(`${base}/documents/${slug}/bridge/suggestions`, {
+      method: 'POST',
+      headers: bridgeHeaders,
+      body: JSON.stringify({
+        by: 'ai:hosted-bridge-test',
+        kind: 'replace',
+        quote: 'Original paragraph.',
+        content: 'Original paragraph, revised as a pending review suggestion.',
+      }),
+    });
+    const bridgeSuggestion = await json<{ success: boolean; markId?: string }>(bridgeSuggestionResponse);
+    assert(
+      bridgeSuggestion.success === true && typeof bridgeSuggestion.markId === 'string',
+      'Expected hosted bridge suggestion to create a pending mark',
+    );
+    const afterBridgeSuggestion = await json<{ marks?: Record<string, { status?: string; content?: string }> }>(
+      await fetch(`${base}/api/agent/${slug}/state`, { headers: authHeaders }),
+    );
+    assert(
+      afterBridgeSuggestion.marks?.[bridgeSuggestion.markId!]?.status === 'pending'
+        && afterBridgeSuggestion.marks?.[bridgeSuggestion.markId!]?.content === 'Original paragraph, revised as a pending review suggestion.',
+      'Expected hosted bridge suggestion to stay pending for human review',
+    );
+
+    const accepted = await json<{ success: boolean; marks?: Record<string, { status?: string }>; markdown?: string }>(
+      await fetch(`${base}/api/agent/${slug}/marks/accept`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          markId: bridgeSuggestion.markId,
+          by: 'human:reviewer',
+        }),
+      }),
+    );
+    assert(
+      accepted.success === true
+        && accepted.marks?.[bridgeSuggestion.markId!]?.status === 'accepted'
+        && typeof accepted.markdown === 'string'
+        && accepted.markdown.includes('Original paragraph, revised as a pending review suggestion.'),
+      'Expected hosted suggestion acceptance to apply content and update mark status',
+    );
+
+    const rejectedSuggestion = await json<{ success: boolean; markId?: string }>(
+      await fetch(`${base}/api/agent/${slug}/ops`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          type: 'suggestion.add',
+          by: 'ai:hosted-route-test',
+          kind: 'replace',
+          quote: 'Inserted by hosted edit/v2.',
+          content: 'This suggestion should be rejected.',
+        }),
+      }),
+    );
+    assert(rejectedSuggestion.success === true && typeof rejectedSuggestion.markId === 'string', 'Expected second hosted suggestion mark');
+    const rejected = await json<{ success: boolean; marks?: Record<string, { status?: string }> }>(
+      await fetch(`${base}/api/agent/${slug}/marks/reject`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          markId: rejectedSuggestion.markId,
+          by: 'human:reviewer',
+        }),
+      }),
+    );
+    assert(
+      rejected.success === true && rejected.marks?.[rejectedSuggestion.markId!]?.status === 'rejected',
+      'Expected hosted suggestion rejection to update mark status',
+    );
 
     const bridgeRewriteResponse = await fetch(`${base}/documents/${slug}/bridge/rewrite`, {
       method: 'POST',

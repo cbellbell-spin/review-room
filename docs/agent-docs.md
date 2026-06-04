@@ -34,9 +34,9 @@ Review Room has three editing approaches. **Pick one — don't mix them.**
 
 If the human asked for revisions, proposed edits, review, or anything they should accept/reject, use `suggestion.add`. Do not use `rewrite.apply` or `/bridge/rewrite` for that flow: rewrite applies content directly and the human will see it as an agent-authored document update, not as pending proposed edits.
 
-**Start with Edit V2** for most tasks. It uses stable block refs, handles concurrent edits cleanly, and returns clean markdown without internal HTML annotations.
+**Start with `suggestion.add`** for proposed edits the human should review. Use Edit V2 for direct-apply tasks only; it uses stable block refs, handles concurrent edits cleanly, and returns clean markdown without internal HTML annotations.
 
-`suggestion.add` now matches against annotated documents correctly and preserves stable anchors, but `edit/v2` is still the better default for programmatic content changes.
+`suggestion.add` now matches against annotated documents correctly and preserves stable anchors. Use `edit/v2` only for direct-apply changes the human explicitly requested, not for reviewable proposed edits.
 
 `rewrite.apply` is still disruptive. It is a direct apply operation, not track changes. Avoid it if anyone might have the document open: hosted environments block rewrites while live authenticated collaborators are connected, and `force` is ignored there.
 
@@ -82,9 +82,9 @@ If a URL contains `?token=`, treat it as an access token:
 - Preferred: `Authorization: Bearer <token>`
 - Also accepted: `x-share-token: <token>`
 
-## GET-only Agent Fallback
+## Legacy GET-only Agent Fallback
 
-Some agent sandboxes can read URLs but cannot send POST requests with headers or bodies. In that environment, use the constrained GET action endpoint for comments and pending suggestions:
+Prefer POST `/ops`, `/bridge/suggestions`, or the Review Room MCP when available. Some agent sandboxes can read URLs but cannot send POST requests with headers or bodies; only in that environment, use the constrained GET action endpoint for comments and pending suggestions:
 
 ```text
 GET /api/agent/<slug>/action?token=<token>&type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>
