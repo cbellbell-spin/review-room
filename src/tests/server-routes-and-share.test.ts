@@ -601,16 +601,22 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(dashboard.body, '/review-room/api/documents');
       assertIncludes(dashboard.body, 'id="register-form"', 'Expected dashboard to include existing document registration form');
       assertIncludes(dashboard.body, 'id="new-document-button"', 'Expected dashboard to expose a one-click new document action');
+      assertIncludes(dashboard.body, 'id="import-form"', 'Expected dashboard to expose Markdown/Text import');
+      assertIncludes(dashboard.body, 'accept=".md,.markdown,.txt,text/markdown,text/plain"', 'Expected dashboard import to accept Markdown and Text files');
+      assertIncludes(dashboard.body, 'Open existing Review Room link', 'Expected existing document registration to be tucked behind a secondary disclosure');
       assertIncludes(dashboard.body, '/review-room/api/documents/register', 'Expected dashboard to call register API');
-      assertIncludes(dashboard.body, 'Create new document', 'Expected dashboard to make document creation a first-class workflow');
-      assertIncludes(dashboard.body, 'Start with an empty editor', 'Expected new document copy to describe the editor-first workflow');
-      assertIncludes(dashboard.body, '<details class="panel" aria-labelledby="docs-heading">', 'Expected existing documents to be collapsed by default');
+      assertIncludes(dashboard.body, 'Create or import', 'Expected dashboard to make creation and import the primary workflow');
+      assertIncludes(dashboard.body, 'Start fresh, or bring in a Markdown/Text file for review.', 'Expected new document copy to describe creation and import');
+      assertIncludes(dashboard.body, '<section class="panel" aria-labelledby="docs-heading">', 'Expected document list to stay visible by default');
       assertIncludes(dashboard.body, 'Review Room slug or URL', 'Expected Review Room-owned registration copy');
       assertIncludes(dashboard.body, 'Direct Google Docs and SharePoint imports are not supported yet', 'Expected dashboard to clarify supported registration inputs');
+      assert(dashboard.body.indexOf('id="docs-heading"') < dashboard.body.indexOf('id="existing-link-heading"'), 'Expected document list to appear before existing-link registration');
       assert(!dashboard.body.includes('Document body'), 'Dashboard should not ask for document content before opening the editor');
       assert(!dashboard.body.includes('Existing Proof slug'), 'Dashboard should not expose Proof-branded slug copy');
       assert(!dashboard.body.includes('Proof slug'), 'Dashboard list metadata should not expose Proof-branded slug copy');
       assert(!dashboard.body.includes('Proof editor'), 'Dashboard should not expose Proof-branded editor copy');
+      assert(!dashboard.body.includes('Local reviewer'), 'Dashboard should not give seeded identities prominent real estate');
+      assert(!dashboard.body.includes('Review agent'), 'Dashboard should not give seeded identities prominent real estate');
 
       const identity = await get(baseUrl, '/review-room/api/identity');
       assert(identity.status === 200, `Expected identity status 200, got ${identity.status}`);

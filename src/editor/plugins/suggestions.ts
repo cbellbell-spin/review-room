@@ -33,7 +33,6 @@ type SliceNode = {
 };
 
 const COALESCE_WINDOW_MS = 750;
-
 type InsertCoalesceState = { id: string; from: number; to: number; by: string; updatedAt: number };
 
 const lastInsertByActor = new Map<string, InsertCoalesceState>();
@@ -402,24 +401,42 @@ export function wrapTransactionForSuggestions(
           };
           metadataChanged = true;
         } else {
-          // Replace: keep original text, store replacement content in metadata.
-          const suggestionId = generateMarkId();
+          // Human typed replacement: keep the original text as a delete suggestion
+          // and insert the replacement as normal visible green suggested text.
+          const deleteSuggestionId = generateMarkId();
+          const insertSuggestionId = generateMarkId();
           const createdAt = new Date().toISOString();
 
           newTr.removeMark(safeFrom, safeTo, suggestionType);
           newTr.addMark(safeFrom, safeTo, suggestionType.create({
-            id: suggestionId,
-            kind: 'replace',
+            id: deleteSuggestionId,
+            kind: 'delete',
             by: actor,
           }));
+          newTr.insertText(insertedText, safeTo);
+          newTr.addMark(
+            safeTo,
+            safeTo + insertedText.length,
+            suggestionType.create({ id: insertSuggestionId, kind: 'insert', by: actor })
+          );
+          writeOffset += insertedText.length;
 
           metadata = {
             ...metadata,
-            [suggestionId]: buildSuggestionMetadata('replace', actor, insertedText, createdAt),
+            [deleteSuggestionId]: buildSuggestionMetadata('delete', actor, null, createdAt),
+            [insertSuggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
           };
           metadataChanged = true;
 
-          newTr.setSelection(TextSelection.create(newTr.doc, safeTo));
+          lastInsertByActor.set(actor, {
+            id: insertSuggestionId,
+            from: safeTo,
+            to: safeTo + insertedText.length,
+            by: actor,
+            updatedAt: Date.now(),
+          });
+
+          newTr.setSelection(TextSelection.create(newTr.doc, safeTo + insertedText.length));
         }
       }
       // CASE 4: Structural-only change (e.g., paragraph join/split with no text content).

@@ -176,9 +176,19 @@ function renderReviewRoomHome(): string {
       z-index: 5;
     }
     .brand { font-weight: 700; letter-spacing: 0; }
+    .topbar-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
     .nav { display: flex; align-items: center; gap: 8px; color: #607064; font-size: 14px; }
     .nav a { color: inherit; text-decoration: none; padding: 8px 10px; border-radius: 6px; }
     .nav a[aria-current="page"] { color: #1f2933; background: #e8eee2; }
+    .workspace-chip {
+      padding: 4px 9px;
+      border-radius: 999px;
+      background: #eef4e9;
+      color: #4c5f4f;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
     main {
       width: min(860px, 100%);
       margin: 0 auto;
@@ -229,6 +239,40 @@ function renderReviewRoomHome(): string {
     .form-note { font-size: 13px; color: #607064; }
     form { display: grid; gap: 12px; padding: 18px; }
     form + form { border-top: 1px solid #edf1e9; }
+    .import-form { padding: 0; }
+    .import-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .file-input {
+      border: 1px dashed #b8c8b3;
+      background: #fbfcf8;
+    }
+    .secondary-details {
+      border-top: 1px solid #edf1e9;
+      overflow: hidden;
+    }
+    .secondary-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 15px 18px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .secondary-summary::-webkit-details-marker { display: none; }
+    .secondary-summary::after {
+      content: "Open";
+      border: 1px solid #cbd7c6;
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: #266854;
+      font-size: 13px;
+      font-weight: 650;
+      background: #fff;
+      flex-shrink: 0;
+    }
+    .secondary-details[open] .secondary-summary::after { content: "Close"; }
+    .secondary-title { display: grid; gap: 3px; min-width: 0; }
+    .secondary-title strong { font-size: 15px; }
     label { display: grid; gap: 6px; font-size: 13px; font-weight: 650; color: #374539; }
     input, textarea {
       width: 100%;
@@ -239,8 +283,6 @@ function renderReviewRoomHome(): string {
       color: #1f2933;
     }
     textarea { min-height: 190px; resize: vertical; line-height: 1.45; }
-    .identity { padding: 14px 18px 18px; display: grid; gap: 10px; }
-    .identity-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; }
     .pill { padding: 4px 8px; border-radius: 999px; background: #eef4e9; color: #4c5f4f; font-size: 12px; }
     .empty { padding: 24px 18px; color: #607064; border-top: 1px solid #edf1e9; }
     .error { color: #b42318; font-size: 13px; min-height: 18px; }
@@ -281,8 +323,10 @@ function renderReviewRoomHome(): string {
     @media (max-width: 840px) {
       main { grid-template-columns: 1fr; padding: 20px 16px 40px; }
       .topbar { padding: 0 16px; }
+      .workspace-chip { display: none; }
       .doc-row { grid-template-columns: 1fr; }
       .download-row { align-items: flex-start; flex-direction: column; }
+      .import-actions { align-items: stretch; flex-direction: column; }
     }
   </style>
 </head>
@@ -290,48 +334,67 @@ function renderReviewRoomHome(): string {
   <div class="shell">
     <header class="topbar">
       <div class="brand">Review Room</div>
-      <nav class="nav" aria-label="Review Room navigation">
-        <a href="/review-room" aria-current="page">Documents</a>
-        <a href="/agent-docs">Agent API</a>
-      </nav>
+      <div class="topbar-right">
+        <nav class="nav" aria-label="Review Room navigation">
+          <a href="/review-room" aria-current="page">Documents</a>
+          <a href="/agent-docs">Agent API</a>
+        </nav>
+        <span id="workspace-chip" class="workspace-chip">Local Review Room</span>
+      </div>
     </header>
     <main>
       <aside class="panel" aria-labelledby="create-heading">
         <div class="panel-header">
-          <h1 id="create-heading">Create new document</h1>
-          <p>Start with an empty editor, write the document, then save it back to this workspace.</p>
+          <h1 id="create-heading">Create or import</h1>
+          <p>Start fresh, or bring in a Markdown/Text file for review.</p>
         </div>
         <div class="primary-action">
           <button id="new-document-button" class="button" type="button">Create new document</button>
+          <form id="import-form" class="import-form">
+            <label>
+              Import Markdown or Text
+              <input id="import-file" class="file-input" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain">
+            </label>
+            <div class="import-actions">
+              <button id="import-document-button" class="button secondary" type="submit">Import and open</button>
+              <span class="form-note">Supports .md, .markdown, and .txt files.</span>
+            </div>
+          </form>
           <div id="form-error" class="error" role="alert"></div>
         </div>
-        <form id="register-form">
-          <h2 class="section-title">Add existing document</h2>
-          <p class="form-note">Accepts Review Room document slugs or /d/... links. Direct Google Docs and SharePoint imports are not supported yet; paste a Review Room share URL or create a fresh document here.</p>
-          <label>
-            Review Room slug or URL
-            <input id="proof-slug" name="proofSlug" placeholder="abc123 or /d/abc123?token=..." autocomplete="off">
-          </label>
-          <label>
-            Access token
-            <input id="proof-token" name="token" placeholder="Optional if the URL includes one" autocomplete="off">
-          </label>
-          <button class="button secondary" type="submit">Add and open</button>
-          <div id="register-error" class="error" role="alert"></div>
-        </form>
-        <div class="identity" id="identity"></div>
       </aside>
-      <details class="panel" aria-labelledby="docs-heading">
-        <summary class="panel-header">
-          <div>
-            <h1 id="docs-heading">Open a document</h1>
-            <p>Browse documents already in this Review Room workspace.</p>
-          </div>
-        </summary>
+      <section class="panel" aria-labelledby="docs-heading">
+        <div class="panel-header">
+          <h1 id="docs-heading">Open a document</h1>
+          <p>Browse documents already in this Review Room workspace.</p>
+        </div>
         <div id="documents" class="doc-list" aria-live="polite">
           <div class="empty">Loading documents...</div>
         </div>
-      </details>
+      </section>
+      <section class="panel" aria-labelledby="existing-link-heading">
+        <details class="secondary-details">
+          <summary class="secondary-summary">
+            <span class="secondary-title">
+              <strong id="existing-link-heading">Open existing Review Room link</strong>
+              <span class="form-note">For documents already shared from Review Room or Proof.</span>
+            </span>
+          </summary>
+          <form id="register-form">
+            <p class="form-note">Accepts Review Room document slugs or /d/... links. Direct Google Docs and SharePoint imports are not supported yet.</p>
+            <label>
+              Review Room slug or URL
+              <input id="proof-slug" name="proofSlug" placeholder="abc123 or /d/abc123?token=..." autocomplete="off">
+            </label>
+            <label>
+              Access token
+              <input id="proof-token" name="token" placeholder="Optional if the URL includes one" autocomplete="off">
+            </label>
+            <button class="button secondary" type="submit">Add and open</button>
+            <div id="register-error" class="error" role="alert"></div>
+          </form>
+        </details>
+      </section>
       <section class="panel" aria-labelledby="agent-plugin-heading">
         <div class="panel-header">
           <h1 id="agent-plugin-heading">Use Claude with Review Room</h1>
@@ -352,8 +415,11 @@ function renderReviewRoomHome(): string {
   </div>
   <script>
     const documentsEl = document.getElementById('documents');
-    const identityEl = document.getElementById('identity');
+    const workspaceChip = document.getElementById('workspace-chip');
     const newDocumentButton = document.getElementById('new-document-button');
+    const importForm = document.getElementById('import-form');
+    const importFileInput = document.getElementById('import-file');
+    const importDocumentButton = document.getElementById('import-document-button');
     const registerForm = document.getElementById('register-form');
     const errorEl = document.getElementById('form-error');
     const registerErrorEl = document.getElementById('register-error');
@@ -380,9 +446,7 @@ function renderReviewRoomHome(): string {
     }
 
     function renderIdentity(payload) {
-      const people = payload.identities || [];
-      identityEl.innerHTML = '<div class="identity-item"><strong>Workspace</strong><span class="pill">' + escapeHtml(payload.workspace.name) + '</span></div>'
-        + people.map((identity) => '<div class="identity-item"><span>' + escapeHtml(identity.display_name) + '</span><span class="pill">' + escapeHtml(identity.kind) + '</span></div>').join('');
+      workspaceChip.textContent = payload.workspace && payload.workspace.name ? payload.workspace.name : 'Review Room';
     }
 
     function escapeHtml(value) {
@@ -422,6 +486,46 @@ function renderReviewRoomHome(): string {
         return;
       }
       window.location.href = payload.openPath;
+    });
+
+    importForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorEl.textContent = '';
+      const file = importFileInput.files && importFileInput.files[0];
+      if (!file) {
+        errorEl.textContent = 'Choose a Markdown or Text file to import.';
+        return;
+      }
+      const lowerName = file.name.toLowerCase();
+      const supported = lowerName.endsWith('.md') || lowerName.endsWith('.markdown') || lowerName.endsWith('.txt')
+        || file.type === 'text/markdown' || file.type === 'text/plain';
+      if (!supported) {
+        errorEl.textContent = 'Review Room can import .md, .markdown, and .txt files right now.';
+        return;
+      }
+      importDocumentButton.disabled = true;
+      importDocumentButton.textContent = 'Importing...';
+      try {
+        const markdown = await file.text();
+        const title = file.name.replace(/\\.(markdown|md|txt)$/i, '').trim() || 'Imported document';
+        const response = await fetch('/review-room/api/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, markdown }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          errorEl.textContent = payload.error || 'Could not import document.';
+          importDocumentButton.disabled = false;
+          importDocumentButton.textContent = 'Import and open';
+          return;
+        }
+        window.location.href = payload.openPath;
+      } catch (error) {
+        errorEl.textContent = error instanceof Error ? error.message : String(error);
+        importDocumentButton.disabled = false;
+        importDocumentButton.textContent = 'Import and open';
+      }
     });
 
     registerForm.addEventListener('submit', async (event) => {

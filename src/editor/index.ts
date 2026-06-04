@@ -1058,6 +1058,7 @@ class ProofEditorImpl implements ProofEditor {
   private hasLocalContentEditSinceHydration: boolean = false;
   private lastContentChangeSource: 'local' | 'remote' | 'system' | null = null;
   private pendingProjectionPublish: boolean = false;
+  private pendingCollabMarksMetadata: Record<string, StoredMark> | null = null;
   private initialMarksSynced: boolean = false;
   private lastReceivedServerMarks: Record<string, StoredMark> = {};
   private collabTemplateSeedClaimId: string | null = null;
@@ -1083,6 +1084,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private reviewRoomFormatSlotEl: HTMLElement | null = null;
+  private reviewRoomSuggestingButtonEl: HTMLButtonElement | null = null;
   private reviewRoomReviewButtonEl: HTMLButtonElement | null = null;
   private reviewRoomSaveButtonEl: HTMLButtonElement | null = null;
   private reviewRoomCancelButtonEl: HTMLButtonElement | null = null;
@@ -1582,6 +1584,7 @@ class ProofEditorImpl implements ProofEditor {
             this.resetShareInitRetryState();
             if (status.unsyncedChanges === 0) {
               this.flushPendingProjectionMarkdown();
+              this.flushPendingCollabMarksMetadata();
             }
           }
           this.updateShareBannerSyncDisplay();
@@ -2572,6 +2575,8 @@ class ProofEditorImpl implements ProofEditor {
     this.updateEditableState();
     this.updateShareBannerTitleDisplay();
     this.updateShareBannerAgentControlDisplay();
+    this.updateReviewRoomToolbarEditState();
+    this.updateReviewRoomSuggestingToggle();
     const shareButton = this.getActiveShareChromeRoot()?.querySelector('.share-pill-share-btn') as HTMLElement | null;
     if (shareButton) shareButton.style.display = this.collabCanEdit ? 'inline-flex' : 'none';
   }
@@ -3634,6 +3639,7 @@ class ProofEditorImpl implements ProofEditor {
         agentSlotContainer.replaceChildren(agentSlot);
         this.reviewRoomFormatSlotEl = formatSlot;
         formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());
+        this.updateReviewRoomToolbarEditState();
         saveSlot.replaceChildren(this.createReviewRoomSaveControls());
         shareSlot.replaceChildren(shareBtn);
         this.scheduleBannerLayoutUpdate();
@@ -3954,6 +3960,19 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private openAgentHelpModal(): void {
+    const shareUrl = this.getCanonicalShareUrl();
+    const origin = (() => {
+      try {
+        return new URL(shareUrl).origin;
+      } catch {
+        return window.location.origin;
+      }
+    })();
+    const mcpUrl = `${origin}/mcp`;
+    const pluginUrl = `${origin}/review-room/claude-plugin.zip`;
+    const docsUrl = `${origin}/agent-docs`;
+    const promptText = this.getAgentInviteMessage();
+
     const overlay = document.createElement('div');
     overlay.style.cssText = `
       position:fixed;inset:0;z-index:1100;
@@ -3985,17 +4004,61 @@ class ProofEditorImpl implements ProofEditor {
     header.append(title, close);
 
     const body = document.createElement('div');
-    body.style.cssText = 'padding:14px 16px 16px 16px;color:rgba(255,255,255,0.86);font-size:12px;line-height:1.5;';
-    body.innerHTML = `
-      <p style="margin:0 0 10px 0;">Agent collaborators can suggest and edit with the same permissions as the link you share.</p>
-      <p style="margin:0 0 8px 0;"><strong>How to connect:</strong></p>
-      <ol style="margin:0 0 10px 18px;padding:0;">
-        <li>Copy the agent invite link.</li>
-        <li>Paste it into your AI tool (for example, ChatGPT or Claude).</li>
-        <li>The agent appears here when connected.</li>
-      </ol>
-      <p style="margin:0;color:rgba(255,255,255,0.72);">Disconnect removes live presence from this doc, but does not revoke the link.</p>
+    body.style.cssText = 'padding:14px 16px 16px 16px;color:rgba(255,255,255,0.86);font-size:12px;line-height:1.5;display:grid;gap:12px;';
+    const intro = document.createElement('p');
+    intro.textContent = 'Give Claude, Codex, or another agent this prompt. If Claude has the Review Room plugin installed, it can use MCP tools directly.';
+    intro.style.cssText = 'margin:0;color:rgba(255,255,255,0.86);';
+
+    const links = document.createElement('div');
+    links.style.cssText = 'display:grid;gap:6px;padding:10px 12px;border:1px solid rgba(255,255,255,0.10);border-radius:10px;background:rgba(255,255,255,0.05);';
+    const makeLink = (labelText: string, href: string, download = false): HTMLAnchorElement => {
+      const link = document.createElement('a');
+      link.href = href;
+      link.textContent = labelText;
+      link.style.cssText = 'color:#bfdbfe;text-decoration:none;font-weight:650;overflow-wrap:anywhere;';
+      if (download) link.setAttribute('download', '');
+      return link;
+    };
+    links.append(
+      makeLink(`MCP: ${mcpUrl}`, mcpUrl),
+      makeLink('Download Claude/Cowork plugin', pluginUrl, true),
+      makeLink('Agent API docs', docsUrl),
+    );
+
+    const promptBox = document.createElement('textarea');
+    promptBox.value = promptText;
+    promptBox.readOnly = true;
+    promptBox.setAttribute('aria-label', 'Agent prompt');
+    promptBox.style.cssText = `
+      width:100%;min-height:260px;resize:vertical;
+      border:1px solid rgba(255,255,255,0.12);border-radius:10px;
+      background:#0f172a;color:rgba(255,255,255,0.90);
+      padding:12px;font:12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     `;
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = 'Copy prompt';
+    copy.style.cssText = 'border:0;background:#fff;color:#111827;padding:8px 12px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer';
+    copy.onclick = async () => {
+      const copied = await this.copyTextToClipboard(promptText);
+      if (copied) {
+        this.triggerHaptic('success');
+        copy.textContent = 'Copied';
+        setTimeout(() => { copy.textContent = 'Copy prompt'; }, 1200);
+        return;
+      }
+      this.copyWithPromptFallback(promptText, 'Copy agent prompt:');
+    };
+    actions.appendChild(copy);
+
+    const note = document.createElement('p');
+    note.textContent = 'Presence is optional for now. Agents can still review via MCP using the document slug and token in this prompt.';
+    note.style.cssText = 'margin:0;color:rgba(255,255,255,0.70);';
+
+    body.append(intro, links, promptBox, actions, note);
 
     panel.append(header, body);
     overlay.appendChild(panel);
@@ -4086,6 +4149,72 @@ class ProofEditorImpl implements ProofEditor {
     return prompted;
   }
 
+  private getCurrentExportMarkdown(): string | null {
+    if (!this.editor) return null;
+    let markdown: string | null = null;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const serialized = this.serializeMarkdown(view);
+      markdown = serialized === null ? null : stripProofSpanTags(serialized);
+    });
+    return markdown;
+  }
+
+  private getDownloadBaseName(): string {
+    const raw = (this.shareDocTitle || 'Review Room document').trim() || 'Review Room document';
+    const sanitized = raw
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80);
+    return sanitized || 'Review Room document';
+  }
+
+  private markdownToPlainText(markdown: string): string {
+    return markdown
+      .replace(/```[\s\S]*?```/g, (block) => block.replace(/^```[^\n]*\n?|\n?```$/g, ''))
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/^>\s?/gm, '')
+      .replace(/^[ \t]*[-*+]\s+/gm, '')
+      .replace(/^[ \t]*\d+\.\s+/gm, '')
+      .replace(/[*_~]/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  private downloadBlob(filename: string, contents: string, type: string): boolean {
+    try {
+      const blob = new Blob([contents], { type });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      this.triggerHaptic('success');
+      return true;
+    } catch (error) {
+      console.warn('[download] failed to export document', error);
+      return false;
+    }
+  }
+
+  private downloadCurrentDocument(format: 'markdown' | 'text'): boolean {
+    const markdown = this.getCurrentExportMarkdown();
+    if (markdown === null) return false;
+    const baseName = this.getDownloadBaseName();
+    if (format === 'text') {
+      return this.downloadBlob(`${baseName}.txt`, `${this.markdownToPlainText(markdown)}\n`, 'text/plain;charset=utf-8');
+    }
+    return this.downloadBlob(`${baseName}.md`, `${markdown.trimEnd()}\n`, 'text/markdown;charset=utf-8');
+  }
+
   private extractShareSlugFromUrl(shareUrl: string): string | null {
     try {
       const url = new URL(shareUrl);
@@ -4122,49 +4251,47 @@ class ProofEditorImpl implements ProofEditor {
 
     if (!slug) {
       return [
-        'Collaborate with me on this Review Room document.',
+        'Review this document with me in Review Room.',
         '',
         `Doc: ${shareUrl}`,
       ].join('\n');
     }
 
     const encodedSlug = encodeURIComponent(slug);
-    const presenceUrl = `${origin}/api/agent/${encodedSlug}/presence`;
-    const stateUrl = `${origin}/api/agent/${encodedSlug}/state`;
-    const snapshotUrl = `${origin}/api/agent/${encodedSlug}/snapshot`;
-    const editV2Url = `${origin}/api/agent/${encodedSlug}/edit/v2`;
-    const opsUrl = `${origin}/api/agent/${encodedSlug}/ops`;
-    const editUrl = `${origin}/api/agent/${encodedSlug}/edit`;
+    const mcpUrl = `${origin}/mcp`;
+    const pluginUrl = `${origin}/review-room/claude-plugin.zip`;
+    const docsUrl = `${origin}/agent-docs`;
+    const stateUrl = `${origin}/documents/${encodedSlug}/state`;
+    const presenceUrl = `${origin}/documents/${encodedSlug}/presence`;
+    const eventsUrl = `${origin}/documents/${encodedSlug}/events/pending?after=0`;
 
     return [
-      'Collaborate with me on this Review Room document.',
+      'Review this document with me in Review Room.',
       '',
       `Doc: ${shareUrl}`,
+      `Slug: ${slug}`,
+      `Token: ${token || '<token-from-doc-url>'}`,
+      `MCP URL: ${mcpUrl}`,
+      `Claude/Cowork plugin: ${pluginUrl}`,
+      `Docs: ${docsUrl}`,
       '',
-      'Auth for each API request:',
-      `- x-share-token: ${token || '<token-from-doc-url>'}`,
-      '- X-Agent-Id: <your-agent-id>',
-      '- (Use the token from the Doc URL query param: ?token=...)',
+      'Use the Review Room MCP first if it is available.',
+      'In Claude/Cowork, install the plugin above or add the MCP URL as a streamable HTTP connector.',
+      'For MCP tool calls, pass the token as the `token` argument. The server also accepts `Authorization: Bearer <token>`.',
       '',
       'Start here:',
-      '1) Read current document state with your identity header:',
-      `   GET ${stateUrl}`,
-      '   header: X-Agent-Id: <your-agent-id>',
-      '2) Optionally set your friendly name in presence:',
-      `   POST ${presenceUrl}`,
-      '   body: {"agentId":"<your-agent-id>","name":"<your-name>","status":"active"}',
-      '3) For proposed edits the human should review, use suggestions:',
-      `   POST ${opsUrl}`,
-      '   body: {"type":"suggestion.add","by":"ai:<your-agent-id>","kind":"replace","quote":"old text","content":"new text"}',
-      '4) For comments, use ops:',
-      `   POST ${opsUrl}`,
-      '   body: {"type":"comment.add","by":"ai:<your-agent-id>","quote":"text to anchor","text":"comment body"}',
-      '5) Use direct edits only when the human explicitly asks you to apply changes without review:',
-      `   GET ${snapshotUrl}`,
-      `   POST ${editV2Url}`,
-      '   body: {"by":"ai:<your-agent-id>","baseRevision":<revision>,"operations":[{"op":"insert_after","ref":"b1","blocks":[{"markdown":"New paragraph."}]}]}',
-      `   legacy direct edit endpoint: POST ${editUrl}`,
-      '6) Then reply briefly with what you changed or suggest next steps.',
+      '1. Call `review_room_get_state` with `{ slug, token }`.',
+      '2. Reply: Connected in Review Room and ready.',
+      '3. For review feedback, use `review_room_add_comment` with exact quoted text.',
+      '4. For proposed edits, use `review_room_add_suggestion` so the human can accept or reject the change.',
+      '5. Use `review_room_reply_comment` and `review_room_resolve_comment` when responding to existing threads.',
+      '6. Re-read state before making another tool call if the human edits the document.',
+      '',
+      'Fallback HTTP routes if MCP is unavailable:',
+      `- GET ${stateUrl}`,
+      `- POST ${presenceUrl}`,
+      `- GET ${eventsUrl}`,
+      'Use `Authorization: Bearer <token>` or `x-share-token: <token>` for fallback HTTP requests.',
     ].join('\n');
   }
 
@@ -4175,7 +4302,7 @@ class ProofEditorImpl implements ProofEditor {
       this.triggerHaptic('success');
       return true;
     }
-    const prompted = this.copyWithPromptFallback(message, 'Copy agent invite:');
+    const prompted = this.copyWithPromptFallback(message, 'Copy agent prompt:');
     if (prompted) this.triggerHaptic('medium');
     return prompted;
   }
@@ -5097,6 +5224,11 @@ class ProofEditorImpl implements ProofEditor {
       display:${this.collabCanEdit ? 'inline-flex' : 'none'};align-items:center;gap:4px;max-width:100%;overflow-x:auto;
       padding:4px;border:1px solid #dbe4d5;border-radius:8px;background:rgba(255,255,255,0.94);
     `;
+    toolbar.append(this.createReviewRoomSuggestingToggle());
+    const separator = document.createElement('span');
+    separator.setAttribute('aria-hidden', 'true');
+    separator.style.cssText = 'width:1px;height:24px;background:#dbe4d5;margin:0 4px;flex-shrink:0;';
+    toolbar.append(separator);
     const actions: Array<{ label: string; title: string; action: ReviewRoomFormatAction }> = [
       { label: 'P', title: 'Paragraph', action: 'paragraph' },
       { label: 'H1', title: 'Heading 1', action: 'heading1' },
@@ -5133,6 +5265,71 @@ class ProofEditorImpl implements ProofEditor {
       toolbar.append(button);
     }
     return toolbar;
+  }
+
+  private createReviewRoomSuggestingToggle(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('role', 'switch');
+    button.setAttribute('aria-label', 'Suggesting mode');
+    button.title = 'Suggesting mode';
+    button.style.cssText = `
+      display:inline-flex;align-items:center;gap:7px;min-height:30px;padding:0 9px 0 7px;
+      border:1px solid #cbd7c6;border-radius:999px;background:#fff;color:#374151;
+      font-size:12px;font-weight:750;white-space:nowrap;cursor:pointer;font-family:inherit;flex-shrink:0;
+    `;
+
+    const knob = document.createElement('span');
+    knob.dataset.reviewRoomSuggestingKnob = 'true';
+    knob.style.cssText = `
+      width:24px;height:14px;border-radius:999px;background:#cbd5c0;position:relative;display:inline-block;flex-shrink:0;
+    `;
+    const dot = document.createElement('span');
+    dot.dataset.reviewRoomSuggestingDot = 'true';
+    dot.style.cssText = `
+      position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:999px;background:#fff;
+      transition:transform 0.14s ease;
+    `;
+    knob.appendChild(dot);
+
+    const label = document.createElement('span');
+    label.textContent = 'Suggesting';
+    button.append(knob, label);
+
+    button.onclick = () => {
+      if (!this.editor || !this.collabCanEdit) return;
+      this.toggleSuggestions();
+      this.updateReviewRoomSuggestingToggle();
+      this.triggerHaptic('selection');
+    };
+
+    this.reviewRoomSuggestingButtonEl = button;
+    this.updateReviewRoomSuggestingToggle();
+    return button;
+  }
+
+  private updateReviewRoomToolbarEditState(): void {
+    if (!this.reviewRoomFormatSlotEl) return;
+    const toolbar = this.reviewRoomFormatSlotEl.querySelector<HTMLElement>('[role="toolbar"][aria-label="Document formatting"]');
+    if (toolbar) toolbar.style.display = this.collabCanEdit ? 'inline-flex' : 'none';
+  }
+
+  private updateReviewRoomSuggestingToggle(): void {
+    const button = this.reviewRoomSuggestingButtonEl;
+    if (!button) return;
+    const enabled = this.isSuggestionsEnabled();
+    const canUse = this.collabCanEdit;
+    button.disabled = !canUse;
+    button.setAttribute('aria-checked', String(enabled));
+    button.style.background = enabled ? '#eaf6f1' : '#fff';
+    button.style.borderColor = enabled ? '#266854' : '#cbd7c6';
+    button.style.color = enabled ? '#1f5f4c' : '#374151';
+    button.style.opacity = canUse ? '1' : '0.5';
+    button.style.cursor = canUse ? 'pointer' : 'default';
+    const knob = button.querySelector<HTMLElement>('[data-review-room-suggesting-knob]');
+    const dot = button.querySelector<HTMLElement>('[data-review-room-suggesting-dot]');
+    if (knob) knob.style.background = enabled ? '#266854' : '#cbd5c0';
+    if (dot) dot.style.transform = enabled ? 'translateX(10px)' : 'translateX(0)';
   }
 
   private applyReviewRoomFormat(action: ReviewRoomFormatAction): void {
@@ -5209,7 +5406,11 @@ class ProofEditorImpl implements ProofEditor {
         backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
       `;
 
-      const addItem = (title: string, onSelect: (itemLabel: HTMLSpanElement) => Promise<boolean> | boolean, opts?: { subtle?: boolean; disabled?: boolean }) => {
+      const addItem = (
+        title: string,
+        onSelect: (itemLabel: HTMLSpanElement) => Promise<boolean> | boolean,
+        opts?: { subtle?: boolean; disabled?: boolean; successText?: string },
+      ) => {
         const item = document.createElement('button');
         item.type = 'button';
         item.setAttribute('role', 'menuitem');
@@ -5237,7 +5438,7 @@ class ProofEditorImpl implements ProofEditor {
         item.onclick = async () => {
           if (opts?.disabled) return;
           const ok = await onSelect(left);
-          right.textContent = ok ? 'Copied' : 'Failed';
+          right.textContent = ok ? (opts?.successText ?? 'Copied') : 'Failed';
           if (ok) {
             setTimeout(() => cleanup(), 700);
           } else {
@@ -5287,6 +5488,8 @@ class ProofEditorImpl implements ProofEditor {
       };
 
       addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
+      addItem('Download Markdown', async () => this.downloadCurrentDocument('markdown'), { successText: 'Saved' });
+      addItem('Download Text', async () => this.downloadCurrentDocument('text'), { successText: 'Saved' });
       addDivider();
       addActionItem('View activity', () => this.openShareActivityModal());
 
@@ -5591,11 +5794,11 @@ class ProofEditorImpl implements ProofEditor {
         body.textContent = 'Invite an agent collaborator to edit, suggest, and review this doc.';
         body.style.cssText = 'padding:0 12px 8px;color:rgba(255,255,255,0.78);font-size:12px;line-height:1.35;';
         menu.append(header, body);
-        addMenuButton('Copy agent invite link', async () => this.copyAgentInviteWithFallback(), {
+        addMenuButton('Copy agent prompt', async () => this.copyAgentInviteWithFallback(), {
           successText: 'Copied',
         });
         addDivider();
-        addMenuButton('How agent access works', async () => {
+        addMenuButton('Agent setup', async () => {
           this.openAgentHelpModal();
           return true;
         }, { subtle: true, successText: 'Done' });
@@ -5668,9 +5871,13 @@ class ProofEditorImpl implements ProofEditor {
           menu.appendChild(row);
         }
         addDivider();
-        addMenuButton('Copy agent invite link', async () => this.copyAgentInviteWithFallback(), {
+        addMenuButton('Copy agent prompt', async () => this.copyAgentInviteWithFallback(), {
           successText: 'Copied',
         });
+        addMenuButton('Agent setup', async () => {
+          this.openAgentHelpModal();
+          return true;
+        }, { subtle: true, successText: 'Done' });
       }
 
       container.appendChild(menu);
@@ -5780,6 +5987,7 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
     this.reviewRoomFormatSlotEl = null;
+    this.reviewRoomSuggestingButtonEl = null;
     this.reviewRoomReviewButtonEl = null;
     this.reviewRoomSaveButtonEl = null;
     this.reviewRoomCancelButtonEl = null;
@@ -5846,6 +6054,7 @@ class ProofEditorImpl implements ProofEditor {
     this.hasLocalContentEditSinceHydration = false;
     this.lastContentChangeSource = null;
     this.pendingProjectionPublish = false;
+    this.pendingCollabMarksMetadata = null;
   }
 
   private recordContentChangeSource(source: 'local' | 'remote' | 'system'): void {
@@ -5909,6 +6118,15 @@ class ProofEditorImpl implements ProofEditor {
       collabClient.setProjectionMarkdown(this.normalizeMarkdownForCollab(markdown));
       this.pendingProjectionPublish = false;
     });
+  }
+
+  private flushPendingCollabMarksMetadata(): void {
+    if (!this.pendingCollabMarksMetadata) return;
+    if (!this.collabEnabled || !this.collabCanEdit) return;
+    if (this.collabConnectionStatus !== 'connected' || !this.collabIsSynced) return;
+    if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) return;
+    collabClient.setMarksMetadata(this.pendingCollabMarksMetadata);
+    this.pendingCollabMarksMetadata = null;
   }
 
   private flushShareMarks(_options?: { keepalive?: boolean; persistContent?: boolean }): void {
@@ -6633,8 +6851,9 @@ class ProofEditorImpl implements ProofEditor {
     this.lastMarkdown = markdown;
     this.sendDocumentSnapshot(view, markdown, actionMarks);
 
+    const localMetadata = getMarkMetadataWithQuotes(view.state);
     const metadata = mergePendingServerMarks(
-      actionMetadata ?? getMarkMetadataWithQuotes(view.state),
+      localMetadata,
       this.lastReceivedServerMarks,
     );
     this.lastReceivedServerMarks = { ...metadata };
@@ -6642,11 +6861,18 @@ class ProofEditorImpl implements ProofEditor {
     this.markReviewRoomDocumentChanged();
 
     if (this.collabEnabled && this.collabCanEdit) {
-      collabClient.setMarksMetadata(metadata);
+      if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) {
+        this.pendingCollabMarksMetadata = metadata;
+      } else {
+        collabClient.setMarksMetadata(metadata);
+      }
     }
 
-    // In share mode, push marks-only updates immediately for reliability.
-    if (this.isShareMode) {
+    // In live share mode, push marks-only updates immediately for reliability.
+    // Review Room manual-save mode must persist content and marks together; pushing
+    // a suggested insert mark before its text is saved lets refresh re-anchor it
+    // against stale document content.
+    if (this.isShareMode && !this.reviewRoomRestSaveMode) {
       this.flushShareMarks();
     }
 
@@ -7651,6 +7877,7 @@ class ProofEditorImpl implements ProofEditor {
       enableSuggestions(view);
       console.log('[enableSuggestions] Suggestions enabled');
     });
+    this.updateReviewRoomSuggestingToggle();
   }
 
   /**
@@ -7667,6 +7894,7 @@ class ProofEditorImpl implements ProofEditor {
       disableSuggestions(view);
       console.log('[disableSuggestions] Suggestions disabled');
     });
+    this.updateReviewRoomSuggestingToggle();
   }
 
   /**
@@ -7684,6 +7912,7 @@ class ProofEditorImpl implements ProofEditor {
       enabled = toggleSuggestions(view);
       console.log('[toggleSuggestions] Suggestions:', enabled ? 'enabled' : 'disabled');
     });
+    this.updateReviewRoomSuggestingToggle();
     return enabled;
   }
 

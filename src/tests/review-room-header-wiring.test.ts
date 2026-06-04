@@ -1,13 +1,22 @@
 import { readFileSync } from 'fs';
 import path from 'path';
+import { Schema } from '@milkdown/kit/prose/model';
+import { EditorState } from '@milkdown/kit/prose/state';
+
+import { wrapTransactionForSuggestions } from '../editor/plugins/suggestions.js';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
+function assertEqual<T>(actual: T, expected: T, message: string): void {
+  if (actual !== expected) throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+}
+
 const root = process.cwd();
 const indexHtml = readFileSync(path.join(root, 'src/index.html'), 'utf8');
 const editorSource = readFileSync(path.join(root, 'src/editor/index.ts'), 'utf8');
+const suggestionsSource = readFileSync(path.join(root, 'src/editor/plugins/suggestions.ts'), 'utf8');
 const markPopoverSource = readFileSync(path.join(root, 'src/editor/plugins/mark-popover.ts'), 'utf8');
 const selectionBarSource = readFileSync(path.join(root, 'src/editor/plugins/mark-selection-bar.ts'), 'utf8');
 const vercelConfig = JSON.parse(readFileSync(path.join(root, 'vercel.json'), 'utf8')) as {
@@ -82,15 +91,66 @@ assert(
 );
 assert(
   editorSource.includes('private createReviewRoomFormattingToolbar()')
+    && editorSource.includes('private createReviewRoomSuggestingToggle()')
+    && editorSource.includes("button.setAttribute('role', 'switch');")
+    && editorSource.includes("button.setAttribute('aria-label', 'Suggesting mode');")
+    && editorSource.includes('this.toggleSuggestions();')
+    && editorSource.includes('this.updateReviewRoomSuggestingToggle();')
     && editorSource.includes("action: 'bold'")
     && editorSource.includes("action: 'italic'")
     && editorSource.includes("action: 'heading1'")
     && editorSource.includes("action: 'bulletList'"),
-  'Expected Review Room editor to expose a compact Markdown formatting toolbar',
+  'Expected Review Room editor to expose a compact Markdown formatting toolbar with a Suggesting toggle',
+);
+assert(
+  editorSource.includes("addItem('Download Markdown', async () => this.downloadCurrentDocument('markdown')")
+    && editorSource.includes("addItem('Download Text', async () => this.downloadCurrentDocument('text')")
+    && editorSource.includes('private getCurrentExportMarkdown()')
+    && editorSource.includes('stripProofSpanTags(serialized)')
+    && editorSource.includes('private downloadCurrentDocument(format:'),
+  'Expected Review Room Share menu to export Markdown and Text without internal Proof spans',
+);
+assert(
+  editorSource.includes('Copy agent prompt')
+    && editorSource.includes('Download Claude/Cowork plugin')
+    && editorSource.includes('MCP URL:')
+    && editorSource.includes('review_room_get_state')
+    && editorSource.includes('review_room_add_suggestion')
+    && editorSource.includes('review_room_resolve_comment')
+    && editorSource.includes('/review-room/claude-plugin.zip')
+    && editorSource.includes('/documents/${encodedSlug}/events/pending?after=0'),
+  'Expected Add agent to expose a Review Room MCP-first prompt modal',
 );
 assert(
   editorSource.includes('this.reviewRoomRestSaveMode || (baseAllowLocalEdits && hydrated)'),
   'Expected hosted Review Room mode to allow local edits for manual save',
+);
+assert(
+  editorSource.includes('const localMetadata = getMarkMetadataWithQuotes(view.state);')
+    && editorSource.includes('mergePendingServerMarks(\n      localMetadata,\n      this.lastReceivedServerMarks,'),
+  'Expected Review Room mark sync to push quote/range-enriched metadata instead of raw plugin metadata',
+);
+assert(
+  editorSource.includes('if (this.isShareMode && !this.reviewRoomRestSaveMode) {\n      this.flushShareMarks();\n    }'),
+  'Expected Review Room manual-save mode to avoid marks-only REST pushes before suggested text is saved',
+);
+assert(
+  editorSource.includes('private pendingCollabMarksMetadata: Record<string, StoredMark> | null = null;')
+    && editorSource.includes('private flushPendingCollabMarksMetadata(): void')
+    && editorSource.includes('this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0')
+    && editorSource.includes('this.pendingCollabMarksMetadata = metadata;')
+    && editorSource.includes('collabClient.setMarksMetadata(this.pendingCollabMarksMetadata);'),
+  'Expected live collab mark sync to wait until local content updates are synced',
+);
+assert(
+  suggestionsSource.includes('Human typed replacement: keep the original text as a delete suggestion')
+    && suggestionsSource.includes('const deleteSuggestionId = generateMarkId();')
+    && suggestionsSource.includes('const insertSuggestionId = generateMarkId();')
+    && suggestionsSource.includes("kind: 'delete',")
+    && suggestionsSource.includes('newTr.insertText(insertedText, safeTo);')
+    && suggestionsSource.includes("suggestionType.create({ id: insertSuggestionId, kind: 'insert', by: actor })")
+    && suggestionsSource.includes("buildSuggestionMetadata('insert', actor, insertedText, createdAt)"),
+  'Expected typed replacement suggestions to render as visible red delete plus green insert text',
 );
 assert(
   editorSource.includes("if (this.isReviewRoomRuntime()) {\n      const reviewRoomBar = document.getElementById('review-room-bar');"),
@@ -130,6 +190,59 @@ assert(
   JSON.stringify(vercelConfig.functions ?? {}).includes('docs/**')
     && JSON.stringify(vercelConfig.functions ?? {}).includes('AGENT_CONTRACT.md'),
   'Expected Vercel function bundle to include Agent API docs',
+);
+
+const suggestionsSchema = new Schema({
+  nodes: {
+    doc: { content: 'block+' },
+    paragraph: { content: 'text*', group: 'block' },
+    text: { group: 'inline' },
+  },
+  marks: {
+    proofSuggestion: {
+      attrs: {
+        id: { default: null },
+        kind: { default: 'replace' },
+        by: { default: 'unknown' },
+      },
+      inclusive: false,
+      spanning: true,
+    },
+  },
+});
+
+const replacementState = EditorState.create({
+  schema: suggestionsSchema,
+  doc: suggestionsSchema.node('doc', null, [
+    suggestionsSchema.node('paragraph', null, [suggestionsSchema.text('Hello World.')]),
+  ]),
+});
+const replacementTr = replacementState.tr.replaceWith(7, 12, suggestionsSchema.text('Hello'));
+const wrappedReplacementTr = wrapTransactionForSuggestions(replacementTr, replacementState, true);
+
+assertEqual(
+  wrappedReplacementTr.doc.textContent,
+  'Hello WorldHello.',
+  'Expected typed replacement to keep original text and insert visible replacement text',
+);
+
+const replacementSegments: Array<{ text: string; kind: string }> = [];
+wrappedReplacementTr.doc.descendants((node) => {
+  if (!node.isText) return true;
+  const suggestion = node.marks.find((mark) => mark.type.name === 'proofSuggestion');
+  if (suggestion) {
+    replacementSegments.push({ text: node.text ?? '', kind: String(suggestion.attrs.kind) });
+  }
+  return true;
+});
+
+assert(
+  replacementSegments.some((segment) => segment.text === 'World' && segment.kind === 'delete'),
+  'Expected original selected text to become a visible delete suggestion',
+);
+assert(
+  replacementSegments.some((segment) => segment.text === 'Hello' && segment.kind === 'insert'),
+  'Expected typed replacement text to become a visible insert suggestion',
 );
 
 console.log('✓ Review Room unified header wiring');

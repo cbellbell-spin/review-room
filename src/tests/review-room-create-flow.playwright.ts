@@ -56,9 +56,12 @@ async function run(): Promise<void> {
 
     const baseUrl = `http://127.0.0.1:${port}`;
     await page.goto(`${baseUrl}/review-room`);
-    await expect(page.getByRole('heading', { name: 'Create new document' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Create or import' })).toBeVisible();
+    await expect(page.getByText('Import Markdown or Text')).toBeVisible();
+    await expect(page.getByText('Open existing Review Room link')).toBeVisible();
     await expect(page.getByText('Open a document')).toBeVisible();
-    await expect(page.locator('details[aria-labelledby="docs-heading"]')).not.toHaveAttribute('open', '');
+    await expect(page.locator('section[aria-labelledby="docs-heading"]')).toBeVisible();
+    await expect(page.locator('details.secondary-details')).not.toHaveAttribute('open', '');
     await waitForNoHorizontalOverflow(page);
 
     await page.getByRole('button', { name: 'Create new document' }).click();
