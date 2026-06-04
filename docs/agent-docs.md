@@ -1,5 +1,15 @@
 # Review Room Agent API
 
+## Claude MCP Setup
+
+Production MCP URL: `https://proof-sdk-psi.vercel.app/mcp`
+
+Discovery JSON: `https://proof-sdk-psi.vercel.app/.well-known/agent.json`
+
+In Claude, add a custom connector using streamable HTTP transport and paste the MCP URL above. Document access is per tool call: pass the shared Review Room document slug and token in tool arguments, or send the token as `Authorization: Bearer <token>`.
+
+The browser page at `/agent-docs` includes a **Copy MCP URL** button. Agents can request this same URL with `Accept: text/markdown` to receive plain Markdown.
+
 ## Agent Routes
 
 Hosted Review Room supports both the `/api/agent/*` invite routes and the reusable `/documents/*` routes.

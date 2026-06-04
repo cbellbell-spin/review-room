@@ -38,15 +38,20 @@ type McpResponse = {
   error?: { message?: string };
 };
 
-async function mcp(base: string, body: Record<string, unknown>, token?: string): Promise<McpResponse> {
-  return json<McpResponse>(await fetch(`${base}/mcp`, {
+async function mcpResponse(base: string, body: Record<string, unknown>, token?: string): Promise<Response> {
+  return fetch(`${base}/mcp`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), ...body }),
-  }));
+  });
+}
+
+async function mcp(base: string, body: Record<string, unknown>, token?: string): Promise<McpResponse> {
+  return json<McpResponse>(await mcpResponse(base, body, token));
 }
 
 function parseToolBody(response: McpResponse): Record<string, unknown> {
@@ -77,6 +82,45 @@ async function run(): Promise<void> {
     assert(discovery.mcp_url === `${base}/mcp`, 'Expected discovery to advertise absolute MCP URL');
     assert(discovery.capabilities?.includes('mcp') === true, 'Expected discovery capabilities to include mcp');
     assert(discovery.mcp?.tools?.includes('review_room_add_suggestion') === true, 'Expected discovery to list Review Room MCP tools');
+    assert(discovery.mcp?.tools?.includes('review_room_reply_comment') === true, 'Expected discovery to list MCP comment reply tool');
+
+    const forwardedDiscovery = await json<{ mcp_url?: string; docs_url?: string }>(await fetch(`${base}/.well-known/agent.json`, {
+      headers: {
+        'x-forwarded-proto': 'http',
+        'x-forwarded-host': 'proof-sdk-psi.vercel.app',
+      },
+    }));
+    assert(
+      forwardedDiscovery.mcp_url === 'https://proof-sdk-psi.vercel.app/mcp',
+      `Expected production discovery MCP URL to use https, got ${String(forwardedDiscovery.mcp_url)}`,
+    );
+    assert(
+      forwardedDiscovery.docs_url === 'https://proof-sdk-psi.vercel.app/agent-docs',
+      `Expected production docs URL to use https, got ${String(forwardedDiscovery.docs_url)}`,
+    );
+
+    const htmlDocs = await fetch(`${base}/agent-docs`, {
+      headers: {
+        Accept: 'text/html',
+        'x-forwarded-proto': 'http',
+        'x-forwarded-host': 'proof-sdk-psi.vercel.app',
+      },
+    });
+    const htmlDocsText = await htmlDocs.text();
+    assert(htmlDocs.status === 200 && htmlDocs.headers.get('content-type')?.includes('text/html'), 'Expected HTML agent docs for browser Accept');
+    assert(htmlDocsText.includes('Copy MCP URL'), 'Expected HTML docs to include Copy MCP URL button');
+    assert(htmlDocsText.includes('https://proof-sdk-psi.vercel.app/mcp'), 'Expected HTML docs to show HTTPS MCP URL');
+
+    const markdownDocs = await fetch(`${base}/agent-docs`, { headers: { Accept: 'text/markdown' } });
+    const markdownDocsText = await markdownDocs.text();
+    assert(markdownDocs.status === 200 && markdownDocs.headers.get('content-type')?.includes('text/markdown'), 'Expected Markdown agent docs for Markdown Accept');
+    assert(markdownDocsText.includes('Claude MCP Setup'), 'Expected Markdown docs to include Claude setup');
+
+    const markdownFormatDocs = await fetch(`${base}/agent-docs?format=markdown`, { headers: { Accept: 'text/html' } });
+    assert(
+      markdownFormatDocs.status === 200 && markdownFormatDocs.headers.get('content-type')?.includes('text/markdown'),
+      'Expected ?format=markdown to force Markdown agent docs',
+    );
 
     const created = await json<{
       success: boolean;
@@ -94,10 +138,16 @@ async function run(): Promise<void> {
     const slug = created.document.proofSlug;
     const token = created.proof.accessToken;
 
-    const initialized = await mcp(base, {
+    const initializedResponse = await mcpResponse(base, {
       method: 'initialize',
       params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
     });
+    assert(initializedResponse.status === 200, `Expected streamable HTTP initialize status 200, got ${initializedResponse.status}`);
+    assert(
+      initializedResponse.headers.get('content-type')?.includes('application/json') === true,
+      `Expected initialize JSON response, got ${initializedResponse.headers.get('content-type')}`,
+    );
+    const initialized = await json<McpResponse>(initializedResponse);
     assert(!initialized.error, initialized.error?.message || 'Expected MCP initialize success');
 
     const listed = await mcp(base, { method: 'tools/list' });
@@ -114,6 +164,15 @@ async function run(): Promise<void> {
       },
     }, token));
     assert(String(state.markdown).includes('Original paragraph.'), 'Expected MCP state tool to read markdown');
+
+    const argTokenState = parseToolBody(await mcp(base, {
+      method: 'tools/call',
+      params: {
+        name: 'review_room_get_state',
+        arguments: { slug, token },
+      },
+    }));
+    assert(String(argTokenState.markdown).includes('Original paragraph.'), 'Expected MCP state tool to accept token argument auth');
 
     const suggestion = parseToolBody(await mcp(base, {
       method: 'tools/call',
@@ -159,6 +218,41 @@ async function run(): Promise<void> {
       },
     }, token));
     assert(comment.success === true && typeof comment.markId === 'string', 'Expected MCP comment tool to create a mark');
+
+    const reply = parseToolBody(await mcp(base, {
+      method: 'tools/call',
+      params: {
+        name: 'review_room_reply_comment',
+        arguments: {
+          slug,
+          token,
+          markId: comment.markId,
+          text: 'Reply added through MCP token argument.',
+          by: 'ai:mcp-test',
+        },
+      },
+    }));
+    assert(reply.success === true, 'Expected MCP reply tool to append a comment reply');
+    const replyMarks = reply.marks as Record<string, { replies?: Array<{ text?: string }> }>;
+    assert(
+      replyMarks?.[String(comment.markId)]?.replies?.some((item) => item.text === 'Reply added through MCP token argument.') === true,
+      'Expected MCP reply to be visible on the comment mark',
+    );
+
+    const resolved = parseToolBody(await mcp(base, {
+      method: 'tools/call',
+      params: {
+        name: 'review_room_resolve_comment',
+        arguments: {
+          slug,
+          markId: comment.markId,
+          by: 'human:mcp-reviewer',
+        },
+      },
+    }, token));
+    assert(resolved.success === true, 'Expected MCP resolve tool to resolve the comment');
+    const resolvedMarks = resolved.marks as Record<string, { resolved?: boolean }>;
+    assert(resolvedMarks?.[String(comment.markId)]?.resolved === true, 'Expected MCP-resolved comment mark');
 
     console.log('✓ Review Room MCP route');
   } finally {

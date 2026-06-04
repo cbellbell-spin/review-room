@@ -5,10 +5,18 @@ export function trustProxyHeaders(): boolean {
   return value === '1' || value === 'true' || value === 'yes';
 }
 
+function shouldAdvertiseHttps(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === 'proof-sdk-psi.vercel.app' || normalized.endsWith('.vercel.app');
+}
+
 function normalizeOrigin(candidate: string): string | null {
   try {
     const parsed = new URL(candidate);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (parsed.protocol === 'http:' && shouldAdvertiseHttps(parsed.hostname)) {
+      parsed.protocol = 'https:';
+    }
     return parsed.origin;
   } catch {
     return null;

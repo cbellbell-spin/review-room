@@ -112,6 +112,25 @@ const tools: ReviewRoomTool[] = [
     }, ['slug', 'quote', 'text']),
   },
   {
+    name: 'review_room_reply_comment',
+    description: 'Reply to an existing Review Room comment thread.',
+    inputSchema: objectSchema({
+      ...baseAuthProperties,
+      markId: { type: 'string', description: 'Comment mark id.' },
+      text: { type: 'string', description: 'Reply body.' },
+      by: { type: 'string', description: 'Actor id, usually ai:<agent-id>.' },
+    }, ['slug', 'markId', 'text']),
+  },
+  {
+    name: 'review_room_resolve_comment',
+    description: 'Resolve an existing Review Room comment thread.',
+    inputSchema: objectSchema({
+      ...baseAuthProperties,
+      markId: { type: 'string', description: 'Comment mark id.' },
+      by: { type: 'string', description: 'Actor id resolving the comment.' },
+    }, ['slug', 'markId']),
+  },
+  {
     name: 'review_room_add_suggestion',
     description: 'Add a pending suggestion that a human can accept or reject.',
     inputSchema: objectSchema({
@@ -201,6 +220,25 @@ async function executeReviewRoomTool(req: Request, name: string, args: JsonRecor
       by,
       quote: readString(args.quote),
       text: readString(args.text),
+    });
+  }
+
+  if (name === 'review_room_reply_comment') {
+    const auth = await resolveToolAuth(slug, token, ['commenter', 'editor', 'owner_bot']);
+    if (!auth.ok) return { status: auth.status, body: auth.body };
+    return executeDocumentOperationAsync(slug, 'POST', '/marks/reply', {
+      markId: readString(args.markId),
+      text: readString(args.text),
+      by,
+    });
+  }
+
+  if (name === 'review_room_resolve_comment') {
+    const auth = await resolveToolAuth(slug, token, ['commenter', 'editor', 'owner_bot']);
+    if (!auth.ok) return { status: auth.status, body: auth.body };
+    return executeDocumentOperationAsync(slug, 'POST', '/marks/resolve', {
+      markId: readString(args.markId),
+      by,
     });
   }
 

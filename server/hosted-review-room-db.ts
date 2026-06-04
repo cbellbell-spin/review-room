@@ -1246,6 +1246,86 @@ async function addHostedComment(slug: string, body: Record<string, unknown>): Pr
   return persistHostedMarks(slug, marks, by, 'comment.added', { markId: id, by, quote, text });
 }
 
+async function replyHostedComment(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  if (doc.share_state !== 'ACTIVE') {
+    return { status: 403, body: { success: false, error: 'Document is not currently accessible' } };
+  }
+  const markId = typeof body.markId === 'string' && body.markId.trim() ? body.markId.trim() : '';
+  const by = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'ai:unknown';
+  const text = typeof body.text === 'string' ? body.text : '';
+  if (!markId || !text.trim()) return { status: 400, body: { success: false, error: 'Missing markId/text' } };
+
+  const marks = parseMarks(doc.marks);
+  const existing = marks[markId];
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return { status: 404, body: { success: false, error: 'Mark not found' } };
+  }
+  const existingRecord = existing as Record<string, unknown>;
+  const threadReplies = Array.isArray(existingRecord.thread)
+    ? existingRecord.thread as Array<{ by: string; text: string; at: string }>
+    : [];
+  const normalizedReplies = Array.isArray(existingRecord.replies)
+    ? existingRecord.replies as Array<{ by: string; text: string; at: string }>
+    : [];
+  const baseReplies = normalizedReplies.length >= threadReplies.length ? normalizedReplies : threadReplies;
+  const replies = [...baseReplies, { by, text, at: new Date().toISOString() }];
+  marks[markId] = {
+    ...existingRecord,
+    thread: replies,
+    replies,
+    threadId: typeof existingRecord.threadId === 'string' ? existingRecord.threadId : markId,
+  };
+  return persistHostedMarks(slug, marks, by, 'comment.replied', { markId, by, text });
+}
+
+async function resolveHostedComment(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  if (doc.share_state !== 'ACTIVE') {
+    return { status: 403, body: { success: false, error: 'Document is not currently accessible' } };
+  }
+  const markId = typeof body.markId === 'string' && body.markId.trim() ? body.markId.trim() : '';
+  if (!markId) return { status: 400, body: { success: false, error: 'Missing markId' } };
+
+  const marks = parseMarks(doc.marks);
+  const existing = marks[markId];
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return { status: 404, body: { success: false, error: 'Mark not found' } };
+  }
+  const existingRecord = existing as Record<string, unknown>;
+  const by = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'review-room:user';
+  marks[markId] = { ...existingRecord, resolved: true };
+  return persistHostedMarks(slug, marks, by, 'comment.resolved', { markId, by });
+}
+
+async function unresolveHostedComment(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
+  const doc = await getHostedDocumentBySlug(slug);
+  if (!doc || doc.share_state === 'DELETED') {
+    return { status: 404, body: { success: false, error: 'Document not found' } };
+  }
+  if (doc.share_state !== 'ACTIVE') {
+    return { status: 403, body: { success: false, error: 'Document is not currently accessible' } };
+  }
+  const markId = typeof body.markId === 'string' && body.markId.trim() ? body.markId.trim() : '';
+  if (!markId) return { status: 400, body: { success: false, error: 'Missing markId' } };
+
+  const marks = parseMarks(doc.marks);
+  const existing = marks[markId];
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return { status: 404, body: { success: false, error: 'Mark not found' } };
+  }
+  const existingRecord = existing as Record<string, unknown>;
+  const by = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'review-room:user';
+  marks[markId] = { ...existingRecord, resolved: false };
+  return persistHostedMarks(slug, marks, by, 'comment.unresolved', { markId, by });
+}
+
 async function addHostedSuggestion(slug: string, body: Record<string, unknown>): Promise<HostedEngineExecutionResult> {
   const doc = await getHostedDocumentBySlug(slug);
   if (!doc || doc.share_state === 'DELETED') {
@@ -1617,6 +1697,9 @@ export async function executeHostedDocumentOperation(
     return { status: 200, body: { success: true, marks: parseMarks(doc.marks) } };
   }
   if (method === 'POST' && routePath === '/marks/comment') return addHostedComment(slug, body);
+  if (method === 'POST' && routePath === '/marks/reply') return replyHostedComment(slug, body);
+  if (method === 'POST' && routePath === '/marks/resolve') return resolveHostedComment(slug, body);
+  if (method === 'POST' && routePath === '/marks/unresolve') return unresolveHostedComment(slug, body);
   if (method === 'POST' && routePath === '/marks/accept') return updateHostedSuggestionStatus(slug, body, 'accepted');
   if (method === 'POST' && routePath === '/marks/reject') return updateHostedSuggestionStatus(slug, body, 'rejected');
   return { status: 404, body: { success: false, error: `Unsupported hosted document operation: ${method} ${routePath}` } };
