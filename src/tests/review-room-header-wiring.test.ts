@@ -45,9 +45,21 @@ assert(
   editorSource.includes("panel.id = 'review-room-review-sidebar';")
     && editorSource.includes("button.setAttribute('aria-controls', 'review-room-review-sidebar');")
     && editorSource.includes("button.setAttribute('aria-expanded', 'false');")
+    && editorSource.includes('void this.openReviewRoomReviewPanel({ useSelection: true });')
+    && editorSource.includes('Review selected text')
+    && editorSource.includes('this.addReviewRoomSelectionComment(activeSelection, textarea.value)')
     && editorSource.includes("top:var(--review-room-bar-height, 64px);right:0;bottom:0;")
     && !editorSource.includes('background:rgba(31,41,51,0.46);'),
-  'Expected Review Room review items to open as a docked sidebar, not a dimmed overlay',
+  'Expected Review Room review items to open as a docked sidebar that can use selected text',
+);
+assert(
+  editorSource.includes('openReviewRoomReviewSidebar(options: ReviewRoomReviewPanelOptions = {})')
+    && editorSource.includes('this.markReply(comment.id, getCurrentActor(), text)')
+    && editorSource.includes('this.markResolve(comment.id)')
+    && editorSource.includes('this.markDeleteThread(comment.id)')
+    && markPopoverSource.includes('proof?.isReviewRoomRuntime?.()')
+    && markPopoverSource.includes('proof.openReviewRoomReviewSidebar({ focusMarkId: markId })'),
+  'Expected Review Room comment threads to open and resolve inside the Review sidebar',
 );
 assert(
   editorSource.includes('private createReviewRoomSaveButton()')

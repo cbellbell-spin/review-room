@@ -717,6 +717,16 @@ type ShareRuntimeActivationOptions = {
   preserveCurrentDocument?: boolean;
 };
 
+type ReviewRoomReviewPanelOptions = {
+  focusMarkId?: string;
+  useSelection?: boolean;
+};
+
+type ReviewRoomSelectedText = {
+  range: MarkRange;
+  quote: string;
+};
+
 export interface ProofEditor {
   editor: Editor | null;
   heatMapMode: 'hidden' | 'subtle' | 'background' | 'full';
@@ -737,6 +747,8 @@ export interface ProofEditor {
   unfollowAgent(showToast?: boolean): void;
   getFollowedAgent(): string | null;
   isFollowingAgent(sessionId?: string): boolean;
+  isReviewRoomRuntime(): boolean;
+  openReviewRoomReviewSidebar(options?: ReviewRoomReviewPanelOptions): Promise<void>;
 
   // Editor operations (for AI agent)
   // author parameter creates an authored mark if specified (e.g., 'ai:claude', 'human:dan')
@@ -4460,7 +4472,7 @@ class ProofEditorImpl implements ProofEditor {
       font-size:13px;font-weight:650;cursor:pointer;font-family:inherit;
     `;
     button.onclick = () => {
-      void this.openReviewRoomReviewPanel();
+      void this.openReviewRoomReviewPanel({ useSelection: true });
     };
     this.reviewRoomReviewButtonEl = button;
     void this.updateReviewRoomReviewButtonCount();
@@ -4509,15 +4521,82 @@ class ProofEditorImpl implements ProofEditor {
     void this.updateReviewRoomReviewButtonCount();
   }
 
-  private async openReviewRoomReviewPanel(): Promise<void> {
+  async openReviewRoomReviewSidebar(options: ReviewRoomReviewPanelOptions = {}): Promise<void> {
+    if (!this.isReviewRoomRuntime()) return;
+    await this.openReviewRoomReviewPanel(options);
+  }
+
+  private getReviewRoomSelectedText(): ReviewRoomSelectedText | null {
+    if (!this.editor) return null;
+    let selected: ReviewRoomSelectedText | null = null;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const { from, to } = view.state.selection;
+      if (from === to || from >= to) return;
+      const range = { from, to };
+      const quote = normalizeQuote(this.quoteForRange(view, range));
+      if (!quote) return;
+      selected = { range, quote };
+    });
+    return selected;
+  }
+
+  private addReviewRoomSelectionComment(selection: ReviewRoomSelectedText, text: string): Mark | null {
+    const trimmedText = text.trim();
+    if (!trimmedText) return null;
+    return this.markCommentSelector(
+      { range: selection.range, quote: selection.quote },
+      getCurrentActor(),
+      trimmedText,
+    );
+  }
+
+  private async persistReviewRoomReviewMarks(): Promise<boolean> {
+    const snapshot = this.serializeCurrentShareDocument();
+    if (!snapshot) return false;
+    if (this.reviewRoomRestSaveMode && this.collabCanEdit) {
+      return this.saveReviewRoomDocument({ source: 'manual' });
+    }
+    if (this.collabEnabled && this.collabCanEdit) {
+      this.flushShareMarks({ persistContent: true });
+      return true;
+    }
+    return shareClient.pushMarks(snapshot.marks, getCurrentActor());
+  }
+
+  private focusReviewRoomMark(markId: string): void {
+    if (!markId) return;
+    this.markSetActive(markId);
+    if (!this.editor) return;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const mark = getMarks(view.state).find((item) => item.id === markId);
+      if (!mark) return;
+      const [resolved] = resolveMarks(view.state.doc, [mark]);
+      const range = resolved?.resolvedRange ?? resolved?.resolvedRanges?.[0] ?? mark.range;
+      if (!range) return;
+      const maxPos = view.state.doc.content.size;
+      const pos = Math.max(1, Math.min(range.from, maxPos));
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos)).scrollIntoView());
+    });
+  }
+
+  private async openReviewRoomReviewPanel(options: ReviewRoomReviewPanelOptions = {}): Promise<void> {
     if (!this.isShareMode) return;
 
     const existing = document.getElementById('review-room-review-sidebar');
     if (existing) {
-      existing.remove();
-      this.reviewRoomReviewButtonEl?.setAttribute('aria-expanded', 'false');
-      return;
+      if (options.focusMarkId || options.useSelection) {
+        existing.remove();
+      } else {
+        existing.remove();
+        this.reviewRoomReviewButtonEl?.setAttribute('aria-expanded', 'false');
+        return;
+      }
     }
+
+    let selectedReviewText = options.useSelection ? this.getReviewRoomSelectedText() : null;
+    let focusedMarkId = options.focusMarkId ?? null;
 
     const panel = document.createElement('aside');
     panel.id = 'review-room-review-sidebar';
@@ -4583,6 +4662,65 @@ class ProofEditorImpl implements ProofEditor {
       body.appendChild(error);
     };
 
+    const smallButton = (label: string, variant: 'primary' | 'secondary' | 'danger' = 'secondary'): HTMLButtonElement => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      const palette = variant === 'primary'
+        ? 'border:1px solid #266854;background:#266854;color:#fff;'
+        : variant === 'danger'
+          ? 'border:1px solid #f0b4ae;background:#fff;color:#b42318;'
+          : 'border:1px solid #cbd7c6;background:#fff;color:#374151;';
+      button.style.cssText = `${palette}border-radius:6px;min-height:32px;padding:0 10px;font-size:13px;font-weight:650;cursor:pointer;font-family:inherit;`;
+      return button;
+    };
+
+    const renderSelectedTextComposer = (): HTMLElement | null => {
+      if (!selectedReviewText) return null;
+      const composer = row();
+      composer.style.borderTop = '0';
+      composer.style.background = '#fbfcf8';
+      const label = document.createElement('div');
+      label.textContent = 'Review selected text';
+      label.style.cssText = 'font-size:12px;font-weight:750;text-transform:uppercase;letter-spacing:0.04em;color:#607064;';
+      const quote = document.createElement('div');
+      quote.textContent = selectedReviewText.quote;
+      quote.style.cssText = 'font-size:13px;line-height:1.4;color:#374151;background:#fff;border:1px solid #edf1e9;border-radius:6px;padding:8px;overflow-wrap:anywhere;';
+      const textarea = document.createElement('textarea');
+      textarea.placeholder = 'Add a comment...';
+      textarea.rows = 3;
+      textarea.style.cssText = 'width:100%;box-sizing:border-box;min-height:78px;resize:vertical;border:1px solid #cbd7c6;border-radius:6px;padding:9px 10px;font:inherit;font-size:14px;line-height:1.45;color:#1f2933;background:#fff;';
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;gap:8px;align-items:center;';
+      const add = smallButton('Comment', 'primary');
+      const cancel = smallButton('Cancel');
+      add.onclick = () => {
+        void (async () => {
+          const activeSelection = selectedReviewText;
+          if (!activeSelection) return;
+          const mark = this.addReviewRoomSelectionComment(activeSelection, textarea.value);
+          if (!mark) return;
+          add.disabled = true;
+          cancel.disabled = true;
+          const persisted = await this.persistReviewRoomReviewMarks();
+          if (!persisted) {
+            renderError('Could not save this comment.');
+            return;
+          }
+          selectedReviewText = null;
+          focusedMarkId = mark.id;
+          await loadPanel();
+        })();
+      };
+      cancel.onclick = () => {
+        selectedReviewText = null;
+        void loadPanel();
+      };
+      actions.append(add, cancel);
+      composer.append(label, quote, textarea, actions);
+      return composer;
+    };
+
     const loadPanel = async () => {
       renderLoading();
       try {
@@ -4593,7 +4731,14 @@ class ProofEditorImpl implements ProofEditor {
         }
         const marks = doc.marks ?? {};
         const suggestions: Array<{ id: string; kind: string; by: string; quote: string; content: string }> = [];
-        const comments: Array<{ id: string; by: string; quote: string; text: string; replies: number }> = [];
+        const comments: Array<{
+          id: string;
+          by: string;
+          at: string;
+          quote: string;
+          text: string;
+          replies: Array<{ by: string; at: string; text: string }>;
+        }> = [];
         for (const [id, raw] of Object.entries(marks)) {
           if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
           const mark = raw as Record<string, unknown>;
@@ -4613,18 +4758,33 @@ class ProofEditorImpl implements ProofEditor {
             continue;
           }
           if (rawKind === 'comment' && mark.resolved !== true) {
-            const thread = Array.isArray(mark.thread) ? mark.thread : [];
+            const rawReplies = Array.isArray(mark.replies)
+              ? mark.replies
+              : Array.isArray(mark.thread)
+                ? mark.thread
+                : [];
+            const replies = rawReplies
+              .filter((reply): reply is Record<string, unknown> => Boolean(reply) && typeof reply === 'object' && !Array.isArray(reply))
+              .map((reply) => ({
+                by: typeof reply.by === 'string' ? reply.by : 'unknown',
+                at: typeof reply.at === 'string' ? reply.at : '',
+                text: typeof reply.text === 'string' ? reply.text : '',
+              }))
+              .filter((reply) => reply.text.trim().length > 0);
             comments.push({
               id,
               by: typeof mark.by === 'string' ? mark.by : 'unknown',
+              at: typeof mark.createdAt === 'string' ? mark.createdAt : '',
               quote: typeof mark.quote === 'string' ? mark.quote : '',
               text: typeof mark.text === 'string' ? mark.text : '',
-              replies: thread.length,
+              replies,
             });
           }
         }
         body.innerHTML = '';
-        if (suggestions.length === 0 && comments.length === 0) {
+        const selectedComposer = renderSelectedTextComposer();
+        if (selectedComposer) body.appendChild(selectedComposer);
+        if (suggestions.length === 0 && comments.length === 0 && !selectedComposer) {
           const empty = document.createElement('div');
           empty.textContent = 'No open review items.';
           empty.style.cssText = 'padding:22px 18px;color:#607064;font-size:14px;';
@@ -4690,16 +4850,99 @@ class ProofEditorImpl implements ProofEditor {
         }
         for (const comment of comments) {
           const item = row();
+          item.dataset.reviewMarkId = comment.id;
+          if (comment.id === focusedMarkId) {
+            item.style.background = '#fbfcf8';
+            item.style.boxShadow = 'inset 3px 0 0 #266854';
+            requestAnimationFrame(() => {
+              item.scrollIntoView({ block: 'nearest' });
+              this.focusReviewRoomMark(comment.id);
+            });
+          }
           const meta = document.createElement('div');
-          meta.textContent = `${comment.by}${comment.replies > 0 ? ` · ${comment.replies} replies` : ''}`;
+          meta.textContent = `${comment.by}${comment.replies.length > 0 ? ` · ${comment.replies.length} replies` : ''}`;
           meta.style.cssText = 'font-size:12px;font-weight:750;color:#607064;';
-          const text = document.createElement('div');
-          text.textContent = comment.text;
-          text.style.cssText = 'font-size:14px;line-height:1.45;color:#1f2933;overflow-wrap:anywhere;';
           const quote = document.createElement('div');
-          quote.textContent = comment.quote;
-          quote.style.cssText = 'font-size:13px;line-height:1.4;color:#607064;overflow-wrap:anywhere;';
-          item.append(meta, text, quote);
+          quote.textContent = comment.quote || 'Document comment';
+          quote.style.cssText = 'font-size:13px;line-height:1.4;color:#374151;background:#f7f8f3;border:1px solid #edf1e9;border-radius:6px;padding:8px;overflow-wrap:anywhere;';
+          const thread = document.createElement('div');
+          thread.style.cssText = 'display:grid;gap:8px;';
+          const renderMessage = (by: string, textValue: string, at: string) => {
+            const message = document.createElement('div');
+            message.style.cssText = 'display:grid;gap:3px;';
+            const messageMeta = document.createElement('div');
+            messageMeta.textContent = at ? `${by} · ${new Date(at).toLocaleString()}` : by;
+            messageMeta.style.cssText = 'font-size:12px;color:#607064;font-weight:650;';
+            const messageText = document.createElement('div');
+            messageText.textContent = textValue;
+            messageText.style.cssText = 'font-size:14px;line-height:1.45;color:#1f2933;overflow-wrap:anywhere;';
+            message.append(messageMeta, messageText);
+            thread.appendChild(message);
+          };
+          renderMessage(comment.by, comment.text, comment.at);
+          for (const reply of comment.replies) {
+            renderMessage(reply.by, reply.text, reply.at);
+          }
+          const replyBox = document.createElement('textarea');
+          replyBox.placeholder = 'Reply...';
+          replyBox.rows = 2;
+          replyBox.style.cssText = 'width:100%;box-sizing:border-box;min-height:62px;resize:vertical;border:1px solid #cbd7c6;border-radius:6px;padding:8px 9px;font:inherit;font-size:13px;line-height:1.45;color:#1f2933;background:#fff;';
+          const actions = document.createElement('div');
+          actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+          const reply = smallButton('Reply', 'primary');
+          const resolve = smallButton('Resolve');
+          const del = smallButton('Delete', 'danger');
+          reply.onclick = () => {
+            void (async () => {
+              const text = replyBox.value.trim();
+              if (!text) return;
+              reply.disabled = true;
+              const mark = this.markReply(comment.id, getCurrentActor(), text);
+              if (!mark) {
+                renderError('Could not add this reply.');
+                return;
+              }
+              const persisted = await this.persistReviewRoomReviewMarks();
+              if (!persisted) {
+                renderError('Could not save this reply.');
+                return;
+              }
+              focusedMarkId = comment.id;
+              await loadPanel();
+            })();
+          };
+          resolve.onclick = () => {
+            void (async () => {
+              resolve.disabled = true;
+              const success = this.markResolve(comment.id);
+              if (!success) {
+                renderError('Could not resolve this thread.');
+                return;
+              }
+              await this.persistReviewRoomReviewMarks();
+              focusedMarkId = null;
+              await loadPanel();
+            })();
+          };
+          del.onclick = () => {
+            void (async () => {
+              del.disabled = true;
+              const success = this.markDeleteThread(comment.id);
+              if (!success) {
+                renderError('Could not delete this thread.');
+                return;
+              }
+              const persisted = await this.persistReviewRoomReviewMarks();
+              if (!persisted) {
+                renderError('Could not save this deletion.');
+                return;
+              }
+              focusedMarkId = null;
+              await loadPanel();
+            })();
+          };
+          actions.append(reply, resolve, del);
+          item.append(meta, quote, thread, replyBox, actions);
           body.appendChild(item);
         }
       } catch (error) {
@@ -5666,7 +5909,7 @@ class ProofEditorImpl implements ProofEditor {
     });
   }
 
-  private isReviewRoomRuntime(): boolean {
+  isReviewRoomRuntime(): boolean {
     const proofConfig = (window as Window & {
       __PROOF_CONFIG__?: { reviewRoom?: boolean };
     }).__PROOF_CONFIG__ ?? {};

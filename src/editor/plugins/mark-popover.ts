@@ -774,6 +774,14 @@ class MarkPopoverController {
     const mark = marks.find(item => item.id === markId);
     if (!mark) return;
 
+    const proof = getProofEditorApi();
+    if (mark.kind === 'comment' && proof?.isReviewRoomRuntime?.() && proof.openReviewRoomReviewSidebar) {
+      this.close();
+      setActiveMark(this.view, markId);
+      void proof.openReviewRoomReviewSidebar({ focusMarkId: markId });
+      return;
+    }
+
     this.mode = mark.kind === 'comment' ? 'thread' : 'suggestion';
     this.activeMarkId = markId;
     this.anchor = resolveAnchorRange(this.view, mark, pos);
