@@ -35,39 +35,55 @@ assert.equal(spanFallbackGroups.length, 1, 'adjacent suggestion spans should ren
 assert.deepEqual(spanFallbackGroups[0]?.ids, ['one', 'two', 'three']);
 assert.equal(spanFallbackGroups[0]?.content, 'Proof works');
 
-const staleRangeGapGroups = getReviewRoomSuggestionGroups({
-  markdown: 'This is the second paragraph(in suggesting mode) and it looks like it is also being treated as suggestions.',
+const sameParagraphSpanGroups = getReviewRoomSuggestionGroups({
+  markdown: [
+    '<span data-proof="suggestion" data-id="first" data-kind="insert">This is the second paragraph</span>',
+    '<span data-proof="suggestion" data-id="second" data-kind="insert">(in suggesting mode)</span>',
+    '<span data-proof="suggestion" data-id="third" data-kind="insert"> and it looks like it is also being treated as suggestions.</span>',
+  ].join(''),
   marks: {
     first: {
       kind: 'insert',
       by: 'human:Chris',
       content: 'This is the second paragraph',
       status: 'pending',
-      range: { from: 0, to: 28 },
     },
     second: {
       kind: 'insert',
       by: 'human:Chris',
       content: '(in suggesting mode)',
       status: 'pending',
-      range: { from: 28, to: 48 },
     },
     third: {
       kind: 'insert',
       by: 'human:Chris',
-      content: 'treated as suggestions.',
+      content: ' and it looks like it is also being treated as suggestions.',
       status: 'pending',
-      range: { from: 84, to: 107 },
     },
   },
 });
 
-assert.equal(staleRangeGapGroups.length, 1, 'same-paragraph insert chunks with small stale gaps should render as one group');
-assert.deepEqual(staleRangeGapGroups[0]?.ids, ['first', 'second', 'third']);
+assert.equal(sameParagraphSpanGroups.length, 1, 'same-paragraph insert chunks should render as one group');
+assert.deepEqual(sameParagraphSpanGroups[0]?.ids, ['first', 'second', 'third']);
 assert.equal(
-  staleRangeGapGroups[0]?.content,
+  sameParagraphSpanGroups[0]?.content,
   'This is the second paragraph(in suggesting mode) and it looks like it is also being treated as suggestions.',
 );
+
+const hardReturnGroups = getReviewRoomSuggestionGroups({
+  markdown: [
+    '<span data-proof="suggestion" data-id="hello" data-kind="insert">Hello World</span>',
+    '\n',
+    '<span data-proof="suggestion" data-id="paragraph" data-kind="insert">This is the second paragraph</span>',
+  ].join(''),
+  marks: {
+    hello: { kind: 'insert', by: 'human:Chris', content: 'Hello World', status: 'pending' },
+    paragraph: { kind: 'insert', by: 'human:Chris', content: 'This is the second paragraph', status: 'pending' },
+  },
+});
+
+assert.equal(hardReturnGroups.length, 2, 'insert suggestions separated by a hard return should stay separate');
+assert.deepEqual(hardReturnGroups.map((group) => group.content), ['Hello World', 'This is the second paragraph']);
 
 const separatedGroups = getReviewRoomSuggestionGroups({
   markdown: [

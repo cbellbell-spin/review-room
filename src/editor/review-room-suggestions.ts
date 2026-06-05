@@ -16,6 +16,7 @@ type SpanLocation = {
   order: number;
   start: number;
   end: number;
+  text: string;
 };
 
 type PendingSuggestion = ReviewRoomSuggestionGroup & {
@@ -30,8 +31,6 @@ type SuggestionDocument = {
   markdown?: string | null;
   marks?: Record<string, unknown> | null;
 };
-
-const MAX_INLINE_INSERT_GAP = 96;
 
 function normalizeSuggestionKind(raw: Record<string, unknown>): ReviewRoomSuggestionKind | null {
   const rawKind = typeof raw.kind === 'string' ? raw.kind : '';
@@ -69,9 +68,23 @@ function readAttr(attrs: string, name: string): string | null {
   return match?.[2] ?? null;
 }
 
+function decodeHtmlText(text: string): string {
+  return text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function spanText(html: string): string {
+  return decodeHtmlText(html.replace(/<[^>]*>/g, ''));
+}
+
 function parseSuggestionSpanLocations(markdown: string): Map<string, SpanLocation> {
   const locations = new Map<string, SpanLocation>();
-  const spanPattern = /<span\b([^>]*)>[\s\S]*?<\/span>/gi;
+  const spanPattern = /<span\b([^>]*)>([\s\S]*?)<\/span>/gi;
   let match: RegExpExecArray | null;
   let order = 0;
 
@@ -84,6 +97,7 @@ function parseSuggestionSpanLocations(markdown: string): Map<string, SpanLocatio
       order,
       start: match.index,
       end: match.index + match[0].length,
+      text: spanText(match[2] ?? ''),
     });
     order += 1;
   }
@@ -112,40 +126,32 @@ function spanGap(markdown: string, left: PendingSuggestion, right: PendingSugges
   return markdown.slice(left.span.end, right.span.start);
 }
 
-function hasParagraphBreak(text: string): boolean {
-  return /\n\s*\n/.test(text);
+function hasHardReturn(text: string): boolean {
+  return /[\r\n]/.test(text);
 }
 
-function rangeGap(markdown: string, left: PendingSuggestion, right: PendingSuggestion): string | null {
+function rangeFallbackGap(left: PendingSuggestion, right: PendingSuggestion): string | null {
   if (!left.range || !right.range) return null;
   if (right.range.from < left.range.to) return null;
-  if (right.range.from - left.range.to > MAX_INLINE_INSERT_GAP) return null;
-  if (!markdown) return '';
-  return markdown.slice(left.range.to, right.range.from);
+  if (right.range.from - left.range.to > 1) return null;
+  return '';
 }
 
-function charGap(markdown: string, left: PendingSuggestion, right: PendingSuggestion): string | null {
+function charFallbackGap(left: PendingSuggestion, right: PendingSuggestion): string | null {
   if (left.charEnd === null || right.charStart === null) return null;
   if (right.charStart < left.charEnd) return null;
-  if (right.charStart - left.charEnd > MAX_INLINE_INSERT_GAP) return null;
-  if (!markdown) return '';
-  return markdown.slice(left.charEnd, right.charStart);
+  if (right.charStart - left.charEnd > 1) return null;
+  return '';
 }
 
 function inlineMergeGap(markdown: string, left: PendingSuggestion, right: PendingSuggestion): string | null {
-  const rangeText = rangeGap(markdown, left, right);
-  if (rangeText !== null) return hasParagraphBreak(rangeText) ? null : rangeText;
-
-  const charText = charGap(markdown, left, right);
-  if (charText !== null) return hasParagraphBreak(charText) ? null : charText;
-
   const spanText = spanGap(markdown, left, right);
   if (spanText !== null) {
-    if (spanText.trim().length > 0 || hasParagraphBreak(spanText)) return null;
+    if (spanText.trim().length > 0 || hasHardReturn(spanText)) return null;
     return spanText;
   }
 
-  return null;
+  return rangeFallbackGap(left, right) ?? charFallbackGap(left, right);
 }
 
 function areAdjacentInsertSuggestions(markdown: string, left: PendingSuggestion, right: PendingSuggestion): boolean {
@@ -159,10 +165,11 @@ function mergeInsertGroup(markdown: string, left: PendingSuggestion, right: Pend
   const gap = inlineMergeGap(markdown, left, right);
   const separator = gap ?? '';
   const sameQuote = left.quote.trim() && left.quote.trim() === right.quote.trim();
+  const rightContent = right.span?.text ?? right.content;
   return {
     ...left,
     ids: [...left.ids, ...right.ids],
-    content: `${left.content}${separator}${right.content}`,
+    content: `${left.content}${separator}${rightContent}`,
     quote: sameQuote ? left.quote : left.quote || right.quote,
     count: left.count + right.count,
     range: left.range && right.range ? { from: left.range.from, to: right.range.to } : left.range,
@@ -192,7 +199,7 @@ export function getReviewRoomSuggestionGroups(doc: SuggestionDocument): ReviewRo
       kind,
       by: typeof record.by === 'string' ? record.by : 'ai:agent',
       quote: typeof record.quote === 'string' ? record.quote : '',
-      content: typeof record.content === 'string' ? record.content : '',
+      content: spanLocations.get(id)?.text ?? (typeof record.content === 'string' ? record.content : ''),
       count: 1,
       range,
       charStart: parseCharRel(record.startRel),
