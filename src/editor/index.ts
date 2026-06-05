@@ -149,6 +149,7 @@ import { fileClient } from '../bridge/file-client';
 import { shareClient, type CollabSessionInfo, type SharePendingEvent } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
+import { getReviewRoomSuggestionGroups } from './review-room-suggestions';
 import { collabCursorBuilder, collabSelectionBuilder } from './plugins/collab-cursors';
 import { isAgentScopedId } from '../shared/agent-identity';
 import {
@@ -4612,17 +4613,14 @@ class ProofEditorImpl implements ProofEditor {
     try {
       const doc = await shareClient.fetchDocument();
       if (!doc || this.reviewRoomReviewButtonEl !== button) return;
+      let count = getReviewRoomSuggestionGroups(doc).length;
       const marks = doc.marks ?? {};
-      let count = 0;
       for (const mark of Object.values(marks)) {
         if (!mark || typeof mark !== 'object' || Array.isArray(mark)) continue;
         const record = mark as Record<string, unknown>;
         const kind = typeof record.kind === 'string' ? record.kind : '';
-        const status = typeof record.status === 'string' ? record.status : '';
         const resolved = record.resolved === true;
-        if ((kind === 'insert' || kind === 'delete' || kind === 'replace' || kind === 'suggestion') && status !== 'accepted' && status !== 'rejected') {
-          count += 1;
-        } else if (kind === 'comment' && !resolved) {
+        if (kind === 'comment' && !resolved) {
           count += 1;
         }
       }
@@ -4937,7 +4935,7 @@ class ProofEditorImpl implements ProofEditor {
           return;
         }
         const marks = doc.marks ?? {};
-        const suggestions: Array<{ id: string; kind: string; by: string; quote: string; content: string }> = [];
+        const suggestions = getReviewRoomSuggestionGroups(doc);
         const comments: Array<{
           id: string;
           by: string;
@@ -4951,20 +4949,6 @@ class ProofEditorImpl implements ProofEditor {
           if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
           const mark = raw as Record<string, unknown>;
           const rawKind = typeof mark.kind === 'string' ? mark.kind : '';
-          const kind = rawKind === 'suggestion' && typeof mark.suggestionKind === 'string'
-            ? mark.suggestionKind
-            : rawKind;
-          const status = typeof mark.status === 'string' ? mark.status : 'pending';
-          if ((kind === 'insert' || kind === 'delete' || kind === 'replace') && status !== 'accepted' && status !== 'rejected') {
-            suggestions.push({
-              id,
-              kind,
-              by: typeof mark.by === 'string' ? mark.by : 'ai:agent',
-              quote: typeof mark.quote === 'string' ? mark.quote : '',
-              content: typeof mark.content === 'string' ? mark.content : '',
-            });
-            continue;
-          }
           if (rawKind === 'comment') {
             const rawReplies = Array.isArray(mark.replies)
               ? mark.replies
@@ -5008,17 +4992,18 @@ class ProofEditorImpl implements ProofEditor {
         for (const suggestion of suggestions) {
           const item = row();
           attachReviewItemFocus(item, suggestion.id);
-          if (suggestion.id === focusedMarkId) {
+          applyFocusedItemStyle(item, suggestion.ids.includes(focusedMarkId ?? ''));
+          if (suggestion.ids.includes(focusedMarkId ?? '')) {
             requestAnimationFrame(() => {
               item.scrollIntoView({ block: 'nearest' });
               this.focusReviewRoomMark(suggestion.id);
             });
           }
           const meta = document.createElement('div');
-          meta.textContent = `${suggestion.kind} by ${suggestion.by}`;
+          meta.textContent = `${suggestion.kind} by ${suggestion.by}${suggestion.count > 1 ? ` (${suggestion.count} adjacent chunks)` : ''}`;
           meta.style.cssText = 'font-size:12px;font-weight:750;color:#607064;';
           const quote = document.createElement('div');
-          quote.textContent = suggestion.quote || '(insert at document end)';
+          quote.textContent = suggestion.quote || (suggestion.kind === 'insert' && suggestion.count > 1 ? '(contiguous insert)' : '(insert at document end)');
           quote.style.cssText = 'font-size:13px;line-height:1.4;color:#374151;background:#f7f8f3;border:1px solid #edf1e9;border-radius:6px;padding:8px;overflow-wrap:anywhere;';
           const content = document.createElement('div');
           content.textContent = suggestion.kind === 'delete' ? 'Delete selected text' : suggestion.content;
@@ -5037,12 +5022,14 @@ class ProofEditorImpl implements ProofEditor {
             accept.disabled = true;
             reject.disabled = true;
             const actor = getCurrentActor();
-            const result = action === 'accept'
-              ? await shareClient.acceptSuggestion(suggestion.id, actor)
-              : await shareClient.rejectSuggestion(suggestion.id, actor);
-            if (!result || 'error' in result || result.success !== true) {
-              renderError(`Could not ${action} this suggestion.`);
-              return;
+            for (const suggestionId of suggestion.ids) {
+              const result = action === 'accept'
+                ? await shareClient.acceptSuggestion(suggestionId, actor)
+                : await shareClient.rejectSuggestion(suggestionId, actor);
+              if (!result || 'error' in result || result.success !== true) {
+                renderError(`Could not ${action} this suggestion.`);
+                return;
+              }
             }
             await this.refreshReviewRoomDocumentFromServer();
             await loadPanel();
