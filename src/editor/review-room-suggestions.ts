@@ -31,6 +31,8 @@ type SuggestionDocument = {
   marks?: Record<string, unknown> | null;
 };
 
+const MAX_INLINE_INSERT_GAP = 96;
+
 function normalizeSuggestionKind(raw: Record<string, unknown>): ReviewRoomSuggestionKind | null {
   const rawKind = typeof raw.kind === 'string' ? raw.kind : '';
   const kind = rawKind === 'suggestion' && typeof raw.suggestionKind === 'string'
@@ -110,25 +112,52 @@ function spanGap(markdown: string, left: PendingSuggestion, right: PendingSugges
   return markdown.slice(left.span.end, right.span.start);
 }
 
+function hasParagraphBreak(text: string): boolean {
+  return /\n\s*\n/.test(text);
+}
+
+function rangeGap(markdown: string, left: PendingSuggestion, right: PendingSuggestion): string | null {
+  if (!left.range || !right.range) return null;
+  if (right.range.from < left.range.to) return null;
+  if (right.range.from - left.range.to > MAX_INLINE_INSERT_GAP) return null;
+  if (!markdown) return '';
+  return markdown.slice(left.range.to, right.range.from);
+}
+
+function charGap(markdown: string, left: PendingSuggestion, right: PendingSuggestion): string | null {
+  if (left.charEnd === null || right.charStart === null) return null;
+  if (right.charStart < left.charEnd) return null;
+  if (right.charStart - left.charEnd > MAX_INLINE_INSERT_GAP) return null;
+  if (!markdown) return '';
+  return markdown.slice(left.charEnd, right.charStart);
+}
+
+function inlineMergeGap(markdown: string, left: PendingSuggestion, right: PendingSuggestion): string | null {
+  const rangeText = rangeGap(markdown, left, right);
+  if (rangeText !== null) return hasParagraphBreak(rangeText) ? null : rangeText;
+
+  const charText = charGap(markdown, left, right);
+  if (charText !== null) return hasParagraphBreak(charText) ? null : charText;
+
+  const spanText = spanGap(markdown, left, right);
+  if (spanText !== null) {
+    if (spanText.trim().length > 0 || hasParagraphBreak(spanText)) return null;
+    return spanText;
+  }
+
+  return null;
+}
+
 function areAdjacentInsertSuggestions(markdown: string, left: PendingSuggestion, right: PendingSuggestion): boolean {
   if (left.kind !== 'insert' || right.kind !== 'insert') return false;
   if (left.by !== right.by) return false;
 
-  if (left.range && right.range) {
-    return right.range.from >= left.range.to && right.range.from - left.range.to <= 1;
-  }
-
-  if (left.charEnd !== null && right.charStart !== null) {
-    return right.charStart >= left.charEnd && right.charStart - left.charEnd <= 1;
-  }
-
-  const gap = spanGap(markdown, left, right);
-  return gap !== null && gap.trim().length === 0;
+  return inlineMergeGap(markdown, left, right) !== null;
 }
 
 function mergeInsertGroup(markdown: string, left: PendingSuggestion, right: PendingSuggestion): PendingSuggestion {
-  const gap = spanGap(markdown, left, right);
-  const separator = gap && gap.trim().length === 0 ? gap : '';
+  const gap = inlineMergeGap(markdown, left, right);
+  const separator = gap ?? '';
   const sameQuote = left.quote.trim() && left.quote.trim() === right.quote.trim();
   return {
     ...left,
