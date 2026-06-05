@@ -5002,9 +5002,11 @@ class ProofEditorImpl implements ProofEditor {
           const meta = document.createElement('div');
           meta.textContent = `${suggestion.kind} by ${suggestion.by}${suggestion.count > 1 ? ` (${suggestion.count} adjacent chunks)` : ''}`;
           meta.style.cssText = 'font-size:12px;font-weight:750;color:#607064;';
-          const quote = document.createElement('div');
-          quote.textContent = suggestion.quote || (suggestion.kind === 'insert' && suggestion.count > 1 ? '(contiguous insert)' : '(insert at document end)');
-          quote.style.cssText = 'font-size:13px;line-height:1.4;color:#374151;background:#f7f8f3;border:1px solid #edf1e9;border-radius:6px;padding:8px;overflow-wrap:anywhere;';
+          const quote = suggestion.kind === 'insert' ? null : document.createElement('div');
+          if (quote) {
+            quote.textContent = suggestion.quote || '(insert at document end)';
+            quote.style.cssText = 'font-size:13px;line-height:1.4;color:#374151;background:#f7f8f3;border:1px solid #edf1e9;border-radius:6px;padding:8px;overflow-wrap:anywhere;';
+          }
           const content = document.createElement('div');
           content.textContent = suggestion.kind === 'delete' ? 'Delete selected text' : suggestion.content;
           content.style.cssText = 'font-size:14px;line-height:1.45;color:#1f2933;overflow-wrap:anywhere;';
@@ -5037,7 +5039,11 @@ class ProofEditorImpl implements ProofEditor {
           accept.onclick = () => { void runAction('accept'); };
           reject.onclick = () => { void runAction('reject'); };
           actions.append(accept, reject);
-          item.append(meta, quote, content, actions);
+          if (quote) {
+            item.append(meta, quote, content, actions);
+          } else {
+            item.append(meta, content, actions);
+          }
           body.appendChild(item);
         }
 
