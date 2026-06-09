@@ -16,6 +16,7 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
 const root = process.cwd();
 const indexHtml = readFileSync(path.join(root, 'src/index.html'), 'utf8');
 const editorSource = readFileSync(path.join(root, 'src/editor/index.ts'), 'utf8');
+const shareClientSource = readFileSync(path.join(root, 'src/bridge/share-client.ts'), 'utf8');
 const suggestionsSource = readFileSync(path.join(root, 'src/editor/plugins/suggestions.ts'), 'utf8');
 const markPopoverSource = readFileSync(path.join(root, 'src/editor/plugins/mark-popover.ts'), 'utf8');
 const selectionBarSource = readFileSync(path.join(root, 'src/editor/plugins/mark-selection-bar.ts'), 'utf8');
@@ -69,13 +70,27 @@ assert(
     && editorSource.includes("let commentFilter: 'open' | 'resolved' | 'all' = 'open';")
     && editorSource.includes('renderCommentFilterControls')
     && editorSource.includes('attachReviewItemFocus(item, comment.id)')
+    && editorSource.includes("if (target instanceof HTMLElement && target.closest('button, textarea, input, a')) return;")
     && editorSource.includes('activateReviewItem(markId)')
     && editorSource.includes('Comments (${visibleComments.length})')
     && editorSource.includes('No resolved comment threads.')
     && editorSource.includes('Review items could not load')
+    && editorSource.includes('shareClient.fetchReviewRoomHistory({ limit: 20 })')
+    && editorSource.includes('renderHistoryEvents(historyEvents)')
+    && editorSource.includes('Accepted suggestion')
+    && editorSource.includes('Before: ${beforeText}')
+    && editorSource.includes('After: ${afterText}')
     && markPopoverSource.includes('proof?.isReviewRoomRuntime?.()')
     && markPopoverSource.includes('proof.openReviewRoomReviewSidebar({ focusMarkId: markId })'),
-  'Expected Review Room comment threads to open, filter, focus, and resolve inside the Review sidebar',
+  'Expected Review Room comment threads and accepted suggestion history to open inside the Review sidebar',
+);
+assert(
+  shareClientSource.includes('async fetchReviewRoomHistory(')
+    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/history?limit=${limit}')
+    && shareClientSource.includes('ReviewRoomHistoryEvent')
+    && shareClientSource.includes('before: event.before')
+    && shareClientSource.includes('after: event.after'),
+  'Expected share client to expose typed Review Room history loading',
 );
 assert(
   editorSource.includes('private createReviewRoomSaveButton()')

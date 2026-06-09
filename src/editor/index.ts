@@ -146,7 +146,12 @@ import {
 import { syncAgentSessions } from '../analytics/agent-sessions';
 import { initThemePicker, getThemePicker } from '../ui/theme-picker';
 import { fileClient } from '../bridge/file-client';
-import { shareClient, type CollabSessionInfo, type SharePendingEvent } from '../bridge/share-client';
+import {
+  shareClient,
+  type CollabSessionInfo,
+  type ReviewRoomHistoryEvent,
+  type SharePendingEvent,
+} from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
 import { getReviewRoomSuggestionGroups } from './review-room-suggestions';
@@ -4847,6 +4852,8 @@ class ProofEditorImpl implements ProofEditor {
       };
       item.addEventListener('click', maybeFocus);
       item.addEventListener('keydown', (event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement && target.closest('button, textarea, input, a')) return;
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         activateReviewItem(markId);
@@ -4878,6 +4885,80 @@ class ProofEditorImpl implements ProofEditor {
         wrap.appendChild(button);
       }
       body.appendChild(wrap);
+    };
+
+    const readHistoryText = (payload: Record<string, unknown> | null | undefined, keys: string[]): string => {
+      if (!payload) return '';
+      for (const key of keys) {
+        const value = payload[key];
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      return '';
+    };
+
+    const formatHistoryTime = (value: string): string => {
+      if (!value) return '';
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return '';
+      return date.toLocaleString();
+    };
+
+    const historyTitle = (event: ReviewRoomHistoryEvent): string => {
+      if (event.eventType === 'suggestion.accepted') return 'Accepted suggestion';
+      if (event.eventType === 'suggestion.rejected') return 'Rejected suggestion';
+      if (event.eventType === 'document.created') return 'Created document';
+      if (event.eventType === 'document.registered') return 'Registered document';
+      return event.eventType.replace(/\./g, ' ');
+    };
+
+    const renderHistoryEvents = (events: ReviewRoomHistoryEvent[]) => {
+      const visibleEvents = events.slice(0, 8);
+      body.appendChild(sectionHeading(`History (${events.length})`));
+      if (visibleEvents.length === 0) {
+        const empty = document.createElement('div');
+        empty.textContent = 'No Review Room history yet.';
+        empty.style.cssText = 'padding:8px 18px 16px;color:#607064;font-size:13px;line-height:1.45;';
+        body.appendChild(empty);
+        return;
+      }
+      for (const event of visibleEvents) {
+        const item = row();
+        item.dataset.reviewHistoryEvent = event.id;
+        item.style.background = '#fbfcf8';
+        const meta = document.createElement('div');
+        const timestamp = formatHistoryTime(event.createdAt);
+        meta.textContent = `${historyTitle(event)} by ${event.actorId}${timestamp ? ` - ${timestamp}` : ''}`;
+        meta.style.cssText = 'font-size:12px;font-weight:750;color:#607064;';
+        item.appendChild(meta);
+
+        const beforeText = readHistoryText(event.before, ['beforeContent', 'quote', 'content', 'title']);
+        const afterText = readHistoryText(event.after, ['afterContent', 'content', 'title', 'quote']);
+        if (beforeText || afterText) {
+          const diff = document.createElement('div');
+          diff.style.cssText = 'display:grid;gap:7px;';
+          if (beforeText) {
+            const before = document.createElement('div');
+            before.textContent = `Before: ${beforeText}`;
+            before.style.cssText = 'font-size:13px;line-height:1.4;color:#5f3730;background:#fff7f5;border:1px solid #f3d2cc;border-radius:6px;padding:8px;overflow-wrap:anywhere;';
+            diff.appendChild(before);
+          }
+          if (afterText) {
+            const after = document.createElement('div');
+            after.textContent = `After: ${afterText}`;
+            after.style.cssText = 'font-size:13px;line-height:1.4;color:#1f5f4c;background:#f2faf6;border:1px solid #cfe8dc;border-radius:6px;padding:8px;overflow-wrap:anywhere;';
+            diff.appendChild(after);
+          }
+          item.appendChild(diff);
+        }
+
+        if (event.targetId) {
+          const target = document.createElement('div');
+          target.textContent = `Target: ${event.targetType || 'item'} ${event.targetId}`;
+          target.style.cssText = 'font-size:11px;color:#7b897c;overflow-wrap:anywhere;';
+          item.appendChild(target);
+        }
+        body.appendChild(item);
+      }
     };
 
     const renderSelectedTextComposer = (): HTMLElement | null => {
@@ -4929,11 +5010,20 @@ class ProofEditorImpl implements ProofEditor {
     const loadPanel = async () => {
       renderLoading();
       try {
-        const doc = await shareClient.fetchDocument();
+        const [doc, historyResult] = await Promise.all([
+          shareClient.fetchDocument(),
+          shareClient.fetchReviewRoomHistory({ limit: 20 }).catch((error) => {
+            console.warn('[review-room] history load failed', error);
+            return null;
+          }),
+        ]);
         if (!doc) {
           renderError('Could not load this document.');
           return;
         }
+        const historyEvents = historyResult && !('error' in historyResult) && historyResult.success
+          ? historyResult.events
+          : [];
         const marks = doc.marks ?? {};
         const suggestions = getReviewRoomSuggestionGroups(doc);
         const comments: Array<{
@@ -4977,7 +5067,7 @@ class ProofEditorImpl implements ProofEditor {
         body.innerHTML = '';
         const selectedComposer = renderSelectedTextComposer();
         if (selectedComposer) body.appendChild(selectedComposer);
-        if (suggestions.length === 0 && comments.length === 0 && !selectedComposer) {
+        if (suggestions.length === 0 && comments.length === 0 && historyEvents.length === 0 && !selectedComposer) {
           renderState('No review items', 'Comments and suggestions will appear here when someone adds feedback to this document.');
           return;
         }
@@ -5167,6 +5257,7 @@ class ProofEditorImpl implements ProofEditor {
           item.append(meta, quote, thread, replyBox, actions);
           body.appendChild(item);
         }
+        renderHistoryEvents(historyEvents);
       } catch (error) {
         renderError(error instanceof Error ? error.message : 'Could not load review items.');
       }

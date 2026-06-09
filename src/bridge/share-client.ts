@@ -78,6 +78,28 @@ export interface SharePendingEventsResponse {
   cursor: number;
 }
 
+export interface ReviewRoomHistoryEvent {
+  id: string;
+  workspaceId?: string;
+  documentId?: string | null;
+  actorId: string;
+  actorType: string;
+  eventType: string;
+  targetType?: string | null;
+  targetId?: string | null;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  rationale?: string | null;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ReviewRoomHistoryResponse {
+  success: boolean;
+  events: ReviewRoomHistoryEvent[];
+  document?: Record<string, unknown>;
+}
+
 export type ShareRequestError = {
   error: {
     status: number;
@@ -276,6 +298,10 @@ export class ShareClient {
   private getApiBase(): string {
     const origin = this.apiOriginOverride || window.location.origin;
     return `${origin}/api`;
+  }
+
+  private getOriginBase(): string {
+    return this.apiOriginOverride || window.location.origin;
   }
 
   getApiBaseUrl(): string {
@@ -685,6 +711,49 @@ export class ShareClient {
             ackedBy: typeof event?.ackedBy === 'string' ? event.ackedBy : null,
           }))
         : [],
+    };
+  }
+
+  async fetchReviewRoomHistory(
+    options?: { token?: string; limit?: number },
+  ): Promise<ReviewRoomHistoryResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const limit = Math.max(1, Math.min(100, Math.trunc(options?.limit ?? 20)));
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/history?limit=${limit}`, {
+      headers: this.getShareAuthHeaders(options?.token),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const rawEvents = Array.isArray(payload?.events) ? payload.events : [];
+    return {
+      success: payload?.success === true,
+      document: payload?.document && typeof payload.document === 'object' && !Array.isArray(payload.document)
+        ? payload.document as Record<string, unknown>
+        : undefined,
+      events: rawEvents
+        .filter((event): event is Record<string, unknown> => Boolean(event) && typeof event === 'object' && !Array.isArray(event))
+        .filter((event) => typeof event.id === 'string' && typeof event.eventType === 'string')
+        .map((event) => ({
+          id: String(event.id),
+          workspaceId: typeof event.workspaceId === 'string' ? event.workspaceId : undefined,
+          documentId: typeof event.documentId === 'string' ? event.documentId : null,
+          actorId: typeof event.actorId === 'string' ? event.actorId : 'unknown',
+          actorType: typeof event.actorType === 'string' ? event.actorType : 'unknown',
+          eventType: String(event.eventType),
+          targetType: typeof event.targetType === 'string' ? event.targetType : null,
+          targetId: typeof event.targetId === 'string' ? event.targetId : null,
+          before: event.before && typeof event.before === 'object' && !Array.isArray(event.before)
+            ? event.before as Record<string, unknown>
+            : null,
+          after: event.after && typeof event.after === 'object' && !Array.isArray(event.after)
+            ? event.after as Record<string, unknown>
+            : null,
+          rationale: typeof event.rationale === 'string' ? event.rationale : null,
+          metadata: event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
+            ? event.metadata as Record<string, unknown>
+            : {},
+          createdAt: typeof event.createdAt === 'string' ? event.createdAt : '',
+        })),
     };
   }
 

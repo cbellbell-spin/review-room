@@ -177,6 +177,7 @@ async function run(): Promise<void> {
     assert(neutralDeleted.success === true && neutralDeleted.shareState === 'DELETED', 'Expected hosted neutral create cleanup');
 
     const created = await json<{
+      document: { historyPath?: string };
       proof: { slug: string; accessToken: string };
     }>(await fetch(`${base}/review-room/api/documents`, {
       method: 'POST',
@@ -187,6 +188,30 @@ async function run(): Promise<void> {
       }),
     }));
     const { slug, accessToken } = created.proof;
+    assert(
+      created.document.historyPath === `/review-room/api/documents/${slug}/history`,
+      'Expected Review Room document payload to advertise product history path',
+    );
+    const agentRegistry = await json<{ success: boolean; agents: Array<{ id?: string; name?: string; capabilities?: string[] }> }>(
+      await fetch(`${base}/review-room/api/agents`),
+    );
+    assert(agentRegistry.success === true, 'Expected hosted Review Room agent registry success');
+    assert(
+      agentRegistry.agents.some((agent) => agent.id === 'agent-reviewer' && agent.capabilities?.includes('suggestion')),
+      'Expected hosted Review Room agent registry to include the default review agent',
+    );
+    const productHistory = await json<{ success: boolean; events: Array<{ eventType?: string; targetType?: string; after?: { proofSlug?: string } }> }>(
+      await fetch(`${base}${created.document.historyPath}`),
+    );
+    assert(productHistory.success === true, 'Expected hosted Review Room history success');
+    assert(
+      productHistory.events.some((event) => (
+        event.eventType === 'document.created'
+        && event.targetType === 'document'
+        && event.after?.proofSlug === slug
+      )),
+      'Expected hosted Review Room history to include document.created event',
+    );
     const authHeaders = {
       'Content-Type': 'application/json',
       'x-share-token': accessToken,
@@ -324,6 +349,32 @@ async function run(): Promise<void> {
         && accepted.markdown.includes('Original paragraph, revised as a pending review suggestion.'),
       'Expected hosted suggestion acceptance to apply content and update mark status',
     );
+    const historyAfterAccept = await json<{
+      success: boolean;
+      events: Array<{
+        eventType?: string;
+        targetType?: string;
+        targetId?: string;
+        actorId?: string;
+        before?: { status?: string; beforeContent?: string };
+        after?: { status?: string; afterContent?: string };
+        metadata?: { proofSlug?: string };
+      }>;
+    }>(await fetch(`${base}${created.document.historyPath}`));
+    assert(
+      historyAfterAccept.events.some((event) => (
+        event.eventType === 'suggestion.accepted'
+        && event.targetType === 'suggestion'
+        && event.targetId === bridgeSuggestion.markId
+        && event.actorId === 'human:reviewer'
+        && event.before?.status === 'pending'
+        && event.before.beforeContent === 'Original paragraph.'
+        && event.after?.status === 'accepted'
+        && event.after.afterContent === 'Original paragraph, revised as a pending review suggestion.'
+        && event.metadata?.proofSlug === slug
+      )),
+      'Expected hosted Review Room history to include accepted suggestion change details',
+    );
 
     const rejectedSuggestion = await json<{ success: boolean; markId?: string }>(
       await fetch(`${base}/api/agent/${slug}/ops`, {
@@ -352,6 +403,41 @@ async function run(): Promise<void> {
     assert(
       rejected.success === true && rejected.marks?.[rejectedSuggestion.markId!]?.status === 'rejected',
       'Expected hosted suggestion rejection to update mark status',
+    );
+
+    const headingInsertSuggestion = await json<{ success: boolean; markId?: string }>(
+      await fetch(`${base}/api/agent/${slug}/ops`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          type: 'suggestion.add',
+          by: 'ai:hosted-route-test',
+          kind: 'insert',
+          quote: 'Hosted doc',
+          content: '## Inserted heading\n\nInserted body.',
+        }),
+      }),
+    );
+    assert(headingInsertSuggestion.success === true && typeof headingInsertSuggestion.markId === 'string', 'Expected hosted heading insert suggestion mark');
+    const acceptedHeadingInsert = await json<{ success: boolean; markdown?: string }>(
+      await fetch(`${base}/api/agent/${slug}/marks/accept`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          markId: headingInsertSuggestion.markId,
+          by: 'human:reviewer',
+        }),
+      }),
+    );
+    assert(
+      acceptedHeadingInsert.success === true
+        && typeof acceptedHeadingInsert.markdown === 'string'
+        && acceptedHeadingInsert.markdown.includes('# Hosted doc\n\n## Inserted heading\n\nInserted body.'),
+      'Expected hosted accepted heading insert to normalize Markdown block spacing',
+    );
+    assert(
+      !String(acceptedHeadingInsert.markdown).includes('# Hosted doc## Inserted heading'),
+      'Expected hosted accepted heading insert not to concatenate Markdown headings',
     );
 
     const bridgeRewriteResponse = await fetch(`${base}/documents/${slug}/bridge/rewrite`, {

@@ -2,8 +2,10 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import { createClient, type Client, type ResultSet } from '@libsql/client';
 import type {
   DocumentRow,
+  ReviewRoomAgentRow,
   ReviewRoomDocumentMemberRow,
   ReviewRoomDocumentRow,
+  ReviewRoomHistoryEventRow,
   ReviewRoomIdentityRow,
   ReviewRoomRole,
 } from './db.js';
@@ -199,6 +201,77 @@ async function ensureHostedReviewRoomDatabase(): Promise<Client> {
       PRIMARY KEY (review_room_document_id, identity_id)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_review_room_members_token ON review_room_document_members(proof_access_token)`,
+    `CREATE TABLE IF NOT EXISTS review_room_agents (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_identity_id TEXT NOT NULL,
+      manager_identity_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      integration_type TEXT NOT NULL DEFAULT 'local',
+      capabilities_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_review_room_agents_workspace_name ON review_room_agents(workspace_id, name)`,
+    `CREATE INDEX IF NOT EXISTS idx_review_room_agents_manager ON review_room_agents(manager_identity_id, updated_at)`,
+    `CREATE TABLE IF NOT EXISTS review_room_document_agent_settings (
+      document_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      auto_accept_mode TEXT NOT NULL DEFAULT 'off',
+      allowed_auto_accept_categories_json TEXT NOT NULL DEFAULT '[]',
+      created_by_identity_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (document_id, agent_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS review_room_assignment_tasks (
+      id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL,
+      proof_event_id INTEGER,
+      source_type TEXT NOT NULL,
+      source_id TEXT,
+      created_by_actor_id TEXT NOT NULL,
+      created_by_actor_type TEXT NOT NULL,
+      assigned_to_actor_id TEXT NOT NULL,
+      assigned_to_actor_type TEXT NOT NULL,
+      manager_identity_id TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_review_room_tasks_document_status ON review_room_assignment_tasks(document_id, status, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_review_room_tasks_assignee_status ON review_room_assignment_tasks(assigned_to_actor_id, status, created_at)`,
+    `CREATE TABLE IF NOT EXISTS review_room_published_versions (
+      id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL,
+      version_number INTEGER NOT NULL,
+      proof_revision INTEGER,
+      content_snapshot TEXT NOT NULL,
+      created_by_identity_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      note TEXT,
+      UNIQUE (document_id, version_number)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_review_room_published_versions_document ON review_room_published_versions(document_id, version_number)`,
+    `CREATE TABLE IF NOT EXISTS review_room_history_events (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      document_id TEXT,
+      actor_id TEXT NOT NULL,
+      actor_type TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      before_json TEXT,
+      after_json TEXT,
+      rationale TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_review_room_history_document_created ON review_room_history_events(document_id, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_review_room_history_workspace_created ON review_room_history_events(workspace_id, created_at)`,
     `CREATE TABLE IF NOT EXISTS get_action_aliases (
       alias_hash TEXT PRIMARY KEY,
       document_slug TEXT NOT NULL,
@@ -242,6 +315,25 @@ async function ensureHostedReviewRoomDatabase(): Promise<Client> {
         REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
         REVIEW_ROOM_LOCAL_AGENT_NAME,
         REVIEW_ROOM_LOCAL_HUMAN_ID,
+        now,
+        now,
+      ],
+    ],
+    [
+      `INSERT INTO review_room_agents (
+        id, workspace_id, owner_identity_id, manager_identity_id, name, description, integration_type,
+        capabilities_json, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, 'local', ?, ?, ?)
+      ON CONFLICT (id) DO NOTHING`,
+      [
+        REVIEW_ROOM_LOCAL_AGENT_ID,
+        REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+        REVIEW_ROOM_LOCAL_HUMAN_ID,
+        REVIEW_ROOM_LOCAL_HUMAN_ID,
+        REVIEW_ROOM_LOCAL_AGENT_NAME,
+        'Default local review agent used for early Review Room task flows.',
+        JSON.stringify(['comment', 'question', 'suggestion', 'redline']),
         now,
         now,
       ],
@@ -738,6 +830,97 @@ export async function listHostedReviewRoomDocuments(workspaceId: string = REVIEW
   `, [workspaceId, safeLimit]);
 }
 
+export async function listHostedReviewRoomAgents(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID): Promise<ReviewRoomAgentRow[]> {
+  return executeAll<ReviewRoomAgentRow>(`
+    SELECT
+      id,
+      workspace_id,
+      owner_identity_id,
+      manager_identity_id,
+      name,
+      description,
+      integration_type,
+      capabilities_json,
+      created_at,
+      updated_at
+    FROM review_room_agents
+    WHERE workspace_id = ?
+    ORDER BY name ASC
+  `, [workspaceId]);
+}
+
+export async function createHostedReviewRoomHistoryEvent(input: {
+  workspaceId?: string;
+  documentId?: string | null;
+  actorId: string;
+  actorType: ReviewRoomHistoryEventRow['actor_type'];
+  eventType: string;
+  targetType?: string | null;
+  targetId?: string | null;
+  before?: unknown;
+  after?: unknown;
+  rationale?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): Promise<ReviewRoomHistoryEventRow> {
+  const db = await ensureHostedReviewRoomDatabase();
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `INSERT INTO review_room_history_events (
+      id, workspace_id, document_id, actor_id, actor_type, event_type, target_type, target_id,
+      before_json, after_json, rationale, metadata_json, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      id,
+      input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+      input.documentId ?? null,
+      input.actorId,
+      input.actorType,
+      input.eventType,
+      input.targetType ?? null,
+      input.targetId ?? null,
+      input.before === undefined ? null : JSON.stringify(input.before),
+      input.after === undefined ? null : JSON.stringify(input.after),
+      input.rationale ?? null,
+      JSON.stringify(input.metadata ?? {}),
+      now,
+    ],
+  });
+  const row = await execute<ReviewRoomHistoryEventRow>(`
+    SELECT *
+    FROM review_room_history_events
+    WHERE id = ?
+    LIMIT 1
+  `, [id]);
+  if (!row) throw new Error('Hosted Review Room history event was not persisted.');
+  return row;
+}
+
+export async function listHostedReviewRoomHistoryEvents(input: {
+  workspaceId?: string;
+  documentId?: string | null;
+  limit?: number;
+} = {}): Promise<ReviewRoomHistoryEventRow[]> {
+  const safeLimit = Math.max(1, Math.min(Math.trunc(input.limit ?? 100), 500));
+  if (input.documentId) {
+    return executeAll<ReviewRoomHistoryEventRow>(`
+      SELECT *
+      FROM review_room_history_events
+      WHERE document_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `, [input.documentId, safeLimit]);
+  }
+  return executeAll<ReviewRoomHistoryEventRow>(`
+    SELECT *
+    FROM review_room_history_events
+    WHERE workspace_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `, [input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID, safeLimit]);
+}
+
 export async function createHostedDocumentAccessToken(
   slug: string,
   role: ShareRole,
@@ -849,6 +1032,7 @@ export async function createHostedReviewRoomDocument(input: {
   const editorAccess = { tokenId: randomUUID(), secret: randomUUID() };
   const ownerAccess = { tokenId: randomUUID(), secret: randomUUID() };
   const reviewRoomDocumentId = randomUUID();
+  const historyEventId = randomUUID();
   const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
   const identityId = input.identityId || REVIEW_ROOM_LOCAL_HUMAN_ID;
   const marksJson = JSON.stringify(input.marks ?? {});
@@ -894,6 +1078,23 @@ export async function createHostedReviewRoomDocument(input: {
       )
       VALUES (?, ?, 'owner', ?, ?, ?, ?)`,
       [reviewRoomDocumentId, identityId, ownerAccess.tokenId, ownerAccess.secret, now, now],
+    ],
+    [
+      `INSERT INTO review_room_history_events (
+        id, workspace_id, document_id, actor_id, actor_type, event_type, target_type, target_id,
+        before_json, after_json, rationale, metadata_json, created_at
+      )
+      VALUES (?, ?, ?, ?, 'human', 'document.created', 'document', ?, NULL, ?, NULL, ?, ?)`,
+      [
+        historyEventId,
+        workspaceId,
+        reviewRoomDocumentId,
+        identityId,
+        reviewRoomDocumentId,
+        JSON.stringify({ title: input.title, proofSlug: input.slug, proofDocId: docId }),
+        JSON.stringify({ proofSlug: input.slug, source: 'created' }),
+        now,
+      ],
     ],
     [
       `INSERT INTO events (document_slug, event_type, event_data, actor, created_at)
@@ -1337,7 +1538,7 @@ async function addHostedSuggestion(slug: string, body: Record<string, unknown>):
   const by = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'ai:unknown';
   const kind = typeof body.kind === 'string' && body.kind.trim() ? body.kind.trim() : 'replace';
   const quote = typeof body.quote === 'string' ? body.quote.trim() : '';
-  const content = typeof body.content === 'string' ? body.content : '';
+  const content = normalizeHostedInsertSuggestionContent(typeof body.content === 'string' ? body.content : '', kind);
   if (!quote && kind !== 'insert') return { status: 400, body: { success: false, error: 'Missing quote' } };
   if (quote && !doc.markdown.includes(quote)) {
     return {
@@ -1366,6 +1567,88 @@ function getHostedSuggestionKind(mark: Record<string, unknown>): 'insert' | 'del
   const suggestionKind = typeof mark.suggestionKind === 'string' ? mark.suggestionKind : '';
   if (suggestionKind === 'insert' || suggestionKind === 'delete' || suggestionKind === 'replace') return suggestionKind;
   return null;
+}
+
+function hostedReviewRoomActorType(actor: string): 'human' | 'agent' {
+  return actor.trim().toLowerCase().startsWith('ai:') ? 'agent' : 'human';
+}
+
+function hostedSuggestionChangeContent(
+  mark: Record<string, unknown>,
+  status: 'accepted' | 'rejected',
+): { beforeContent: string; afterContent: string } {
+  const kind = getHostedSuggestionKind(mark);
+  const quote = typeof mark.quote === 'string' ? mark.quote : '';
+  const content = typeof mark.content === 'string' ? mark.content : '';
+  if (status === 'rejected') return { beforeContent: quote, afterContent: quote };
+  if (kind === 'delete') return { beforeContent: quote, afterContent: '' };
+  if (kind === 'insert') return { beforeContent: '', afterContent: content };
+  return { beforeContent: quote, afterContent: content };
+}
+
+function normalizeHostedInsertSuggestionContent(content: string, kind: string): string {
+  if (kind !== 'insert' || content.length === 0 || content.startsWith('\n')) return content;
+  if (/^(?: {0,3}#{1,6}\s| {0,3}(?:[-*+]|\d+[.)])\s| {0,3}>\s| {0,3}(?:```|~~~)| {0,3}\|)/.test(content)) {
+    return `\n\n${content}`;
+  }
+  return content;
+}
+
+async function recordHostedReviewRoomSuggestionDecisionHistory(input: {
+  slug: string;
+  markId: string;
+  status: 'accepted' | 'rejected';
+  actor: string;
+  mark: Record<string, unknown>;
+  beforeRevision?: number | null;
+  afterRevision?: number | null;
+  eventId?: unknown;
+}): Promise<void> {
+  const reviewRoomDocument = await getHostedReviewRoomDocumentByProofSlug(input.slug);
+  if (!reviewRoomDocument) return;
+  const kind = getHostedSuggestionKind(input.mark) ?? 'suggestion';
+  const quote = typeof input.mark.quote === 'string' ? input.mark.quote : '';
+  const content = typeof input.mark.content === 'string' ? input.mark.content : '';
+  const previousStatus = typeof input.mark.status === 'string' ? input.mark.status : 'pending';
+  const { beforeContent, afterContent } = hostedSuggestionChangeContent(input.mark, input.status);
+  try {
+    await createHostedReviewRoomHistoryEvent({
+      workspaceId: reviewRoomDocument.workspace_id,
+      documentId: reviewRoomDocument.id,
+      actorId: input.actor,
+      actorType: hostedReviewRoomActorType(input.actor),
+      eventType: `suggestion.${input.status}`,
+      targetType: 'suggestion',
+      targetId: input.markId,
+      before: {
+        status: previousStatus,
+        kind,
+        quote,
+        content,
+        beforeContent,
+      },
+      after: {
+        status: input.status,
+        kind,
+        quote,
+        content,
+        afterContent,
+      },
+      metadata: {
+        proofSlug: input.slug,
+        proofRevisionBefore: input.beforeRevision ?? null,
+        proofRevisionAfter: input.afterRevision ?? null,
+        proofEventId: typeof input.eventId === 'number' ? input.eventId : null,
+      },
+    });
+  } catch (error) {
+    console.warn('[review-room] Failed to record hosted suggestion decision history:', {
+      slug: input.slug,
+      markId: input.markId,
+      status: input.status,
+      error,
+    });
+  }
 }
 
 function applyHostedAcceptedSuggestion(
@@ -1439,7 +1722,21 @@ async function updateHostedSuggestionStatus(
     },
   };
   if (status === 'rejected') {
-    return persistHostedMarks(slug, nextMarks, by, 'suggestion.rejected', { markId, status, by });
+    const result = await persistHostedMarks(slug, nextMarks, by, 'suggestion.rejected', { markId, status, by });
+    if (result.status >= 200 && result.status < 300) {
+      const nextDoc = await getHostedDocumentBySlug(slug);
+      await recordHostedReviewRoomSuggestionDecisionHistory({
+        slug,
+        markId,
+        status,
+        actor: by,
+        mark: existingRecord,
+        beforeRevision: doc.revision,
+        afterRevision: nextDoc?.revision ?? doc.revision + 1,
+        eventId: result.body.eventId,
+      });
+    }
+    return result;
   }
 
   const applied = applyHostedAcceptedSuggestion(doc.markdown, existingRecord);
@@ -1451,8 +1748,18 @@ async function updateHostedSuggestionStatus(
     actor: by,
   });
   if (updated.status < 200 || updated.status >= 300) return updated;
-  await addHostedDocumentEvent(slug, 'suggestion.accepted', { markId, status, by }, by);
+  const proofEventId = await addHostedDocumentEvent(slug, 'suggestion.accepted', { markId, status, by }, by);
   const nextDoc = await getHostedDocumentBySlug(slug);
+  await recordHostedReviewRoomSuggestionDecisionHistory({
+    slug,
+    markId,
+    status,
+    actor: by,
+    mark: existingRecord,
+    beforeRevision: doc.revision,
+    afterRevision: nextDoc?.revision ?? doc.revision + 1,
+    eventId: proofEventId,
+  });
   return {
     status: 200,
     body: {

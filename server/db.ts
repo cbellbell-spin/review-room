@@ -312,6 +312,75 @@ export interface ReviewRoomDocumentMemberRow {
   proof_slug?: string;
 }
 
+export interface ReviewRoomAgentRow {
+  id: string;
+  workspace_id: string;
+  owner_identity_id: string;
+  manager_identity_id: string;
+  name: string;
+  description: string | null;
+  integration_type: 'local' | 'webhook' | 'mcp' | 'manual';
+  capabilities_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReviewRoomDocumentAgentSettingsRow {
+  document_id: string;
+  agent_id: string;
+  auto_accept_mode: 'off' | 'suggestions' | 'all';
+  allowed_auto_accept_categories_json: string;
+  created_by_identity_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ReviewRoomAssignmentTaskStatus = 'open' | 'running' | 'delegated' | 'dismissed' | 'completed';
+
+export interface ReviewRoomAssignmentTaskRow {
+  id: string;
+  document_id: string;
+  proof_event_id: number | null;
+  source_type: string;
+  source_id: string | null;
+  created_by_actor_id: string;
+  created_by_actor_type: 'human' | 'agent' | 'system';
+  assigned_to_actor_id: string;
+  assigned_to_actor_type: 'human' | 'agent';
+  manager_identity_id: string | null;
+  status: ReviewRoomAssignmentTaskStatus;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface ReviewRoomPublishedVersionRow {
+  id: string;
+  document_id: string;
+  version_number: number;
+  proof_revision: number | null;
+  content_snapshot: string;
+  created_by_identity_id: string;
+  created_at: string;
+  note: string | null;
+}
+
+export interface ReviewRoomHistoryEventRow {
+  id: string;
+  workspace_id: string;
+  document_id: string | null;
+  actor_id: string;
+  actor_type: 'human' | 'agent' | 'system';
+  event_type: string;
+  target_type: string | null;
+  target_id: string | null;
+  before_json: string | null;
+  after_json: string | null;
+  rationale: string | null;
+  metadata_json: string;
+  created_at: string;
+}
+
 export interface DocumentAuthStateRow {
   slug: string;
   doc_id: string | null;
@@ -1490,6 +1559,103 @@ function initDatabase(): void {
   d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_members_identity ON review_room_document_members(identity_id, updated_at)');
   d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_members_token ON review_room_document_members(proof_access_token)');
 
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_agents (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_identity_id TEXT NOT NULL,
+      manager_identity_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      integration_type TEXT NOT NULL DEFAULT 'local',
+      capabilities_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES review_room_workspaces(id),
+      FOREIGN KEY (owner_identity_id) REFERENCES review_room_identities(id),
+      FOREIGN KEY (manager_identity_id) REFERENCES review_room_identities(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_agents_workspace_name ON review_room_agents(workspace_id, name)');
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_agents_manager ON review_room_agents(manager_identity_id, updated_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_document_agent_settings (
+      document_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      auto_accept_mode TEXT NOT NULL DEFAULT 'off',
+      allowed_auto_accept_categories_json TEXT NOT NULL DEFAULT '[]',
+      created_by_identity_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (document_id, agent_id),
+      FOREIGN KEY (document_id) REFERENCES review_room_documents(id),
+      FOREIGN KEY (agent_id) REFERENCES review_room_agents(id),
+      FOREIGN KEY (created_by_identity_id) REFERENCES review_room_identities(id)
+    )
+  `);
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_assignment_tasks (
+      id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL,
+      proof_event_id INTEGER,
+      source_type TEXT NOT NULL,
+      source_id TEXT,
+      created_by_actor_id TEXT NOT NULL,
+      created_by_actor_type TEXT NOT NULL,
+      assigned_to_actor_id TEXT NOT NULL,
+      assigned_to_actor_type TEXT NOT NULL,
+      manager_identity_id TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT,
+      FOREIGN KEY (document_id) REFERENCES review_room_documents(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_tasks_document_status ON review_room_assignment_tasks(document_id, status, created_at)');
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_tasks_assignee_status ON review_room_assignment_tasks(assigned_to_actor_id, status, created_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_published_versions (
+      id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL,
+      version_number INTEGER NOT NULL,
+      proof_revision INTEGER,
+      content_snapshot TEXT NOT NULL,
+      created_by_identity_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      note TEXT,
+      UNIQUE (document_id, version_number),
+      FOREIGN KEY (document_id) REFERENCES review_room_documents(id),
+      FOREIGN KEY (created_by_identity_id) REFERENCES review_room_identities(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_published_versions_document ON review_room_published_versions(document_id, version_number)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS review_room_history_events (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      document_id TEXT,
+      actor_id TEXT NOT NULL,
+      actor_type TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      before_json TEXT,
+      after_json TEXT,
+      rationale TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES review_room_workspaces(id),
+      FOREIGN KEY (document_id) REFERENCES review_room_documents(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_history_document_created ON review_room_history_events(document_id, created_at)');
+  d.exec('CREATE INDEX IF NOT EXISTS idx_review_room_history_workspace_created ON review_room_history_events(workspace_id, created_at)');
+
   ensureReviewRoomDefaults(d);
   backfillReviewRoomDocumentOwnerMemberships(d);
 }
@@ -1517,6 +1683,25 @@ function ensureReviewRoomDefaults(d: Database.Database): void {
     REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
     REVIEW_ROOM_LOCAL_AGENT_NAME,
     REVIEW_ROOM_LOCAL_HUMAN_ID,
+    now,
+    now,
+  );
+
+  d.prepare(`
+    INSERT INTO review_room_agents (
+      id, workspace_id, owner_identity_id, manager_identity_id, name, description, integration_type,
+      capabilities_json, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, 'local', ?, ?, ?)
+    ON CONFLICT (id) DO NOTHING
+  `).run(
+    REVIEW_ROOM_LOCAL_AGENT_ID,
+    REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+    REVIEW_ROOM_LOCAL_HUMAN_ID,
+    REVIEW_ROOM_LOCAL_HUMAN_ID,
+    REVIEW_ROOM_LOCAL_AGENT_NAME,
+    'Default local review agent used for early Review Room task flows.',
+    JSON.stringify(['comment', 'question', 'suggestion', 'redline']),
     now,
     now,
   );
@@ -4214,6 +4399,96 @@ export function listReviewRoomDocuments(workspaceId: string = REVIEW_ROOM_DEFAUL
     ORDER BY rr.updated_at DESC
     LIMIT ?
   `).all(workspaceId, safeLimit) as ReviewRoomDocumentRow[];
+}
+
+export function listReviewRoomAgents(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID): ReviewRoomAgentRow[] {
+  return getDb().prepare(`
+    SELECT
+      id,
+      workspace_id,
+      owner_identity_id,
+      manager_identity_id,
+      name,
+      description,
+      integration_type,
+      capabilities_json,
+      created_at,
+      updated_at
+    FROM review_room_agents
+    WHERE workspace_id = ?
+    ORDER BY name ASC
+  `).all(workspaceId) as ReviewRoomAgentRow[];
+}
+
+export function createReviewRoomHistoryEvent(input: {
+  workspaceId?: string;
+  documentId?: string | null;
+  actorId: string;
+  actorType: ReviewRoomHistoryEventRow['actor_type'];
+  eventType: string;
+  targetType?: string | null;
+  targetId?: string | null;
+  before?: unknown;
+  after?: unknown;
+  rationale?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): ReviewRoomHistoryEventRow {
+  assertWritesAllowed('createReviewRoomHistoryEvent');
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO review_room_history_events (
+      id, workspace_id, document_id, actor_id, actor_type, event_type, target_type, target_id,
+      before_json, after_json, rationale, metadata_json, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+    input.documentId ?? null,
+    input.actorId,
+    input.actorType,
+    input.eventType,
+    input.targetType ?? null,
+    input.targetId ?? null,
+    input.before === undefined ? null : JSON.stringify(input.before),
+    input.after === undefined ? null : JSON.stringify(input.after),
+    input.rationale ?? null,
+    JSON.stringify(input.metadata ?? {}),
+    now,
+  );
+  const row = getDb().prepare(`
+    SELECT *
+    FROM review_room_history_events
+    WHERE id = ?
+    LIMIT 1
+  `).get(id) as ReviewRoomHistoryEventRow | undefined;
+  if (!row) throw new Error('Review Room history event was not persisted.');
+  return row;
+}
+
+export function listReviewRoomHistoryEvents(input: {
+  workspaceId?: string;
+  documentId?: string | null;
+  limit?: number;
+} = {}): ReviewRoomHistoryEventRow[] {
+  const safeLimit = Math.max(1, Math.min(Math.trunc(input.limit ?? 100), 500));
+  if (input.documentId) {
+    return getDb().prepare(`
+      SELECT *
+      FROM review_room_history_events
+      WHERE document_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(input.documentId, safeLimit) as ReviewRoomHistoryEventRow[];
+  }
+  return getDb().prepare(`
+    SELECT *
+    FROM review_room_history_events
+    WHERE workspace_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID, safeLimit) as ReviewRoomHistoryEventRow[];
 }
 
 export function listUserOwnedDocuments(everyUserId: number, limit: number = 50): DashboardDocumentRow[] {

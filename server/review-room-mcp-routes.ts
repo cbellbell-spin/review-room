@@ -27,6 +27,14 @@ type ReviewRoomTool = {
 export const reviewRoomMcpRoutes = Router();
 
 const MCP_PROTOCOL_VERSION = '2024-11-05';
+const MCP_SERVER_INSTRUCTIONS = [
+  'Review Room is a human-controlled document review workspace.',
+  'Read document state before writing.',
+  'Use comments for questions, ambiguity, risks, and rationale.',
+  'Use suggestions for proposed edits that humans should accept or reject.',
+  'Do not accept, reject, or directly apply changes unless the user explicitly asks.',
+  'Pass per-document share tokens in tool arguments or Authorization headers, and never echo tokens into document content.',
+].join(' ');
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -144,7 +152,7 @@ const tools: ReviewRoomTool[] = [
       ...baseAuthProperties,
       kind: { type: 'string', enum: ['replace', 'insert', 'delete'] },
       quote: { type: 'string', description: 'Exact visible text to anchor the suggestion to.' },
-      content: { type: 'string', description: 'Replacement or inserted content. Omit for delete suggestions.' },
+      content: { type: 'string', description: 'Replacement content, or inserted content for insert suggestions. Insert suggestions apply immediately after quote; include blank lines for Markdown block inserts. Omit for delete suggestions.' },
       by: { type: 'string', description: 'Actor id, usually ai:<agent-id>.' },
     }, ['slug', 'kind', 'quote']),
   },
@@ -313,6 +321,7 @@ reviewRoomMcpRoutes.post('/mcp', async (req: Request, res: Response) => {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { tools: {} },
       serverInfo: { name: 'review-room-mcp', version: '0.1.0' },
+      instructions: MCP_SERVER_INSTRUCTIONS,
     }));
     return;
   }

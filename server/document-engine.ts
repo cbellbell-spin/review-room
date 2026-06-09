@@ -2,8 +2,10 @@ import { randomUUID } from 'crypto';
 import {
   addDocumentEvent,
   bumpDocumentAccessEpoch,
+  createReviewRoomHistoryEvent,
   deleteMarkTombstone,
   getDocumentBySlug,
+  getReviewRoomDocumentByProofSlug,
   removeResurrectedMarksFromPayload,
   rebuildDocumentBlocks,
   shouldRejectMarkMutationByResolvedRevision,
@@ -117,6 +119,84 @@ function mutationContextIdempotencyRoute(context?: AsyncDocumentMutationContext)
 
 function getCanonicalReadableDocument(slug: string) {
   return getCanonicalReadableDocumentSync(slug, 'state') ?? getDocumentBySlug(slug);
+}
+
+function reviewRoomActorType(actor: string): 'human' | 'agent' {
+  return actor.trim().toLowerCase().startsWith('ai:') ? 'agent' : 'human';
+}
+
+function suggestionChangeContent(mark: StoredMark, status: 'accepted' | 'rejected'): { beforeContent: string; afterContent: string } {
+  const kind = typeof mark.kind === 'string' ? mark.kind : '';
+  const quote = typeof mark.quote === 'string' ? mark.quote : '';
+  const content = typeof mark.content === 'string' ? mark.content : '';
+  if (status === 'rejected') return { beforeContent: quote, afterContent: quote };
+  if (kind === 'delete') return { beforeContent: quote, afterContent: '' };
+  if (kind === 'insert') return { beforeContent: '', afterContent: content };
+  return { beforeContent: quote, afterContent: content };
+}
+
+function normalizeInsertSuggestionContent(content: string, kind: 'insert' | 'delete' | 'replace'): string {
+  if (kind !== 'insert' || content.length === 0 || content.startsWith('\n')) return content;
+  if (/^(?: {0,3}#{1,6}\s| {0,3}(?:[-*+]|\d+[.)])\s| {0,3}>\s| {0,3}(?:```|~~~)| {0,3}\|)/.test(content)) {
+    return `\n\n${content}`;
+  }
+  return content;
+}
+
+function recordReviewRoomSuggestionDecisionHistory(input: {
+  slug: string;
+  markId: string;
+  status: 'accepted' | 'rejected';
+  actor: string;
+  mark: StoredMark;
+  beforeRevision?: number | null;
+  afterRevision?: number | null;
+  eventId?: unknown;
+}): void {
+  const reviewRoomDocument = getReviewRoomDocumentByProofSlug(input.slug);
+  if (!reviewRoomDocument) return;
+  const kind = typeof input.mark.kind === 'string' ? input.mark.kind : 'suggestion';
+  const quote = typeof input.mark.quote === 'string' ? input.mark.quote : '';
+  const content = typeof input.mark.content === 'string' ? input.mark.content : '';
+  const { beforeContent, afterContent } = suggestionChangeContent(input.mark, input.status);
+  try {
+    createReviewRoomHistoryEvent({
+      workspaceId: reviewRoomDocument.workspace_id,
+      documentId: reviewRoomDocument.id,
+      actorId: input.actor,
+      actorType: reviewRoomActorType(input.actor),
+      eventType: `suggestion.${input.status}`,
+      targetType: 'suggestion',
+      targetId: input.markId,
+      before: {
+        status: input.mark.status ?? 'pending',
+        kind,
+        quote,
+        content,
+        beforeContent,
+      },
+      after: {
+        status: input.status,
+        kind,
+        quote,
+        content,
+        afterContent,
+      },
+      metadata: {
+        proofSlug: input.slug,
+        proofRevisionBefore: input.beforeRevision ?? null,
+        proofRevisionAfter: input.afterRevision ?? null,
+        proofEventId: typeof input.eventId === 'number' ? input.eventId : null,
+      },
+    });
+  } catch (error) {
+    console.warn('[review-room] Failed to record suggestion decision history:', {
+      slug: input.slug,
+      markId: input.markId,
+      status: input.status,
+      error,
+    });
+  }
 }
 
 type MutationReadyDocument = NonNullable<ReturnType<typeof getCanonicalReadableDocument>>;
@@ -1746,6 +1826,9 @@ function addSuggestion(
   if ((kind === 'insert' || kind === 'replace') && typeof body.content !== 'string') {
     return { status: 400, body: { success: false, error: 'Missing content' } };
   }
+  const suggestionContent = kind !== 'delete' && typeof body.content === 'string'
+    ? normalizeInsertSuggestionContent(body.content, kind)
+    : undefined;
 
   let resolvedTarget: AnchorTarget | undefined;
   let selectionMetadata: { quote: string; startRel?: string; endRel?: string } | null = null;
@@ -1809,7 +1892,7 @@ function addSuggestion(
     quote,
     status: 'pending',
     ...(resolvedTarget ? { target: resolvedTarget } : {}),
-    ...(kind !== 'delete' ? { content: body.content as string } : {}),
+    ...(kind !== 'delete' ? { content: suggestionContent } : {}),
     startRel: typeof body.startRel === 'string' && body.startRel.trim()
       ? body.startRel.trim()
       : (selectionMetadata?.startRel ?? (anchor ? `char:${anchor.strippedStart}` : undefined)),
@@ -1823,7 +1906,7 @@ function addSuggestion(
     markId: id,
     by,
     quote,
-    content: typeof body.content === 'string' ? body.content : undefined,
+    content: suggestionContent,
   });
 }
 
@@ -1978,6 +2061,16 @@ function updateSuggestionStatus(
   const updated = getDocumentBySlug(slug);
   const resolvedRevision = typeof updated?.revision === 'number' ? updated.revision : (doc.revision + 1);
   upsertMarkTombstone(slug, markId, status, resolvedRevision);
+  recordReviewRoomSuggestionDecisionHistory({
+    slug,
+    markId,
+    status,
+    actor,
+    mark: existing,
+    beforeRevision: doc.revision,
+    afterRevision: resolvedRevision,
+    eventId,
+  });
   if (status === 'rejected') {
     // Rejected suggestions must survive reload/cache clear, and stale live Yjs fragments
     // can otherwise rehydrate the rejected mark after the canonical DB write succeeds.
@@ -2036,6 +2129,9 @@ async function addSuggestionAsync(
     if ((kind === 'insert' || kind === 'replace') && typeof body.content !== 'string') {
       return { status: 400, body: { success: false, error: 'Missing content' } };
     }
+    const suggestionContent = kind !== 'delete' && typeof body.content === 'string'
+      ? normalizeInsertSuggestionContent(body.content, kind)
+      : undefined;
 
     let resolvedTarget: AnchorTarget | undefined;
     let selectionMetadata: { quote: string; startRel?: string; endRel?: string } | null = null;
@@ -2077,7 +2173,7 @@ async function addSuggestionAsync(
       quote,
       status: 'pending',
       ...(resolvedTarget ? { target: resolvedTarget } : {}),
-      ...(kind !== 'delete' ? { content: body.content as string } : {}),
+      ...(kind !== 'delete' ? { content: suggestionContent } : {}),
       startRel: typeof body.startRel === 'string' && body.startRel.trim()
         ? body.startRel.trim()
         : (selectionMetadata?.startRel ?? (anchor ? `char:${anchor.strippedStart}` : undefined)),
@@ -2091,7 +2187,7 @@ async function addSuggestionAsync(
       markId: id,
       by,
       quote,
-      content: typeof body.content === 'string' ? body.content : undefined,
+      content: suggestionContent,
     }, context);
   }
   if (requestedStatus !== 'accepted') {
@@ -2121,6 +2217,9 @@ async function addSuggestionAsync(
   if ((kind === 'insert' || kind === 'replace') && typeof body.content !== 'string') {
     return { status: 400, body: { success: false, error: 'Missing content' } };
   }
+  const suggestionContent = kind !== 'delete' && typeof body.content === 'string'
+    ? normalizeInsertSuggestionContent(body.content, kind)
+    : undefined;
 
   let stabilizedTarget: AnchorTarget | undefined;
   let selectionMetadata: { quote: string; startRel?: string; endRel?: string } | null = null;
@@ -2161,7 +2260,7 @@ async function addSuggestionAsync(
     quote,
     status: 'accepted',
     ...(stabilizedTarget ? { target: stabilizedTarget } : {}),
-    ...(kind !== 'delete' ? { content: body.content as string } : {}),
+    ...(kind !== 'delete' ? { content: suggestionContent } : {}),
     startRel: typeof body.startRel === 'string' && body.startRel.trim()
       ? body.startRel.trim()
       : (selectionMetadata?.startRel ?? (anchor ? `char:${anchor.strippedStart}` : undefined)),
@@ -2292,6 +2391,16 @@ async function updateSuggestionStatusAsync(
       const updated = getDocumentBySlug(slug);
       const resolvedRevision = typeof updated?.revision === 'number' ? updated.revision : (doc.revision + 1);
       upsertMarkTombstone(slug, markId, status, resolvedRevision);
+      recordReviewRoomSuggestionDecisionHistory({
+        slug,
+        markId,
+        status,
+        actor,
+        mark: existing,
+        beforeRevision: doc.revision,
+        afterRevision: resolvedRevision,
+        eventId: result.body.eventId,
+      });
       if (status === 'rejected') {
         if ((updated?.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
           bumpDocumentAccessEpoch(slug);
@@ -2383,6 +2492,16 @@ async function updateSuggestionStatusAsync(
         mutationContextIdempotencyRoute(context),
       );
       upsertMarkTombstone(slug, markId, status, mutation.document.revision);
+      recordReviewRoomSuggestionDecisionHistory({
+        slug,
+        markId,
+        status,
+        actor,
+        mark: existing,
+        beforeRevision: doc.revision,
+        afterRevision: mutation.document.revision,
+        eventId,
+      });
       const updatedMarks = parseMarks(mutation.document.marks);
       const responseMarks: Record<string, StoredMark> = {
         ...updatedMarks,
@@ -2443,6 +2562,16 @@ async function updateSuggestionStatusAsync(
     mutationContextIdempotencyRoute(context),
   );
   upsertMarkTombstone(slug, markId, status, mutation.document.revision);
+  recordReviewRoomSuggestionDecisionHistory({
+    slug,
+    markId,
+    status,
+    actor,
+    mark: existing,
+    beforeRevision: doc.revision,
+    afterRevision: mutation.document.revision,
+    eventId,
+  });
   const updatedMarks = parseMarks(mutation.document.marks);
   const responseMarks: Record<string, StoredMark> = {
     ...updatedMarks,

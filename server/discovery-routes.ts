@@ -225,9 +225,22 @@ function renderAgentDocsHtml(input: { docsMarkdown: string; docsUrl: string; dis
         <button id="copy-mcp-url" class="button" type="button">Copy MCP URL</button>
       </div>
       <div id="copy-status" class="status" aria-live="polite"></div>
+      <h2>ChatGPT setup</h2>
+      <ol class="steps">
+        <li>Enable developer mode if your ChatGPT workspace allows it.</li>
+        <li>Open Settings, then Connectors, then Create.</li>
+        <li>Paste the MCP URL above as the connector URL.</li>
+        <li>Use a document share token in the tool arguments or as <code>Authorization: Bearer &lt;token&gt;</code>.</li>
+      </ol>
+      <h2>Codex setup</h2>
+      <ol class="steps">
+        <li>Add <code>[mcp_servers.review_room]</code> to Codex <code>config.toml</code>.</li>
+        <li>Set <code>url = "${mcpUrl}"</code>.</li>
+        <li>Start a new thread and pass a Review Room document URL or slug plus token.</li>
+      </ol>
       <h2>Claude setup</h2>
       <ol class="steps">
-        <li>Open Claude settings and add a custom connector.</li>
+        <li>Open Claude settings and add a custom connector, or install the plugin below.</li>
         <li>Choose streamable HTTP as the transport.</li>
         <li>Paste the MCP URL above.</li>
         <li>Use a document share token in the tool arguments or as <code>Authorization: Bearer &lt;token&gt;</code>.</li>
@@ -281,8 +294,8 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
 
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.json({
-    name: 'Proof Editor',
-    description: 'Agent-native markdown editor with collaborative sharing and provenance tracking',
+    name: 'Review Room',
+    description: 'Hosted human-agent document review workspace with comments, questions, and reviewable suggestions',
     api_base: apiBase,
     docs_url: docsUrl,
     skill_url: skillUrl,

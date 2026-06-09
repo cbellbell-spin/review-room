@@ -34,6 +34,7 @@ type McpResponse = {
     tools?: Array<{ name: string }>;
     content?: Array<{ type: string; text: string }>;
     isError?: boolean;
+    instructions?: string;
   };
   error?: { message?: string };
 };
@@ -116,7 +117,7 @@ async function run(): Promise<void> {
     const markdownDocs = await fetch(`${base}/agent-docs`, { headers: { Accept: 'text/markdown' } });
     const markdownDocsText = await markdownDocs.text();
     assert(markdownDocs.status === 200 && markdownDocs.headers.get('content-type')?.includes('text/markdown'), 'Expected Markdown agent docs for Markdown Accept');
-    assert(markdownDocsText.includes('Claude MCP Setup'), 'Expected Markdown docs to include Claude setup');
+    assert(markdownDocsText.includes('ChatGPT, Codex, And Claude MCP Setup'), 'Expected Markdown docs to include ChatGPT/Codex/Claude setup');
 
     const markdownFormatDocs = await fetch(`${base}/agent-docs?format=markdown`, { headers: { Accept: 'text/html' } });
     assert(
@@ -126,7 +127,7 @@ async function run(): Promise<void> {
 
     const created = await json<{
       success: boolean;
-      document: { proofSlug: string };
+      document: { proofSlug: string; historyPath?: string };
       proof: { accessToken: string };
     }>(await fetch(`${base}/review-room/api/documents`, {
       method: 'POST',
@@ -157,6 +158,10 @@ async function run(): Promise<void> {
     assert(typeof sessionId === 'string' && sessionId.length > 0, 'Expected initialize to return Mcp-Session-Id');
     const initialized = await json<McpResponse>(initializedResponse);
     assert(!initialized.error, initialized.error?.message || 'Expected MCP initialize success');
+    assert(
+      String(initialized.result?.instructions || '').includes('human-controlled document review workspace'),
+      'Expected MCP initialize to include Review Room server instructions',
+    );
 
     const initializedNotification = await fetch(`${base}/mcp`, {
       method: 'POST',
@@ -232,6 +237,30 @@ async function run(): Promise<void> {
     assert(
       accepted.success === true && String(accepted.markdown).includes('Original paragraph revised through MCP.'),
       'Expected MCP accept tool to apply the suggestion',
+    );
+    const historyAfterMcpAccept = await json<{
+      success: boolean;
+      events: Array<{
+        eventType?: string;
+        targetType?: string;
+        targetId?: string;
+        actorId?: string;
+        before?: { status?: string; beforeContent?: string };
+        after?: { status?: string; afterContent?: string };
+      }>;
+    }>(await fetch(`${base}${created.document.historyPath ?? `/review-room/api/documents/${slug}/history`}`));
+    assert(
+      historyAfterMcpAccept.events.some((event) => (
+        event.eventType === 'suggestion.accepted'
+        && event.targetType === 'suggestion'
+        && event.targetId === suggestion.markId
+        && event.actorId === 'human:mcp-reviewer'
+        && event.before?.status === 'pending'
+        && event.before.beforeContent === 'Original paragraph.'
+        && event.after?.status === 'accepted'
+        && event.after.afterContent === 'Original paragraph revised through MCP.'
+      )),
+      'Expected MCP suggestion acceptance to appear in Review Room history',
     );
 
     const comment = parseToolBody(await mcp(base, {

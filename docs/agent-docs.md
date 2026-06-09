@@ -1,6 +1,6 @@
 # Review Room Agent API
 
-## Claude MCP Setup
+## ChatGPT, Codex, And Claude MCP Setup
 
 Production MCP URL: `https://proof-sdk-psi.vercel.app/mcp`
 
@@ -8,7 +8,30 @@ Discovery JSON: `https://proof-sdk-psi.vercel.app/.well-known/agent.json`
 
 Claude/Cowork plugin download: `https://proof-sdk-psi.vercel.app/review-room/claude-plugin.zip`
 
-In Claude, either install the plugin above or add a custom connector using streamable HTTP transport and paste the MCP URL. Document access is per tool call: pass the shared Review Room document slug and token in tool arguments, or send the token as `Authorization: Bearer <token>`.
+### ChatGPT
+
+In ChatGPT, enable developer mode if your workspace allows it, then create a connector with the MCP URL above. The connector URL should be the public `/mcp` endpoint. ChatGPT scans the server's advertised tools during connector creation.
+
+Use a shared Review Room document URL, or pass the document slug and token in tool arguments. Write actions may ask for confirmation in ChatGPT.
+
+### Codex
+
+Codex supports streamable HTTP MCP servers in `config.toml`:
+
+```toml
+[mcp_servers.review_room]
+url = "https://proof-sdk-psi.vercel.app/mcp"
+```
+
+Start a new Codex thread after updating config, then provide a Review Room document URL or slug plus token.
+
+### Claude/Cowork
+
+In Claude, either install the plugin above or add a custom connector using streamable HTTP transport and paste the MCP URL.
+
+Document access is per tool call: pass the shared Review Room document slug and token in tool arguments, or send the token as `Authorization: Bearer <token>`.
+
+Treat share tokens as secrets. Do not paste tokens into comments, suggestions, generated documents, or public logs.
 
 The browser page at `/agent-docs` includes a **Copy MCP URL** button. Agents can request this same URL with `Accept: text/markdown` to receive plain Markdown.
 
@@ -146,6 +169,15 @@ Suggest a replace:
     -H "Content-Type: application/json" \
     -H "X-Agent-Id: your-agent" \
     -d '{"type":"suggestion.add","by":"ai:your-agent","kind":"replace","quote":"old text","content":"new text"}'
+
+Suggest an insert after an anchor:
+
+  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/ops?token=<token>" \
+    -H "Content-Type: application/json" \
+    -H "X-Agent-Id: your-agent" \
+    -d '{"type":"suggestion.add","by":"ai:your-agent","kind":"insert","quote":"Last sentence of the previous section.","content":"\n\n## New section\n\nNew section body."}'
+
+`kind:"insert"` always inserts `content` immediately after `quote`. Include leading/trailing blank lines for block inserts so Markdown headings and paragraphs do not concatenate. To add a new section before an existing heading, prefer `kind:"replace"` and replace the existing heading with the new section followed by the same heading.
 
 Create and immediately apply a suggestion:
 

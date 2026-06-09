@@ -4,6 +4,7 @@ import { buildClaudePluginZip } from './claude-plugin-package.js';
 import { generateSlug } from './slug.js';
 import {
   addEvent,
+  createReviewRoomHistoryEvent,
   createDocument,
   createDocumentAccessToken,
   createReviewRoomDocumentRecord,
@@ -12,7 +13,9 @@ import {
   getReviewRoomDocumentMemberForProofSlug,
   getReviewRoomDocumentByProofSlug,
   getReviewRoomIdentity,
+  listReviewRoomAgents,
   listReviewRoomDocuments,
+  listReviewRoomHistoryEvents,
   listReviewRoomIdentities,
   resolveDocumentAccess,
   reviewRoomRoleToShareRole,
@@ -23,6 +26,7 @@ import {
 import { refreshSnapshotForSlug } from './snapshot.js';
 import {
   addHostedDocumentEvent,
+  createHostedReviewRoomHistoryEvent,
   createHostedReviewRoomDocument,
   createHostedReviewRoomDocumentRecord,
   getHostedDocumentBySlug,
@@ -30,7 +34,9 @@ import {
   getHostedReviewRoomDocumentMemberForProofSlug,
   getHostedReviewRoomIdentity,
   isHostedReviewRoomDbEnabled,
+  listHostedReviewRoomAgents,
   listHostedReviewRoomDocuments,
+  listHostedReviewRoomHistoryEvents,
   listHostedReviewRoomIdentities,
   resolveHostedDocumentAccess,
   upsertHostedReviewRoomDocumentMember,
@@ -141,6 +147,84 @@ function serializeDocument(
     proofUpdatedAt: row.proof_updated_at,
     openPath: appendTokenToPath(buildReviewRoomOpenPath(row.proof_slug), member?.proof_access_token ?? null),
     statePath: `/documents/${encodeURIComponent(row.proof_slug)}/state`,
+    historyPath: `/review-room/api/documents/${encodeURIComponent(row.proof_slug)}/history`,
+  };
+}
+
+function parseJsonArray(raw: string | null | undefined): unknown[] {
+  try {
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonObject(raw: string | null | undefined): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeAgent(row: {
+  id: string;
+  workspace_id: string;
+  owner_identity_id: string;
+  manager_identity_id: string;
+  name: string;
+  description: string | null;
+  integration_type: string;
+  capabilities_json: string;
+  created_at: string;
+  updated_at: string;
+}): Record<string, unknown> {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerIdentityId: row.owner_identity_id,
+    managerIdentityId: row.manager_identity_id,
+    name: row.name,
+    description: row.description,
+    integrationType: row.integration_type,
+    capabilities: parseJsonArray(row.capabilities_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function serializeHistoryEvent(row: {
+  id: string;
+  workspace_id: string;
+  document_id: string | null;
+  actor_id: string;
+  actor_type: string;
+  event_type: string;
+  target_type: string | null;
+  target_id: string | null;
+  before_json: string | null;
+  after_json: string | null;
+  rationale: string | null;
+  metadata_json: string;
+  created_at: string;
+}): Record<string, unknown> {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    documentId: row.document_id,
+    actorId: row.actor_id,
+    actorType: row.actor_type,
+    eventType: row.event_type,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    before: parseJsonObject(row.before_json),
+    after: parseJsonObject(row.after_json),
+    rationale: row.rationale,
+    metadata: parseJsonObject(row.metadata_json) ?? {},
+    createdAt: row.created_at,
   };
 }
 
@@ -598,6 +682,21 @@ reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Resp
   });
 });
 
+reviewRoomRoutes.get('/review-room/api/agents', async (_req: Request, res: Response) => {
+  if (isHostedReviewRoomDbEnabled()) {
+    const agents = await listHostedReviewRoomAgents(REVIEW_ROOM_DEFAULT_WORKSPACE_ID);
+    res.json({
+      success: true,
+      agents: agents.map(serializeAgent),
+    });
+    return;
+  }
+  res.json({
+    success: true,
+    agents: listReviewRoomAgents(REVIEW_ROOM_DEFAULT_WORKSPACE_ID).map(serializeAgent),
+  });
+});
+
 reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Response) => {
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 50;
   const identityId = getCurrentReviewRoomIdentityId(req);
@@ -618,6 +717,45 @@ reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Res
     currentIdentity: getReviewRoomIdentity(identityId),
     documents: listReviewRoomDocuments(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50)
       .map((row) => serializeDocument(row, getReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
+  });
+});
+
+reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 100;
+  if (!proofSlug) {
+    res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const document = await getHostedReviewRoomDocumentByProofSlug(proofSlug);
+    if (!document) {
+      res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+      return;
+    }
+    const events = await listHostedReviewRoomHistoryEvents({
+      documentId: document.id,
+      limit: Number.isFinite(limit) ? limit : 100,
+    });
+    res.json({
+      success: true,
+      document: serializeDocument(document, null),
+      events: events.map(serializeHistoryEvent),
+    });
+    return;
+  }
+  const document = getReviewRoomDocumentByProofSlug(proofSlug);
+  if (!document) {
+    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+    return;
+  }
+  res.json({
+    success: true,
+    document: serializeDocument(document, null),
+    events: listReviewRoomHistoryEvents({
+      documentId: document.id,
+      limit: Number.isFinite(limit) ? limit : 100,
+    }).map(serializeHistoryEvent),
   });
 });
 
@@ -674,6 +812,17 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
     proofDocId: proofDoc.doc_id,
     ownerIdentityId: identityId,
     createdByIdentityId: identityId,
+  });
+  createReviewRoomHistoryEvent({
+    workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+    documentId: reviewRoomDocument.id,
+    actorId: identityId,
+    actorType: 'human',
+    eventType: 'document.created',
+    targetType: 'document',
+    targetId: reviewRoomDocument.id,
+    after: { title, proofSlug: proofDoc.slug, proofDocId: proofDoc.doc_id },
+    metadata: { source: 'created' },
   });
   const member = getReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
   const openPath = appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), member?.proof_access_token ?? access.secret);
@@ -765,6 +914,17 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
       title: reviewRoomDocument.title,
       reviewRoom: true,
     }, `review-room:${identityId}`);
+    await createHostedReviewRoomHistoryEvent({
+      workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+      documentId: reviewRoomDocument.id,
+      actorId: identityId,
+      actorType: 'human',
+      eventType: 'document.registered',
+      targetType: 'document',
+      targetId: reviewRoomDocument.id,
+      after: { title: reviewRoomDocument.title, proofSlug: proofDoc.slug, proofDocId: proofDoc.doc_id },
+      metadata: { source: 'registered' },
+    });
     res.status(201).json({
       success: true,
       document: serializeDocument(reviewRoomDocument, member),
@@ -840,6 +1000,17 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
     title: reviewRoomDocument.title,
     reviewRoom: true,
   }, `review-room:${identityId}`);
+  createReviewRoomHistoryEvent({
+    workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+    documentId: reviewRoomDocument.id,
+    actorId: identityId,
+    actorType: 'human',
+    eventType: 'document.registered',
+    targetType: 'document',
+    targetId: reviewRoomDocument.id,
+    after: { title: reviewRoomDocument.title, proofSlug: proofDoc.slug, proofDocId: proofDoc.doc_id },
+    metadata: { source: 'registered' },
+  });
 
   res.status(201).json({
     success: true,
