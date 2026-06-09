@@ -2004,6 +2004,9 @@ export async function executeHostedDocumentOperation(
     return { status: 200, body: { success: true, marks: parseMarks(doc.marks) } };
   }
   if (method === 'POST' && routePath === '/marks/comment') return addHostedComment(slug, body);
+  if (method === 'POST' && routePath === '/marks/suggest-replace') return addHostedSuggestion(slug, { ...body, kind: 'replace' });
+  if (method === 'POST' && routePath === '/marks/suggest-insert') return addHostedSuggestion(slug, { ...body, kind: 'insert' });
+  if (method === 'POST' && routePath === '/marks/suggest-delete') return addHostedSuggestion(slug, { ...body, kind: 'delete' });
   if (method === 'POST' && routePath === '/marks/reply') return replyHostedComment(slug, body);
   if (method === 'POST' && routePath === '/marks/resolve') return resolveHostedComment(slug, body);
   if (method === 'POST' && routePath === '/marks/unresolve') return unresolveHostedComment(slug, body);

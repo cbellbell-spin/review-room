@@ -3875,6 +3875,21 @@ agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Respo
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
     return;
   }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['commenter', 'editor', 'owner_bot'])) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const result = await executeHostedDocumentOperation(slug, 'POST', '/marks/suggest-replace', asPayload(req.body));
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+    return;
+  }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
@@ -3897,6 +3912,21 @@ agentRoutes.post('/:slug/marks/suggest-insert', async (req: Request, res: Respon
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
     return;
   }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['commenter', 'editor', 'owner_bot'])) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const result = await executeHostedDocumentOperation(slug, 'POST', '/marks/suggest-insert', asPayload(req.body));
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+    return;
+  }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
@@ -3917,6 +3947,21 @@ agentRoutes.post('/:slug/marks/suggest-delete', async (req: Request, res: Respon
   const slug = getSlug(req);
   if (!slug) {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
+    return;
+  }
+  if (isHostedReviewRoomDbEnabled()) {
+    const token = getPresentedSecret(req, slug);
+    const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
+    if (!hasRole(role, ['commenter', 'editor', 'owner_bot'])) {
+      sendMutationResponse(res, 401, {
+        success: false,
+        error: 'Missing or invalid share token',
+        code: 'UNAUTHORIZED',
+      }, { route: mutationRoute, slug });
+      return;
+    }
+    const result = await executeHostedDocumentOperation(slug, 'POST', '/marks/suggest-delete', asPayload(req.body));
+    sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
     return;
   }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;

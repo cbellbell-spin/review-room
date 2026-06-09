@@ -308,6 +308,30 @@ async function run(): Promise<void> {
       'Expected hosted POST suggestion.add to reject bad anchors before mutation',
     );
 
+    const directSuggestion = await json<{ success: boolean; markId?: string }>(
+      await fetch(`${base}/api/agent/${slug}/marks/suggest-replace`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          by: 'ai:hosted-route-test',
+          quote: 'Original paragraph.',
+          content: 'Original paragraph, revised through direct hosted mark route.',
+        }),
+      }),
+    );
+    assert(
+      directSuggestion.success === true && typeof directSuggestion.markId === 'string',
+      'Expected hosted direct suggestion route to create a pending mark without local SQLite',
+    );
+    const afterDirectSuggestion = await json<{ marks?: Record<string, { status?: string; content?: string }> }>(
+      await fetch(`${base}/api/agent/${slug}/state`, { headers: authHeaders }),
+    );
+    assert(
+      afterDirectSuggestion.marks?.[directSuggestion.markId!]?.status === 'pending'
+        && afterDirectSuggestion.marks?.[directSuggestion.markId!]?.content === 'Original paragraph, revised through direct hosted mark route.',
+      'Expected hosted direct suggestion mark to stay pending for human review',
+    );
+
     const bridgeSuggestionResponse = await fetch(`${base}/documents/${slug}/bridge/suggestions`, {
       method: 'POST',
       headers: bridgeHeaders,
