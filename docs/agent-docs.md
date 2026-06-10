@@ -129,7 +129,9 @@ If a URL contains `?token=`, treat it as an access token:
 
 ## Legacy GET-only Agent Fallback
 
-Prefer POST `/ops`, `/bridge/suggestions`, or the Review Room MCP when available. Some agent sandboxes can read URLs but cannot send POST requests with headers or bodies; only in that environment, use the constrained GET action endpoint for comments and pending suggestions:
+Disabled by default. These routes perform mutations via GET and accept tokens in query strings, so deployments must opt in with `PROOF_ADVERTISE_GET_ONLY_ACTIONS=1`; otherwise they return `405 GET_ACTIONS_DISABLED`. Use the Review Room MCP endpoint at `/mcp` or POST `/ops` / `/bridge/suggestions` instead.
+
+When enabled: some agent sandboxes can read URLs but cannot send POST requests with headers or bodies; only in that environment, use the constrained GET action endpoint for comments and pending suggestions:
 
 ```text
 GET /api/agent/<slug>/action?token=<token>&type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>

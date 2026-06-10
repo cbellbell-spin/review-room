@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { getReviewRoomSuggestionGroups } from '../editor/review-room-suggestions';
+import { getReviewRoomSuggestionGroups } from '../review-room/suggestion-groups';
 
 const adjacentRangeGroups = getReviewRoomSuggestionGroups({
   markdown: 'Before hello world after.',

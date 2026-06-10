@@ -29,7 +29,6 @@ import {
   deleteDocument,
   getDocument,
   getDocumentBySlug,
-  getReviewRoomDocumentMemberForProofSlugAndToken,
   getStoredIdempotencyRecord,
   pauseDocument,
   resolveDocumentAccess,
@@ -42,7 +41,6 @@ import {
   updateDocument,
   updateDocumentTitle,
   updateMarks,
-  updateReviewRoomDocumentTitleByProofSlug,
 } from './db.js';
 import { isShareRole, type ShareRole } from './share-types.js';
 import { broadcastToRoom, closeRoom, getActiveCollabClientBreakdown, getRoomSize } from './ws.js';
@@ -110,11 +108,14 @@ import {
   createHostedReviewRoomDocument,
   executeHostedDocumentOpByType,
   getHostedDocumentBySlug,
-  getHostedReviewRoomDocumentMemberForProofSlugAndToken,
   isHostedReviewRoomDbEnabled,
   resolveHostedDocumentAccess,
   updateHostedDocument,
 } from './hosted-review-room-db.js';
+import {
+  storeGetReviewRoomDocumentMemberForProofSlugAndToken,
+  storeUpdateReviewRoomDocumentTitleByProofSlug,
+} from './review-room-store.js';
 
 export const apiRoutes = Router();
 if (!isHostedReviewRoomDbEnabled()) {
@@ -799,14 +800,14 @@ function deriveShareCapabilities(role: ShareRole, shareState: string): {
   };
 }
 
-function buildReviewRoomOpenPayload(slug: string, presentedSecret: string | null): {
+async function buildReviewRoomOpenPayload(slug: string, presentedSecret: string | null): Promise<{
   documentId: string;
   identityId: string;
   currentRole: string;
   currentShareRole: ShareRole;
-} | null {
+} | null> {
   const member = presentedSecret
-    ? getReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret)
+    ? await storeGetReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret)
     : null;
   if (!member) return null;
   return {
@@ -1286,7 +1287,7 @@ apiRoutes.get('/documents/:slug', async (req: Request, res: Response) => {
     const hostedBody = buildHostedOpenContextBody({
       doc,
       role,
-      reviewRoom: await getHostedReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret),
+      reviewRoom: await storeGetReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret),
     });
     res.json({
       ...hostedBody.doc,
@@ -1440,7 +1441,7 @@ apiRoutes.put('/documents/:slug/title', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Document title updated but document could not be reloaded' });
     return;
   }
-  updateReviewRoomDocumentTitleByProofSlug(slug, canonicalTitle);
+  await storeUpdateReviewRoomDocumentTitleByProofSlug(slug, canonicalTitle);
 
   broadcastToRoom(slug, {
     type: 'document.title.updated',
@@ -1697,7 +1698,7 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
     didUpdate = true;
     writeSucceeded = writeSucceeded && updateDocumentTitle(slug, normalizedTitle);
     if (writeSucceeded) {
-      updateReviewRoomDocumentTitleByProofSlug(slug, normalizedTitle);
+      await storeUpdateReviewRoomDocumentTitleByProofSlug(slug, normalizedTitle);
     }
   }
   if (!didUpdate) {
@@ -2253,7 +2254,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
     res.json(buildHostedOpenContextBody({
       doc,
       role,
-      reviewRoom: await getHostedReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret),
+      reviewRoom: await storeGetReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret),
     }));
     return;
   }
@@ -2280,7 +2281,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
 
   const role = access.role;
   const capabilities = deriveShareCapabilities(role, doc.share_state);
-  const reviewRoom = buildReviewRoomOpenPayload(slug, getPresentedSecret(req));
+  const reviewRoom = await buildReviewRoomOpenPayload(slug, getPresentedSecret(req));
   const collabRuntime = getCollabRuntime();
   if (!collabRuntime.enabled) {
     const snapshotUrl = doc.share_state === 'ACTIVE' ? getSnapshotPublicUrl(doc.slug) : null;
@@ -2415,7 +2416,7 @@ apiRoutes.post('/documents/:slug/collab-refresh', async (req: Request, res: Resp
   });
 });
 
-apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) => {
+apiRoutes.get('/documents/:slug/collab-session', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
@@ -2502,7 +2503,7 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     res.status(500).json({ error: 'Unable to build collab session' });
     return;
   }
-  const reviewRoom = buildReviewRoomOpenPayload(slug, presentedSecret);
+  const reviewRoom = await buildReviewRoomOpenPayload(slug, presentedSecret);
 
   res.json({
     success: true,

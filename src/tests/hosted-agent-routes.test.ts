@@ -168,6 +168,31 @@ async function run(): Promise<void> {
         && getActionMark.content === 'Original paragraph, revised by chunked GET-only fallback.',
       'Expected GET-only action suggestion mark to be visible in hosted state',
     );
+
+    process.env.PROOF_ADVERTISE_GET_ONLY_ACTIONS = '';
+    try {
+      const disabledAction = await fetch(`${base}/api/agent/${neutralCreated.slug}/action?${getActionParams.toString()}`);
+      const disabledActionBody = await disabledAction.json() as { code?: string };
+      assert(
+        disabledAction.status === 405 && disabledActionBody.code === 'GET_ACTIONS_DISABLED',
+        'Expected GET /action to return 405 GET_ACTIONS_DISABLED when the flag is off',
+      );
+      const disabledDraft = await fetch(`${base}/api/agent/${neutralCreated.slug}/action/draft?${draftParams0.toString()}`);
+      const disabledDraftBody = await disabledDraft.json() as { code?: string };
+      assert(
+        disabledDraft.status === 405 && disabledDraftBody.code === 'GET_ACTIONS_DISABLED',
+        'Expected GET /action/draft to return 405 GET_ACTIONS_DISABLED when the flag is off',
+      );
+      const disabledState = await json<{ agent?: { getActionApi?: string }; _links?: { getAction?: unknown } }>(
+        await fetch(`${base}/api/agent/${neutralCreated.slug}/state?token=${encodeURIComponent(neutralCreated.accessToken)}`),
+      );
+      assert(
+        disabledState.agent?.getActionApi === undefined && disabledState._links?.getAction === undefined,
+        'Expected state to stop advertising GET-only actions when the flag is off',
+      );
+    } finally {
+      process.env.PROOF_ADVERTISE_GET_ONLY_ACTIONS = '1';
+    }
     const neutralDeleted = await json<{ success: boolean; shareState: string }>(
       await fetch(`${base}/documents/${neutralCreated.slug}`, {
         method: 'DELETE',

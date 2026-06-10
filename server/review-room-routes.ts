@@ -4,43 +4,36 @@ import { buildClaudePluginZip } from './claude-plugin-package.js';
 import { generateSlug } from './slug.js';
 import {
   addEvent,
-  createReviewRoomHistoryEvent,
   createDocument,
   createDocumentAccessToken,
-  createReviewRoomDocumentRecord,
   deriveReviewRoomCapabilities,
   getDocumentBySlug,
-  getReviewRoomDocumentMemberForProofSlug,
-  getReviewRoomDocumentByProofSlug,
-  getReviewRoomIdentity,
-  listReviewRoomAgents,
-  listReviewRoomDocuments,
-  listReviewRoomHistoryEvents,
-  listReviewRoomIdentities,
   resolveDocumentAccess,
   reviewRoomRoleToShareRole,
-  upsertReviewRoomDocumentMember,
+  type DocumentRow,
   type ReviewRoomDocumentMemberRow,
   type ReviewRoomDocumentRow,
 } from './db.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
 import {
   addHostedDocumentEvent,
-  createHostedReviewRoomHistoryEvent,
   createHostedReviewRoomDocument,
-  createHostedReviewRoomDocumentRecord,
   getHostedDocumentBySlug,
-  getHostedReviewRoomDocumentByProofSlug,
-  getHostedReviewRoomDocumentMemberForProofSlug,
-  getHostedReviewRoomIdentity,
   isHostedReviewRoomDbEnabled,
-  listHostedReviewRoomAgents,
-  listHostedReviewRoomDocuments,
-  listHostedReviewRoomHistoryEvents,
-  listHostedReviewRoomIdentities,
   resolveHostedDocumentAccess,
-  upsertHostedReviewRoomDocumentMember,
 } from './hosted-review-room-db.js';
+import {
+  storeCreateReviewRoomDocumentRecord,
+  storeCreateReviewRoomHistoryEvent,
+  storeGetReviewRoomDocumentByProofSlug,
+  storeGetReviewRoomDocumentMemberForProofSlug,
+  storeGetReviewRoomIdentity,
+  storeListReviewRoomAgents,
+  storeListReviewRoomDocuments,
+  storeListReviewRoomHistoryEvents,
+  storeListReviewRoomIdentities,
+  storeUpsertReviewRoomDocumentMember,
+} from './review-room-store.js';
 import {
   REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
   REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
@@ -91,6 +84,27 @@ function parseProofSlugInput(value: string): { slug: string; token: string | nul
     // Treat unparsable input as a raw slug below.
   }
   return { slug: trimmed.replace(/^\/d\//, '').split(/[?#]/)[0]?.trim() ?? '', token: null };
+}
+
+// Engine seams: the Proof document engine still differs between the local
+// better-sqlite3 runtime and the hosted libSQL runtime. Review Room product
+// state below these helpers is single-path through review-room-store.
+async function engineGetDocumentBySlug(slug: string): Promise<DocumentRow | undefined> {
+  if (isHostedReviewRoomDbEnabled()) return getHostedDocumentBySlug(slug);
+  return getDocumentBySlug(slug);
+}
+
+async function engineResolveDocumentAccess(slug: string, token: string): Promise<unknown> {
+  if (isHostedReviewRoomDbEnabled()) return resolveHostedDocumentAccess(slug, token);
+  return resolveDocumentAccess(slug, token);
+}
+
+async function engineAddDocumentEvent(slug: string, eventType: string, eventData: unknown, actor: string): Promise<void> {
+  if (isHostedReviewRoomDbEnabled()) {
+    await addHostedDocumentEvent(slug, eventType, eventData, actor);
+    return;
+  }
+  addEvent(slug, eventType, eventData, actor);
 }
 
 function reviewRoomRegisterErrorForState(shareState: string): { status: number; code: string; error: string } | null {
@@ -236,12 +250,28 @@ function renderReviewRoomHome(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Review Room</title>
   <style>
+    :root {
+      --rr-bg: #f7f8f3;
+      --rr-surface: #ffffff;
+      --rr-surface-soft: #fbfcf8;
+      --rr-ink: #1f2933;
+      --rr-muted: #607064;
+      --rr-border: #dfe5d7;
+      --rr-border-soft: #edf1e9;
+      --rr-control-border: #cbd7c6;
+      --rr-accent: #266854;
+      --rr-on-accent: #ffffff;
+      --rr-accent-soft: #eef4e9;
+      --rr-danger: #b42318;
+      --rr-radius: 6px;
+      --rr-radius-pill: 999px;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
-      color: #1f2933;
-      background: #f7f8f3;
+      color: var(--rr-ink);
+      background: var(--rr-bg);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     button, input, textarea { font: inherit; }
@@ -253,7 +283,7 @@ function renderReviewRoomHome(): string {
       justify-content: space-between;
       gap: 16px;
       padding: 0 24px;
-      border-bottom: 1px solid #dfe5d7;
+      border-bottom: 1px solid var(--rr-border);
       background: rgba(247, 248, 243, 0.94);
       position: sticky;
       top: 0;
@@ -261,13 +291,13 @@ function renderReviewRoomHome(): string {
     }
     .brand { font-weight: 700; letter-spacing: 0; }
     .topbar-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .nav { display: flex; align-items: center; gap: 8px; color: #607064; font-size: 14px; }
+    .nav { display: flex; align-items: center; gap: 8px; color: var(--rr-muted); font-size: 14px; }
     .nav a { color: inherit; text-decoration: none; padding: 8px 10px; border-radius: 6px; }
-    .nav a[aria-current="page"] { color: #1f2933; background: #e8eee2; }
+    .nav a[aria-current="page"] { color: var(--rr-ink); background: #e8eee2; }
     .workspace-chip {
       padding: 4px 9px;
       border-radius: 999px;
-      background: #eef4e9;
+      background: var(--rr-accent-soft);
       color: #4c5f4f;
       font-size: 12px;
       font-weight: 650;
@@ -283,8 +313,8 @@ function renderReviewRoomHome(): string {
       align-items: start;
     }
     h1 { margin: 0 0 6px; font-size: 28px; line-height: 1.15; letter-spacing: 0; }
-    p { margin: 0; color: #607064; line-height: 1.5; }
-    .panel { background: #ffffff; border: 1px solid #dfe5d7; border-radius: 8px; }
+    p { margin: 0; color: var(--rr-muted); line-height: 1.5; }
+    .panel { background: var(--rr-surface); border: 1px solid var(--rr-border); border-radius: 8px; }
     .panel-header { padding: 18px 18px 0; }
     .doc-list { display: grid; gap: 0; margin-top: 14px; }
     .doc-row {
@@ -293,21 +323,21 @@ function renderReviewRoomHome(): string {
       gap: 16px;
       align-items: center;
       padding: 16px 18px;
-      border-top: 1px solid #edf1e9;
+      border-top: 1px solid var(--rr-border-soft);
     }
     .doc-title { font-weight: 650; margin-bottom: 5px; overflow-wrap: anywhere; }
     .doc-meta { font-size: 13px; color: #718073; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .doc-source { padding: 2px 7px; border-radius: 999px; background: #eef4e9; color: #4c5f4f; font-size: 12px; font-weight: 650; }
+    .doc-source { padding: 2px 7px; border-radius: 999px; background: var(--rr-accent-soft); color: #4c5f4f; font-size: 12px; font-weight: 650; }
     .primary-action {
       display: flex;
       flex-direction: column;
       gap: 12px;
       padding: 18px;
-      border-top: 1px solid #edf1e9;
+      border-top: 1px solid var(--rr-border-soft);
     }
     .button {
-      border: 1px solid #266854;
-      background: #266854;
+      border: 1px solid var(--rr-accent);
+      background: var(--rr-accent);
       color: #fff;
       border-radius: 6px;
       min-height: 36px;
@@ -319,18 +349,18 @@ function renderReviewRoomHome(): string {
       cursor: pointer;
       font-weight: 650;
     }
-    .button.secondary { background: #fff; color: #266854; }
-    .form-note { font-size: 13px; color: #607064; }
+    .button.secondary { background: #fff; color: var(--rr-accent); }
+    .form-note { font-size: 13px; color: var(--rr-muted); }
     form { display: grid; gap: 12px; padding: 18px; }
-    form + form { border-top: 1px solid #edf1e9; }
+    form + form { border-top: 1px solid var(--rr-border-soft); }
     .import-form { padding: 0; }
     .import-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .file-input {
       border: 1px dashed #b8c8b3;
-      background: #fbfcf8;
+      background: var(--rr-surface-soft);
     }
     .secondary-details {
-      border-top: 1px solid #edf1e9;
+      border-top: 1px solid var(--rr-border-soft);
       overflow: hidden;
     }
     .secondary-summary {
@@ -345,10 +375,10 @@ function renderReviewRoomHome(): string {
     .secondary-summary::-webkit-details-marker { display: none; }
     .secondary-summary::after {
       content: "Open";
-      border: 1px solid #cbd7c6;
+      border: 1px solid var(--rr-control-border);
       border-radius: 6px;
       padding: 7px 10px;
-      color: #266854;
+      color: var(--rr-accent);
       font-size: 13px;
       font-weight: 650;
       background: #fff;
@@ -360,18 +390,18 @@ function renderReviewRoomHome(): string {
     label { display: grid; gap: 6px; font-size: 13px; font-weight: 650; color: #374539; }
     input, textarea {
       width: 100%;
-      border: 1px solid #cbd7c6;
+      border: 1px solid var(--rr-control-border);
       border-radius: 6px;
       padding: 10px 11px;
       background: #fff;
-      color: #1f2933;
+      color: var(--rr-ink);
     }
     textarea { min-height: 190px; resize: vertical; line-height: 1.45; }
-    .pill { padding: 4px 8px; border-radius: 999px; background: #eef4e9; color: #4c5f4f; font-size: 12px; }
-    .empty { padding: 24px 18px; color: #607064; border-top: 1px solid #edf1e9; }
-    .error { color: #b42318; font-size: 13px; min-height: 18px; }
+    .pill { padding: 4px 8px; border-radius: 999px; background: var(--rr-accent-soft); color: #4c5f4f; font-size: 12px; }
+    .empty { padding: 24px 18px; color: var(--rr-muted); border-top: 1px solid var(--rr-border-soft); }
+    .error { color: var(--rr-danger); font-size: 13px; min-height: 18px; }
     .section-title { font-size: 16px; font-weight: 700; margin: 0; }
-    .download-list { display: grid; gap: 10px; padding: 18px; border-top: 1px solid #edf1e9; }
+    .download-list { display: grid; gap: 10px; padding: 18px; border-top: 1px solid var(--rr-border-soft); }
     .download-row {
       display: flex;
       align-items: center;
@@ -380,7 +410,7 @@ function renderReviewRoomHome(): string {
     }
     .download-copy { display: grid; gap: 3px; min-width: 0; }
     .download-title { font-weight: 700; }
-    .download-note { color: #607064; font-size: 13px; line-height: 1.45; }
+    .download-note { color: var(--rr-muted); font-size: 13px; line-height: 1.45; }
     details.panel { overflow: hidden; }
     summary.panel-header {
       display: flex;
@@ -394,10 +424,10 @@ function renderReviewRoomHome(): string {
     summary.panel-header::-webkit-details-marker { display: none; }
     summary.panel-header::after {
       content: "Open";
-      border: 1px solid #cbd7c6;
+      border: 1px solid var(--rr-control-border);
       border-radius: 6px;
       padding: 7px 10px;
-      color: #266854;
+      color: var(--rr-accent);
       font-size: 13px;
       font-weight: 650;
       background: #fff;
@@ -659,64 +689,36 @@ reviewRoomRoutes.get('/review-room/claude-plugin.zip', (_req: Request, res: Resp
 
 reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Response) => {
   const identityId = getCurrentReviewRoomIdentityId(req);
-  if (isHostedReviewRoomDbEnabled()) {
-    res.json({
-      success: true,
-      workspace: {
-        id: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
-        name: REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
-      },
-      currentIdentity: await getHostedReviewRoomIdentity(identityId),
-      identities: await listHostedReviewRoomIdentities(REVIEW_ROOM_DEFAULT_WORKSPACE_ID),
-    });
-    return;
-  }
   res.json({
     success: true,
     workspace: {
       id: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
       name: REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
     },
-    currentIdentity: getReviewRoomIdentity(identityId),
-    identities: listReviewRoomIdentities(REVIEW_ROOM_DEFAULT_WORKSPACE_ID),
+    currentIdentity: await storeGetReviewRoomIdentity(identityId),
+    identities: await storeListReviewRoomIdentities(REVIEW_ROOM_DEFAULT_WORKSPACE_ID),
   });
 });
 
 reviewRoomRoutes.get('/review-room/api/agents', async (_req: Request, res: Response) => {
-  if (isHostedReviewRoomDbEnabled()) {
-    const agents = await listHostedReviewRoomAgents(REVIEW_ROOM_DEFAULT_WORKSPACE_ID);
-    res.json({
-      success: true,
-      agents: agents.map(serializeAgent),
-    });
-    return;
-  }
+  const agents = await storeListReviewRoomAgents(REVIEW_ROOM_DEFAULT_WORKSPACE_ID);
   res.json({
     success: true,
-    agents: listReviewRoomAgents(REVIEW_ROOM_DEFAULT_WORKSPACE_ID).map(serializeAgent),
+    agents: agents.map(serializeAgent),
   });
 });
 
 reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Response) => {
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 50;
   const identityId = getCurrentReviewRoomIdentityId(req);
-  if (isHostedReviewRoomDbEnabled()) {
-    const rows = await listHostedReviewRoomDocuments(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50);
-    const documents = await Promise.all(
-      rows.map(async (row) => serializeDocument(row, await getHostedReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
-    );
-    res.json({
-      success: true,
-      currentIdentity: await getHostedReviewRoomIdentity(identityId),
-      documents,
-    });
-    return;
-  }
+  const rows = await storeListReviewRoomDocuments(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50);
+  const documents = await Promise.all(
+    rows.map(async (row) => serializeDocument(row, await storeGetReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
+  );
   res.json({
     success: true,
-    currentIdentity: getReviewRoomIdentity(identityId),
-    documents: listReviewRoomDocuments(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50)
-      .map((row) => serializeDocument(row, getReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
+    currentIdentity: await storeGetReviewRoomIdentity(identityId),
+    documents,
   });
 });
 
@@ -727,35 +729,19 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req
     res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
     return;
   }
-  if (isHostedReviewRoomDbEnabled()) {
-    const document = await getHostedReviewRoomDocumentByProofSlug(proofSlug);
-    if (!document) {
-      res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
-      return;
-    }
-    const events = await listHostedReviewRoomHistoryEvents({
-      documentId: document.id,
-      limit: Number.isFinite(limit) ? limit : 100,
-    });
-    res.json({
-      success: true,
-      document: serializeDocument(document, null),
-      events: events.map(serializeHistoryEvent),
-    });
-    return;
-  }
-  const document = getReviewRoomDocumentByProofSlug(proofSlug);
+  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
   if (!document) {
     res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
     return;
   }
+  const events = await storeListReviewRoomHistoryEvents({
+    documentId: document.id,
+    limit: Number.isFinite(limit) ? limit : 100,
+  });
   res.json({
     success: true,
     document: serializeDocument(document, null),
-    events: listReviewRoomHistoryEvents({
-      documentId: document.id,
-      limit: Number.isFinite(limit) ? limit : 100,
-    }).map(serializeHistoryEvent),
+    events: events.map(serializeHistoryEvent),
   });
 });
 
@@ -805,7 +791,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
     reviewRoom: true,
   }, ownerId);
 
-  const reviewRoomDocument = createReviewRoomDocumentRecord({
+  const reviewRoomDocument = await storeCreateReviewRoomDocumentRecord({
     workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
     title,
     proofSlug: proofDoc.slug,
@@ -813,7 +799,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
     ownerIdentityId: identityId,
     createdByIdentityId: identityId,
   });
-  createReviewRoomHistoryEvent({
+  await storeCreateReviewRoomHistoryEvent({
     workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
     documentId: reviewRoomDocument.id,
     actorId: identityId,
@@ -824,7 +810,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
     after: { title, proofSlug: proofDoc.slug, proofDocId: proofDoc.doc_id },
     metadata: { source: 'created' },
   });
-  const member = getReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
+  const member = await storeGetReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
   const openPath = appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), member?.proof_access_token ?? access.secret);
 
   res.status(201).json({
@@ -854,94 +840,10 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
     res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
     return;
   }
-  if (isHostedReviewRoomDbEnabled()) {
-    const existing = await getHostedReviewRoomDocumentByProofSlug(proofSlug);
-    if (existing) {
-      const member = await getHostedReviewRoomDocumentMemberForProofSlug(proofSlug, identityId)
-        ?? await upsertHostedReviewRoomDocumentMember({
-          reviewRoomDocumentId: existing.id,
-          identityId,
-          role: 'owner',
-          proofSlug,
-        });
-      res.json({
-        success: true,
-        alreadyRegistered: true,
-        document: serializeDocument(existing, member),
-        openPath: appendTokenToPath(buildReviewRoomOpenPath(proofSlug), member.proof_access_token ?? token),
-      });
-      return;
-    }
-    const proofDoc = await getHostedDocumentBySlug(proofSlug);
-    if (!proofDoc) {
-      res.status(404).json({
-        success: false,
-        code: 'DOCUMENT_MISSING',
-        error: 'No document exists for that slug.',
-      });
-      return;
-    }
-    if (token && !(await resolveHostedDocumentAccess(proofSlug, token))) {
-      res.status(403).json({
-        success: false,
-        code: 'PERMISSION_DENIED',
-        error: 'The provided token does not grant access to that document.',
-        shareState: proofDoc.share_state,
-      });
-      return;
-    }
-    const stateError = reviewRoomRegisterErrorForState(proofDoc.share_state);
-    if (stateError) {
-      res.status(stateError.status).json({
-        success: false,
-        code: stateError.code,
-        error: stateError.error,
-        shareState: proofDoc.share_state,
-      });
-      return;
-    }
-    const reviewRoomDocument = await createHostedReviewRoomDocumentRecord({
-      workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
-      title: proofDoc.title?.trim() || 'Untitled review',
-      proofSlug: proofDoc.slug,
-      proofDocId: proofDoc.doc_id,
-      source: 'registered',
-      ownerIdentityId: identityId,
-      createdByIdentityId: identityId,
-    });
-    const member = await getHostedReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
-    await addHostedDocumentEvent(proofDoc.slug, 'review_room.document.registered', {
-      title: reviewRoomDocument.title,
-      reviewRoom: true,
-    }, `review-room:${identityId}`);
-    await createHostedReviewRoomHistoryEvent({
-      workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
-      documentId: reviewRoomDocument.id,
-      actorId: identityId,
-      actorType: 'human',
-      eventType: 'document.registered',
-      targetType: 'document',
-      targetId: reviewRoomDocument.id,
-      after: { title: reviewRoomDocument.title, proofSlug: proofDoc.slug, proofDocId: proofDoc.doc_id },
-      metadata: { source: 'registered' },
-    });
-    res.status(201).json({
-      success: true,
-      document: serializeDocument(reviewRoomDocument, member),
-      openPath: appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), member?.proof_access_token ?? token),
-      proof: {
-        slug: proofDoc.slug,
-        docId: proofDoc.doc_id,
-        shareState: proofDoc.share_state,
-        statePath: `/documents/${encodeURIComponent(proofDoc.slug)}/state`,
-      },
-    });
-    return;
-  }
-  const existing = getReviewRoomDocumentByProofSlug(proofSlug);
+  const existing = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
   if (existing) {
-    const member = getReviewRoomDocumentMemberForProofSlug(proofSlug, identityId)
-      ?? upsertReviewRoomDocumentMember({
+    const member = await storeGetReviewRoomDocumentMemberForProofSlug(proofSlug, identityId)
+      ?? await storeUpsertReviewRoomDocumentMember({
         reviewRoomDocumentId: existing.id,
         identityId,
         role: 'owner',
@@ -955,7 +857,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
     });
     return;
   }
-  const proofDoc = getDocumentBySlug(proofSlug);
+  const proofDoc = await engineGetDocumentBySlug(proofSlug);
   if (!proofDoc) {
     res.status(404).json({
       success: false,
@@ -965,7 +867,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
     return;
   }
 
-  if (token && !resolveDocumentAccess(proofSlug, token)) {
+  if (token && !(await engineResolveDocumentAccess(proofSlug, token))) {
     res.status(403).json({
       success: false,
       code: 'PERMISSION_DENIED',
@@ -986,7 +888,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
     return;
   }
 
-  const reviewRoomDocument = createReviewRoomDocumentRecord({
+  const reviewRoomDocument = await storeCreateReviewRoomDocumentRecord({
     workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
     title: proofDoc.title?.trim() || 'Untitled review',
     proofSlug: proofDoc.slug,
@@ -995,12 +897,12 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
     ownerIdentityId: identityId,
     createdByIdentityId: identityId,
   });
-  const member = getReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
-  addEvent(proofDoc.slug, 'review_room.document.registered', {
+  const member = await storeGetReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
+  await engineAddDocumentEvent(proofDoc.slug, 'review_room.document.registered', {
     title: reviewRoomDocument.title,
     reviewRoom: true,
   }, `review-room:${identityId}`);
-  createReviewRoomHistoryEvent({
+  await storeCreateReviewRoomHistoryEvent({
     workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
     documentId: reviewRoomDocument.id,
     actorId: identityId,

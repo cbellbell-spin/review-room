@@ -2,10 +2,8 @@ import { randomUUID } from 'crypto';
 import {
   addDocumentEvent,
   bumpDocumentAccessEpoch,
-  createReviewRoomHistoryEvent,
   deleteMarkTombstone,
   getDocumentBySlug,
-  getReviewRoomDocumentByProofSlug,
   removeResurrectedMarksFromPayload,
   rebuildDocumentBlocks,
   shouldRejectMarkMutationByResolvedRevision,
@@ -62,6 +60,10 @@ import {
   executeHostedDocumentOperation,
   isHostedReviewRoomDbEnabled,
 } from './hosted-review-room-db.js';
+import {
+  storeCreateReviewRoomHistoryEvent,
+  storeGetReviewRoomDocumentByProofSlug,
+} from './review-room-store.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -143,7 +145,7 @@ function normalizeInsertSuggestionContent(content: string, kind: 'insert' | 'del
   return content;
 }
 
-function recordReviewRoomSuggestionDecisionHistory(input: {
+async function recordReviewRoomSuggestionDecisionHistory(input: {
   slug: string;
   markId: string;
   status: 'accepted' | 'rejected';
@@ -152,15 +154,15 @@ function recordReviewRoomSuggestionDecisionHistory(input: {
   beforeRevision?: number | null;
   afterRevision?: number | null;
   eventId?: unknown;
-}): void {
-  const reviewRoomDocument = getReviewRoomDocumentByProofSlug(input.slug);
-  if (!reviewRoomDocument) return;
+}): Promise<void> {
   const kind = typeof input.mark.kind === 'string' ? input.mark.kind : 'suggestion';
   const quote = typeof input.mark.quote === 'string' ? input.mark.quote : '';
   const content = typeof input.mark.content === 'string' ? input.mark.content : '';
   const { beforeContent, afterContent } = suggestionChangeContent(input.mark, input.status);
   try {
-    createReviewRoomHistoryEvent({
+    const reviewRoomDocument = await storeGetReviewRoomDocumentByProofSlug(input.slug);
+    if (!reviewRoomDocument) return;
+    await storeCreateReviewRoomHistoryEvent({
       workspaceId: reviewRoomDocument.workspace_id,
       documentId: reviewRoomDocument.id,
       actorId: input.actor,
@@ -2061,7 +2063,7 @@ function updateSuggestionStatus(
   const updated = getDocumentBySlug(slug);
   const resolvedRevision = typeof updated?.revision === 'number' ? updated.revision : (doc.revision + 1);
   upsertMarkTombstone(slug, markId, status, resolvedRevision);
-  recordReviewRoomSuggestionDecisionHistory({
+  void recordReviewRoomSuggestionDecisionHistory({
     slug,
     markId,
     status,
@@ -2391,7 +2393,7 @@ async function updateSuggestionStatusAsync(
       const updated = getDocumentBySlug(slug);
       const resolvedRevision = typeof updated?.revision === 'number' ? updated.revision : (doc.revision + 1);
       upsertMarkTombstone(slug, markId, status, resolvedRevision);
-      recordReviewRoomSuggestionDecisionHistory({
+      await recordReviewRoomSuggestionDecisionHistory({
         slug,
         markId,
         status,
@@ -2492,7 +2494,7 @@ async function updateSuggestionStatusAsync(
         mutationContextIdempotencyRoute(context),
       );
       upsertMarkTombstone(slug, markId, status, mutation.document.revision);
-      recordReviewRoomSuggestionDecisionHistory({
+      await recordReviewRoomSuggestionDecisionHistory({
         slug,
         markId,
         status,
@@ -2562,7 +2564,7 @@ async function updateSuggestionStatusAsync(
     mutationContextIdempotencyRoute(context),
   );
   upsertMarkTombstone(slug, markId, status, mutation.document.revision);
-  recordReviewRoomSuggestionDecisionHistory({
+  await recordReviewRoomSuggestionDecisionHistory({
     slug,
     markId,
     status,

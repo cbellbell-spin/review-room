@@ -13,6 +13,7 @@ import { deriveReviewRoomCapabilities, reviewRoomRoleToShareRole, type DocumentA
 import type { ShareRole } from './share-types.js';
 import { applyAgentEditOperations, type AgentEditOperation } from './agent-edit-ops.js';
 import { parseDocumentOpRequest, resolveDocumentOpRoute, type DocumentOpType } from './document-ops.js';
+import { isGetOnlyActionsEnabled } from './get-only-actions.js';
 import {
   REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
   REVIEW_ROOM_LOCAL_AGENT_ID,
@@ -714,24 +715,6 @@ export async function ackHostedDocumentEvents(slug: string, upToId: number, acke
   return Number(result.rowsAffected ?? 0);
 }
 
-export async function getHostedReviewRoomIdentity(id: string = REVIEW_ROOM_LOCAL_HUMAN_ID): Promise<ReviewRoomIdentityRow | null> {
-  return execute<ReviewRoomIdentityRow>(`
-    SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
-    FROM review_room_identities
-    WHERE id = ?
-    LIMIT 1
-  `, [id]);
-}
-
-export async function listHostedReviewRoomIdentities(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID): Promise<ReviewRoomIdentityRow[]> {
-  return executeAll<ReviewRoomIdentityRow>(`
-    SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
-    FROM review_room_identities
-    WHERE workspace_id = ?
-    ORDER BY kind DESC, display_name ASC
-  `, [workspaceId]);
-}
-
 export async function getHostedReviewRoomDocumentMemberForProofSlug(
   proofSlug: string,
   identityId: string = REVIEW_ROOM_LOCAL_HUMAN_ID,
@@ -752,30 +735,6 @@ export async function getHostedReviewRoomDocumentMemberForProofSlug(
       AND m.identity_id = ?
     LIMIT 1
   `, [proofSlug, identityId]);
-}
-
-export async function getHostedReviewRoomDocumentMemberForProofSlugAndToken(
-  proofSlug: string,
-  token: string | null | undefined,
-): Promise<ReviewRoomDocumentMemberRow | null> {
-  const trimmed = (token || '').trim();
-  if (!trimmed) return null;
-  return execute<ReviewRoomDocumentMemberRow>(`
-    SELECT
-      m.review_room_document_id,
-      m.identity_id,
-      m.role,
-      m.proof_access_token_id,
-      m.proof_access_token,
-      m.created_at,
-      m.updated_at,
-      rr.proof_slug
-    FROM review_room_document_members m
-    JOIN review_room_documents rr ON rr.id = m.review_room_document_id
-    WHERE rr.proof_slug = ?
-      AND m.proof_access_token = ?
-    LIMIT 1
-  `, [proofSlug, trimmed]);
 }
 
 export async function getHostedReviewRoomDocumentByProofSlug(proofSlug: string): Promise<ReviewRoomDocumentRow | null> {
@@ -800,53 +759,6 @@ export async function getHostedReviewRoomDocumentByProofSlug(proofSlug: string):
     WHERE rr.proof_slug = ?
     LIMIT 1
   `, [proofSlug]);
-}
-
-export async function listHostedReviewRoomDocuments(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID, limit: number = 50): Promise<ReviewRoomDocumentRow[]> {
-  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 200));
-  return executeAll<ReviewRoomDocumentRow>(`
-    SELECT
-      rr.id,
-      rr.workspace_id,
-      rr.title,
-      rr.proof_slug,
-      rr.proof_doc_id,
-      rr.source,
-      rr.owner_identity_id,
-      rr.created_by_identity_id,
-      rr.created_at,
-      rr.updated_at,
-      d.title AS proof_title,
-      d.share_state,
-      d.created_at AS proof_created_at,
-      d.updated_at AS proof_updated_at
-    FROM review_room_documents rr
-    JOIN documents d ON d.slug = rr.proof_slug
-    WHERE rr.workspace_id = ?
-      AND d.deleted_at IS NULL
-      AND d.share_state != 'DELETED'
-    ORDER BY rr.updated_at DESC
-    LIMIT ?
-  `, [workspaceId, safeLimit]);
-}
-
-export async function listHostedReviewRoomAgents(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID): Promise<ReviewRoomAgentRow[]> {
-  return executeAll<ReviewRoomAgentRow>(`
-    SELECT
-      id,
-      workspace_id,
-      owner_identity_id,
-      manager_identity_id,
-      name,
-      description,
-      integration_type,
-      capabilities_json,
-      created_at,
-      updated_at
-    FROM review_room_agents
-    WHERE workspace_id = ?
-    ORDER BY name ASC
-  `, [workspaceId]);
 }
 
 export async function createHostedReviewRoomHistoryEvent(input: {
@@ -897,30 +809,6 @@ export async function createHostedReviewRoomHistoryEvent(input: {
   return row;
 }
 
-export async function listHostedReviewRoomHistoryEvents(input: {
-  workspaceId?: string;
-  documentId?: string | null;
-  limit?: number;
-} = {}): Promise<ReviewRoomHistoryEventRow[]> {
-  const safeLimit = Math.max(1, Math.min(Math.trunc(input.limit ?? 100), 500));
-  if (input.documentId) {
-    return executeAll<ReviewRoomHistoryEventRow>(`
-      SELECT *
-      FROM review_room_history_events
-      WHERE document_id = ?
-      ORDER BY created_at DESC
-      LIMIT ?
-    `, [input.documentId, safeLimit]);
-  }
-  return executeAll<ReviewRoomHistoryEventRow>(`
-    SELECT *
-    FROM review_room_history_events
-    WHERE workspace_id = ?
-    ORDER BY created_at DESC
-    LIMIT ?
-  `, [input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID, safeLimit]);
-}
-
 export async function createHostedDocumentAccessToken(
   slug: string,
   role: ShareRole,
@@ -964,50 +852,6 @@ export async function upsertHostedReviewRoomDocumentMember(input: {
   });
   const row = await getHostedReviewRoomDocumentMemberForProofSlug(input.proofSlug, input.identityId);
   if (!row) throw new Error('Hosted Review Room member record was not persisted.');
-  return row;
-}
-
-export async function createHostedReviewRoomDocumentRecord(input: {
-  workspaceId?: string;
-  title: string;
-  proofSlug: string;
-  proofDocId?: string | null;
-  source?: 'created' | 'registered';
-  ownerIdentityId?: string;
-  createdByIdentityId?: string;
-}): Promise<ReviewRoomDocumentRow> {
-  const db = await ensureHostedReviewRoomDatabase();
-  const now = new Date().toISOString();
-  const id = randomUUID();
-  const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
-  const ownerIdentityId = input.ownerIdentityId || REVIEW_ROOM_LOCAL_HUMAN_ID;
-  const createdByIdentityId = input.createdByIdentityId || ownerIdentityId;
-  await db.execute({
-    sql: `INSERT INTO review_room_documents (
-      id, workspace_id, title, proof_slug, proof_doc_id, source, owner_identity_id, created_by_identity_id, created_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [
-      id,
-      workspaceId,
-      input.title,
-      input.proofSlug,
-      input.proofDocId ?? null,
-      input.source ?? 'created',
-      ownerIdentityId,
-      createdByIdentityId,
-      now,
-      now,
-    ],
-  });
-  await upsertHostedReviewRoomDocumentMember({
-    reviewRoomDocumentId: id,
-    identityId: ownerIdentityId,
-    role: 'owner',
-    proofSlug: input.proofSlug,
-  });
-  const row = await getHostedReviewRoomDocumentByProofSlug(input.proofSlug);
-  if (!row) throw new Error('Hosted Review Room document record was not persisted.');
   return row;
 }
 
@@ -2081,7 +1925,7 @@ export async function buildHostedAgentStateBody(
     return { status: 403, body: { success: false, error: 'Document is not currently accessible' } };
   }
   const state = await readHostedDocumentState(slug);
-  const advertiseGetOnlyActions = (process.env.PROOF_ADVERTISE_GET_ONLY_ACTIONS || '').trim() === '1';
+  const advertiseGetOnlyActions = isGetOnlyActionsEnabled();
   const getActionAlias = advertiseGetOnlyActions && access && token ? await createHostedGetActionAlias(slug, token) : null;
   const getActionAuthParam = getActionAlias
     ? `a=${encodeURIComponent(getActionAlias.alias)}`

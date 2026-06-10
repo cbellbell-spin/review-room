@@ -751,8 +751,9 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       ] as const;
       const ownerToken = db.createDocumentAccessToken(slug, 'owner_bot').secret;
 
+      const reviewRoomStore = await import('../../server/review-room-store.ts');
       for (const entry of roles) {
-        const member = db.upsertReviewRoomDocumentMember({
+        const member = await reviewRoomStore.storeUpsertReviewRoomDocumentMember({
           reviewRoomDocumentId,
           identityId: 'local-human',
           role: entry.role,

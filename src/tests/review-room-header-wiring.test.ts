@@ -16,6 +16,9 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
 const root = process.cwd();
 const indexHtml = readFileSync(path.join(root, 'src/index.html'), 'utf8');
 const editorSource = readFileSync(path.join(root, 'src/editor/index.ts'), 'utf8');
+const reviewPanelSource = readFileSync(path.join(root, 'src/review-room/review-panel.ts'), 'utf8');
+const reviewItemsSource = readFileSync(path.join(root, 'src/review-room/review-items.ts'), 'utf8');
+const reviewTokensSource = readFileSync(path.join(root, 'src/review-room/tokens.ts'), 'utf8');
 const shareClientSource = readFileSync(path.join(root, 'src/bridge/share-client.ts'), 'utf8');
 const suggestionsSource = readFileSync(path.join(root, 'src/editor/plugins/suggestions.ts'), 'utf8');
 const markPopoverSource = readFileSync(path.join(root, 'src/editor/plugins/mark-popover.ts'), 'utf8');
@@ -52,37 +55,49 @@ assert(
   'Expected existing share controls to be mounted into Review Room header slots',
 );
 assert(
-  editorSource.includes("panel.id = 'review-room-review-sidebar';")
+  reviewPanelSource.includes("REVIEW_PANEL_ID = 'review-room-review-sidebar'")
     && editorSource.includes("button.setAttribute('aria-controls', 'review-room-review-sidebar');")
     && editorSource.includes("button.setAttribute('aria-expanded', 'false');")
     && editorSource.includes('void this.openReviewRoomReviewPanel({ useSelection: true });')
-    && editorSource.includes('Review selected text')
-    && editorSource.includes('this.addReviewRoomSelectionComment(activeSelection, textarea.value)')
-    && editorSource.includes("top:var(--review-room-bar-height, 64px);right:0;bottom:0;")
-    && !editorSource.includes('background:rgba(31,41,51,0.46);'),
+    && reviewPanelSource.includes('Review selected text')
+    && editorSource.includes('this.addReviewRoomSelectionComment(selection, text)')
+    && reviewPanelSource.includes('host.addSelectionComment(activeSelection, textarea.value)')
+    && reviewPanelSource.includes("top:var(--review-room-bar-height, 64px);right:0;bottom:0;")
+    && !reviewPanelSource.includes('background:rgba(31,41,51,0.46);'),
   'Expected Review Room review items to open as a docked sidebar that can use selected text',
 );
 assert(
   editorSource.includes('openReviewRoomReviewSidebar(options: ReviewRoomReviewPanelOptions = {})')
-    && editorSource.includes('this.markReply(comment.id, getCurrentActor(), text)')
-    && editorSource.includes('this.markResolve(comment.id)')
-    && editorSource.includes('this.markDeleteThread(comment.id)')
-    && editorSource.includes("let commentFilter: 'open' | 'resolved' | 'all' = 'open';")
-    && editorSource.includes('renderCommentFilterControls')
-    && editorSource.includes('attachReviewItemFocus(item, comment.id)')
-    && editorSource.includes("if (target instanceof HTMLElement && target.closest('button, textarea, input, a')) return;")
-    && editorSource.includes('activateReviewItem(markId)')
-    && editorSource.includes('Comments (${visibleComments.length})')
-    && editorSource.includes('No resolved comment threads.')
-    && editorSource.includes('Review items could not load')
-    && editorSource.includes('shareClient.fetchReviewRoomHistory({ limit: 20 })')
-    && editorSource.includes('renderHistoryEvents(historyEvents)')
-    && editorSource.includes('Accepted suggestion')
-    && editorSource.includes('Before: ${beforeText}')
-    && editorSource.includes('After: ${afterText}')
+    && editorSource.includes('this.markReply(commentId, getCurrentActor(), text)')
+    && editorSource.includes('this.markResolve(commentId)')
+    && editorSource.includes('this.markDeleteThread(commentId)')
+    && reviewPanelSource.includes("let commentFilter: ReviewCommentFilter = 'open';")
+    && reviewPanelSource.includes('renderCommentFilterControls')
+    && reviewPanelSource.includes('attachReviewItemFocus(item, comment.id)')
+    && reviewPanelSource.includes("if (target instanceof HTMLElement && target.closest('button, textarea, input, a')) return;")
+    && reviewPanelSource.includes('activateReviewItem(markId)')
+    && reviewPanelSource.includes('Comments (${visibleComments.length})')
+    && reviewPanelSource.includes('No resolved comment threads.')
+    && reviewPanelSource.includes('Review items could not load')
+    && editorSource.includes('shareClient.fetchReviewRoomHistory({ limit })')
+    && reviewPanelSource.includes('host.fetchHistory(20)')
+    && reviewPanelSource.includes('renderHistoryEvents(historyEvents)')
+    && reviewItemsSource.includes('Accepted suggestion')
+    && reviewPanelSource.includes('Before: ${beforeText}')
+    && reviewPanelSource.includes('After: ${afterText}')
     && markPopoverSource.includes('proof?.isReviewRoomRuntime?.()')
     && markPopoverSource.includes('proof.openReviewRoomReviewSidebar({ focusMarkId: markId })'),
   'Expected Review Room comment threads and accepted suggestion history to open inside the Review sidebar',
+);
+assert(
+  reviewTokensSource.includes('--rr-accent: #266854;')
+    && reviewPanelSource.includes('ensureReviewRoomTokens();')
+    && reviewPanelSource.includes('var(--rr-accent)')
+    && reviewPanelSource.includes("tabBar.setAttribute('role', 'tablist');")
+    && reviewPanelSource.includes("{ value: 'tasks', label: 'Tasks' }")
+    && reviewPanelSource.includes("{ value: 'publish', label: 'Publish' }")
+    && reviewPanelSource.includes('Realtime sync unavailable on this host'),
+  'Expected the extracted Review Room cockpit to use CJB tokens, tabs, and a realtime availability note',
 );
 assert(
   shareClientSource.includes('async fetchReviewRoomHistory(')

@@ -62,6 +62,7 @@ import {
 import type { ShareRole } from './share-types.js';
 import { broadcastToRoom, getActiveCollabClientBreakdown, getActiveCollabClientCount } from './ws.js';
 import { getCookie, shareTokenCookieName } from './cookies.js';
+import { isGetOnlyActionsEnabled } from './get-only-actions.js';
 import {
   authorizeDocumentOp,
   type DocumentOpType,
@@ -2200,12 +2201,16 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
     state: `/documents/${slug}/state`,
     agentState: `/api/agent/${slug}/state`,
     presence: { method: 'POST', href: `/api/agent/${slug}/presence` },
-    getAction: {
-      method: 'GET',
-      href: `/api/agent/${slug}/action?type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>&token=<token>`,
-      requiresConfirm: true,
-      supports: ['comment.add', 'suggestion.add'],
-    },
+    ...(isGetOnlyActionsEnabled()
+      ? {
+          getAction: {
+            method: 'GET',
+            href: `/api/agent/${slug}/action?type=suggestion.add&kind=replace&quote=<urlencoded-quote>&content=<urlencoded-content>&by=ai:<agent>&token=<token>`,
+            requiresConfirm: true,
+            supports: ['comment.add', 'suggestion.add'],
+          },
+        }
+      : {}),
     events: `/api/agent/${slug}/events/pending?after=0`,
     docs: AGENT_DOCS_PATH,
   };
@@ -2235,9 +2240,13 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
     createApi: CANONICAL_CREATE_API_PATH,
     stateApi: `/documents/${slug}/state`,
     agentStateApi: `/api/agent/${slug}/state`,
-    getActionApi: `/api/agent/${slug}/action`,
-    getActionSupports: ['comment.add', 'suggestion.add'],
-    getActionRequiresConfirm: true,
+    ...(isGetOnlyActionsEnabled()
+      ? {
+          getActionApi: `/api/agent/${slug}/action`,
+          getActionSupports: ['comment.add', 'suggestion.add'],
+          getActionRequiresConfirm: true,
+        }
+      : {}),
     commentReadApi: `/documents/${slug}/state`,
     commentReadPath: 'marks',
     presenceApi: `/api/agent/${slug}/presence`,
@@ -2332,6 +2341,14 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
 agentRoutes.get('/:slug/action/draft', async (req: Request, res: Response) => {
   const mutationRoute = 'GET /action/draft';
   res.setHeader('Cache-Control', 'no-store');
+  if (!isGetOnlyActionsEnabled()) {
+    sendMutationResponse(res, 405, {
+      success: false,
+      code: 'GET_ACTIONS_DISABLED',
+      error: 'GET-only agent actions are disabled on this deployment. Use the MCP endpoint at /mcp or the POST bridge routes instead.',
+    }, { route: mutationRoute });
+    return;
+  }
   const slug = getSlug(req);
   if (!slug) {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
@@ -2415,6 +2432,14 @@ agentRoutes.get('/:slug/action/draft', async (req: Request, res: Response) => {
 agentRoutes.get('/:slug/action', async (req: Request, res: Response) => {
   const mutationRoute = 'GET /action';
   res.setHeader('Cache-Control', 'no-store');
+  if (!isGetOnlyActionsEnabled()) {
+    sendMutationResponse(res, 405, {
+      success: false,
+      code: 'GET_ACTIONS_DISABLED',
+      error: 'GET-only agent actions are disabled on this deployment. Use the MCP endpoint at /mcp or the POST bridge routes instead.',
+    }, { route: mutationRoute });
+    return;
+  }
   const slug = getSlug(req);
   if (!slug) {
     res.status(400).json({ success: false, error: 'Invalid slug' });
