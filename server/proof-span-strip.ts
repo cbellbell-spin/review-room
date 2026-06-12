@@ -303,6 +303,40 @@ export function stripAllProofSpanTagsWithReplacements(
   return stripProofSpanTagsInternal(markdown, isAnyProofSpan, replacementsById);
 }
 
+/**
+ * Apply a suggestion decision directly against the embedded `<span data-proof>`
+ * markup that delimits the target mark, returning clean (span-free) markdown.
+ *
+ * When the canonical markdown still carries the mark's spans (the wrappers
+ * delimit the exact target text, even when the run is split across multiple
+ * spans or contains markdown syntax such as inline code), this resolves the
+ * edit by span identity rather than fragile quote substring matching. Returns
+ * `matched: false` when the mark has no spans in the markdown; the returned
+ * `markdown` is then the span-stripped document so callers can fall back to
+ * quote-based resolution against clean text.
+ */
+export function applyProofSuggestionByProofSpanId(
+  markdown: string,
+  markId: string,
+  kind: 'insert' | 'delete' | 'replace',
+  content: string,
+): { matched: boolean; markdown: string } {
+  const { stripped, proofRanges } = collectStrippedProofData(markdown, isAnyProofSpan);
+  const ranges = proofRanges.filter((range) => range.id === markId && range.end > range.start);
+  if (ranges.length === 0) {
+    return { matched: false, markdown: stripped };
+  }
+  const start = Math.min(...ranges.map((range) => range.start));
+  const end = Math.max(...ranges.map((range) => range.end));
+  if (kind === 'insert') {
+    return { matched: true, markdown: `${stripped.slice(0, end)}${content}${stripped.slice(end)}` };
+  }
+  if (kind === 'delete') {
+    return { matched: true, markdown: `${stripped.slice(0, start)}${stripped.slice(end)}` };
+  }
+  return { matched: true, markdown: `${stripped.slice(0, start)}${content}${stripped.slice(end)}` };
+}
+
 export function buildProofSpanReplacementMap<T extends ProofReplacementMark>(
   marks: Record<string, T>,
 ): Record<string, string> {

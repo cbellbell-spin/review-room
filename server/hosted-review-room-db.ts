@@ -22,6 +22,7 @@ import {
   REVIEW_ROOM_LOCAL_HUMAN_NAME,
   REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
 } from './review-room-identity.js';
+import { applyProofSuggestionByProofSpanId, stripAllProofSpanTags } from './proof-span-strip.js';
 
 type SqlValue = null | string | number | bigint | ArrayBuffer | boolean | Uint8Array | Date;
 
@@ -1061,7 +1062,11 @@ export async function updateHostedDocument(input: {
 
   const db = await ensureHostedReviewRoomDatabase();
   const now = new Date().toISOString();
-  const markdown = hasMarkdown ? input.markdown ?? '' : doc.markdown;
+  // The canonical markdown column must stay free of `<span data-proof>` mark
+  // wrappers: marks are persisted structurally and the client re-embeds them
+  // for display. Storing the embedded spans pollutes the source text and breaks
+  // anchor resolution on accept, so strip them at this single write chokepoint.
+  const markdown = hasMarkdown ? stripAllProofSpanTags(input.markdown ?? '') : doc.markdown;
   const marks = hasMarks ? input.marks ?? {} : parseMarks(doc.marks);
   const title = hasTitle ? input.title ?? null : doc.title;
   const reviewRoomTitle = typeof title === 'string' && title.trim().length > 0 ? title.trim() : 'Untitled';
@@ -1495,8 +1500,25 @@ async function recordHostedReviewRoomSuggestionDecisionHistory(input: {
   }
 }
 
+// Locate a suggestion's quote in clean (span-free) markdown. Tries an exact
+// substring match first, then a whitespace-tolerant match so minor projection
+// reflow (collapsed or re-wrapped whitespace) does not hard-fail the accept.
+function locateHostedQuote(markdown: string, quote: string): { index: number; length: number } | null {
+  const exact = markdown.indexOf(quote);
+  if (exact >= 0) return { index: exact, length: quote.length };
+
+  const normalizedQuote = quote.replace(/\s+/g, ' ').trim();
+  if (!normalizedQuote) return null;
+  const pattern = normalizedQuote
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/ /g, '\\s+');
+  const match = markdown.match(new RegExp(pattern));
+  return match && match.index !== undefined ? { index: match.index, length: match[0].length } : null;
+}
+
 function applyHostedAcceptedSuggestion(
   markdown: string,
+  markId: string,
   mark: Record<string, unknown>,
 ): { ok: true; markdown: string } | { ok: false; body: Record<string, unknown> } {
   const kind = getHostedSuggestionKind(mark);
@@ -1505,28 +1527,41 @@ function applyHostedAcceptedSuggestion(
   }
   const quote = typeof mark.quote === 'string' ? mark.quote : '';
   const content = typeof mark.content === 'string' ? mark.content : '';
+
+  // Primary path: resolve against the mark's own `<span data-proof>` wrappers.
+  // The spans delimit the exact target even when the run is split across spans
+  // or contains markdown syntax (e.g. inline code), which a raw quote substring
+  // match cannot survive. This also returns clean markdown, de-polluting the doc.
+  const bySpan = applyProofSuggestionByProofSpanId(markdown, markId, kind, content);
+  if (bySpan.matched) {
+    return { ok: true, markdown: bySpan.markdown };
+  }
+
+  // Fallback: the mark has no spans in the canonical markdown (clean document).
+  // Resolve the quote against the span-stripped text.
+  const clean = bySpan.markdown;
   if (kind === 'insert') {
-    if (!quote) return { ok: true, markdown: `${markdown}${markdown.endsWith('\n') ? '' : '\n\n'}${content}` };
-    const index = markdown.indexOf(quote);
-    if (index < 0) {
+    if (!quote) return { ok: true, markdown: `${clean}${clean.endsWith('\n') ? '' : '\n\n'}${content}` };
+    const located = locateHostedQuote(clean, quote);
+    if (!located) {
       return { ok: false, body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' } };
     }
-    const insertAt = index + quote.length;
-    return { ok: true, markdown: `${markdown.slice(0, insertAt)}${content}${markdown.slice(insertAt)}` };
+    const insertAt = located.index + located.length;
+    return { ok: true, markdown: `${clean.slice(0, insertAt)}${content}${clean.slice(insertAt)}` };
   }
   if (!quote) {
     return { ok: false, body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion requires a quote anchor' } };
   }
-  const index = markdown.indexOf(quote);
-  if (index < 0) {
+  const located = locateHostedQuote(clean, quote);
+  if (!located) {
     return { ok: false, body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' } };
   }
   if (kind === 'delete') {
-    return { ok: true, markdown: `${markdown.slice(0, index)}${markdown.slice(index + quote.length)}` };
+    return { ok: true, markdown: `${clean.slice(0, located.index)}${clean.slice(located.index + located.length)}` };
   }
   return {
     ok: true,
-    markdown: `${markdown.slice(0, index)}${content}${markdown.slice(index + quote.length)}`,
+    markdown: `${clean.slice(0, located.index)}${content}${clean.slice(located.index + located.length)}`,
   };
 }
 
@@ -1583,7 +1618,7 @@ async function updateHostedSuggestionStatus(
     return result;
   }
 
-  const applied = applyHostedAcceptedSuggestion(doc.markdown, existingRecord);
+  const applied = applyHostedAcceptedSuggestion(doc.markdown, markId, existingRecord);
   if (!applied.ok) return { status: 409, body: applied.body };
   const updated = await updateHostedDocument({
     slug,
