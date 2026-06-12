@@ -15,6 +15,7 @@ import {
   type ReviewRoomDocumentMemberRow,
   type ReviewRoomDocumentRow,
   type ReviewRoomPublishedVersionRow,
+  type ReviewRoomRole,
 } from './db.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
 import {
@@ -32,7 +33,9 @@ import {
   storeGetLatestPublishedVersion,
   storeGetReviewRoomDocumentByProofSlug,
   storeGetReviewRoomDocumentMemberForProofSlug,
+  storeGetReviewRoomDocumentMemberForProofSlugAndToken,
   storeGetReviewRoomIdentity,
+  storeListReviewRoomDocumentMembersForProofSlug,
   storeListAssignmentTasks,
   storeListPublishedVersions,
   storeListReviewRoomAgents,
@@ -40,6 +43,7 @@ import {
   storeListReviewRoomHistoryEvents,
   storeListReviewRoomIdentities,
   storeUpdateAssignmentTaskStatus,
+  storeUpsertReviewRoomIdentity,
   storeUpsertReviewRoomDocumentMember,
 } from './review-room-store.js';
 import {
@@ -69,11 +73,31 @@ function appendTokenToPath(path: string, token: string | null): string {
   return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
 
-function getCurrentReviewRoomIdentityId(req: Request): string {
+function getExplicitReviewRoomIdentityId(req: Request): string | null {
   const fromHeader = req.header('x-review-room-identity-id');
   if (fromHeader && fromHeader.trim()) return normalizeReviewRoomIdentityId(fromHeader);
   const fromQuery = typeof req.query.identityId === 'string' ? req.query.identityId.trim() : '';
-  return normalizeReviewRoomIdentityId(fromQuery);
+  return fromQuery ? normalizeReviewRoomIdentityId(fromQuery) : null;
+}
+
+function getCurrentReviewRoomIdentityId(req: Request): string {
+  return getExplicitReviewRoomIdentityId(req) ?? normalizeReviewRoomIdentityId(null);
+}
+
+function getPresentedShareToken(req: Request): string | null {
+  const fromHeader = req.header('x-share-token')?.trim();
+  if (fromHeader) return fromHeader;
+  const authorization = req.header('authorization')?.trim() ?? '';
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (bearer) return bearer;
+  const fromQuery = typeof req.query.token === 'string' ? req.query.token.trim() : '';
+  return fromQuery || null;
+}
+
+function parseReviewRoomRoleInput(value: unknown): ReviewRoomRole | null {
+  return value === 'owner' || value === 'editor' || value === 'commenter' || value === 'viewer'
+    ? value
+    : null;
 }
 
 function parseProofSlugInput(value: string): { slug: string; token: string | null } {
@@ -172,6 +196,61 @@ function serializeDocument(
     historyPath: `/review-room/api/documents/${encodeURIComponent(row.proof_slug)}/history`,
     baselinePath: `/review-room/api/documents/${encodeURIComponent(row.proof_slug)}/baselines`,
   };
+}
+
+function serializeDocumentMember(
+  member: ReviewRoomDocumentMemberRow,
+  identity: Awaited<ReturnType<typeof storeGetReviewRoomIdentity>> | null,
+  includeAccessToken: boolean = false,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    documentId: member.review_room_document_id,
+    identityId: member.identity_id,
+    identityKind: identity?.kind ?? null,
+    displayName: identity?.display_name ?? member.identity_id,
+    role: member.role,
+    shareRole: reviewRoomRoleToShareRole(member.role),
+    createdAt: member.created_at,
+    updatedAt: member.updated_at,
+    openPath: appendTokenToPath(buildReviewRoomOpenPath(member.proof_slug), includeAccessToken ? member.proof_access_token ?? null : null),
+  };
+  if (includeAccessToken) payload.accessToken = member.proof_access_token ?? null;
+  return payload;
+}
+
+type ReviewRoomDocumentAccess = {
+  identityId: string;
+  document: ReviewRoomDocumentRow;
+  member: ReviewRoomDocumentMemberRow | null;
+  capabilities: ReturnType<typeof deriveReviewRoomCapabilities>;
+};
+
+async function getReviewRoomDocumentAccess(req: Request, proofSlug: string): Promise<ReviewRoomDocumentAccess | null> {
+  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
+  if (!document) return null;
+  const explicitIdentityId = getExplicitReviewRoomIdentityId(req);
+  const token = getPresentedShareToken(req);
+  const tokenMember = explicitIdentityId
+    ? null
+    : await storeGetReviewRoomDocumentMemberForProofSlugAndToken(proofSlug, token);
+  const identityId = explicitIdentityId ?? tokenMember?.identity_id ?? getCurrentReviewRoomIdentityId(req);
+  const member = tokenMember ?? await storeGetReviewRoomDocumentMemberForProofSlug(proofSlug, identityId);
+  return {
+    identityId: member?.identity_id ?? identityId,
+    document,
+    member,
+    capabilities: member
+      ? deriveReviewRoomCapabilities(member.role, document.share_state)
+      : { canRead: false, canComment: false, canEdit: false, canShare: false, canManageAgents: false },
+  };
+}
+
+function sendDocumentMissing(res: Response): void {
+  res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+}
+
+function sendReviewRoomForbidden(res: Response, code: string, error: string): void {
+  res.status(403).json({ success: false, code, error });
 }
 
 function parseJsonArray(raw: string | null | undefined): unknown[] {
@@ -795,9 +874,12 @@ reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Res
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 50;
   const identityId = getCurrentReviewRoomIdentityId(req);
   const rows = await storeListReviewRoomDocuments(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50);
-  const documents = await Promise.all(
-    rows.map(async (row) => serializeDocument(row, await storeGetReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId))),
-  );
+  const documents = (await Promise.all(
+    rows.map(async (row) => {
+      const member = await storeGetReviewRoomDocumentMemberForProofSlug(row.proof_slug, identityId);
+      return member ? serializeDocument(row, member) : null;
+    }),
+  )).filter((document): document is Record<string, unknown> => Boolean(document));
   res.json({
     success: true,
     currentIdentity: await storeGetReviewRoomIdentity(identityId),
@@ -813,19 +895,23 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req
     res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
     return;
   }
-  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
-  if (!document) {
-    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (!access.capabilities.canRead) {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_FORBIDDEN', 'Your Review Room role cannot read this document history.');
     return;
   }
   const events = await storeListReviewRoomHistoryEvents({
-    documentId: document.id,
+    documentId: access.document.id,
     limit: Number.isFinite(limit) ? limit : 100,
     since,
   });
   res.json({
     success: true,
-    document: serializeDocument(document, null),
+    document: serializeDocument(access.document, access.member),
     events: events.map(serializeHistoryEvent),
   });
 });
@@ -837,15 +923,19 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/baselines', async (r
     res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
     return;
   }
-  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
-  if (!document) {
-    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
     return;
   }
-  const baselines = await storeListPublishedVersions(document.id, Number.isFinite(limit) ? limit : 20);
+  if (!access.capabilities.canRead) {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_FORBIDDEN', 'Your Review Room role cannot read this document baselines.');
+    return;
+  }
+  const baselines = await storeListPublishedVersions(access.document.id, Number.isFinite(limit) ? limit : 20);
   res.json({
     success: true,
-    document: serializeDocument(document, null),
+    document: serializeDocument(access.document, access.member),
     latest: baselines[0] ? serializePublishedVersion(baselines[0]) : null,
     baselines: baselines.map(serializePublishedVersion),
   });
@@ -860,14 +950,17 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/baselines', async (
     res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
     return;
   }
-  const [document, proofDoc] = await Promise.all([
-    storeGetReviewRoomDocumentByProofSlug(proofSlug),
-    engineGetDocumentBySlug(proofSlug),
-  ]);
-  if (!document) {
-    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
     return;
   }
+  if (!access.capabilities.canEdit) {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_BASELINE_FORBIDDEN', 'Your Review Room role cannot create baselines for this document.');
+    return;
+  }
+  const document = access.document;
+  const proofDoc = await engineGetDocumentBySlug(proofSlug);
   if (!proofDoc) {
     res.status(404).json({ success: false, code: 'PROOF_DOCUMENT_MISSING', error: 'The underlying Proof document is missing.' });
     return;
@@ -904,7 +997,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/baselines', async (
   });
   res.status(201).json({
     success: true,
-    document: serializeDocument(document, null),
+    document: serializeDocument(document, access.member),
     baseline: serializePublishedVersion(baseline),
   });
 });
@@ -920,11 +1013,16 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/tasks', async (req: 
     res.status(400).json({ success: false, code: 'INVALID_TASK_STATUS', error: 'Task status must be open, running, delegated, dismissed, completed, or all.' });
     return;
   }
-  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
-  if (!document) {
-    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
     return;
   }
+  if (!access.capabilities.canRead) {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_FORBIDDEN', 'Your Review Room role cannot read this document tasks.');
+    return;
+  }
+  const document = access.document;
   const [tasks, proofDoc, labels] = await Promise.all([
     storeListAssignmentTasks(document.id, status),
     engineGetDocumentBySlug(proofSlug),
@@ -933,7 +1031,7 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/tasks', async (req: 
   const marks = parseJsonObject(proofDoc?.marks) ?? {};
   res.json({
     success: true,
-    document: serializeDocument(document, null),
+    document: serializeDocument(document, access.member),
     tasks: tasks.map((task) => serializeAssignmentTask(task, labels, sourceTextForTask(task, marks))),
   });
 });
@@ -952,11 +1050,16 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/tasks/:taskId/statu
     res.status(400).json({ success: false, code: 'INVALID_TASK_STATUS', error: 'Task status must be completed or dismissed.' });
     return;
   }
-  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
-  if (!document) {
-    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
     return;
   }
+  if (!access.capabilities.canComment) {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_TASK_FORBIDDEN', 'Your Review Room role cannot update tasks for this document.');
+    return;
+  }
+  const document = access.document;
   const before = await storeGetAssignmentTask(taskId);
   if (!before || before.document_id !== document.id) {
     res.status(404).json({ success: false, code: 'TASK_MISSING', error: 'No assignment task exists for that document.' });
@@ -989,6 +1092,92 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/tasks/:taskId/statu
   res.json({
     success: true,
     task: serializeAssignmentTask(task, labels),
+  });
+});
+
+reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/members', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  if (!proofSlug) {
+    res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
+    return;
+  }
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (!access.capabilities.canRead) {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_FORBIDDEN', 'Your Review Room role cannot read this document members.');
+    return;
+  }
+  const members = await storeListReviewRoomDocumentMembersForProofSlug(proofSlug);
+  const identities = new Map(
+    (await Promise.all(members.map((member) => storeGetReviewRoomIdentity(member.identity_id))))
+      .filter((identity): identity is NonNullable<typeof identity> => Boolean(identity))
+      .map((identity) => [identity.id, identity]),
+  );
+  res.json({
+    success: true,
+    document: serializeDocument(access.document, access.member),
+    currentMember: access.member ? serializeDocumentMember(access.member, identities.get(access.member.identity_id) ?? null) : null,
+    members: members.map((member) => serializeDocumentMember(member, identities.get(member.identity_id) ?? null)),
+  });
+});
+
+reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/members', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+  const identityId = normalizeReviewRoomIdentityId(body.identityId);
+  const role = parseReviewRoomRoleInput(body.role);
+  const displayName = typeof body.displayName === 'string' && body.displayName.trim()
+    ? body.displayName.trim().slice(0, 120)
+    : identityId;
+  if (!proofSlug) {
+    res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
+    return;
+  }
+  if (!role) {
+    res.status(400).json({ success: false, code: 'INVALID_REVIEW_ROOM_ROLE', error: 'Role must be owner, editor, commenter, or viewer.' });
+    return;
+  }
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (access.member?.role !== 'owner') {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_MEMBER_FORBIDDEN', 'Only the Review Room document owner can manage collaborator roles.');
+    return;
+  }
+  const identity = await storeUpsertReviewRoomIdentity({
+    id: identityId,
+    workspaceId: access.document.workspace_id,
+    kind: 'human',
+    displayName,
+  });
+  const before = await storeGetReviewRoomDocumentMemberForProofSlug(proofSlug, identityId);
+  const member = await storeUpsertReviewRoomDocumentMember({
+    reviewRoomDocumentId: access.document.id,
+    identityId,
+    role,
+    proofSlug,
+  });
+  await storeCreateReviewRoomHistoryEvent({
+    workspaceId: access.document.workspace_id,
+    documentId: access.document.id,
+    actorId: access.identityId,
+    actorType: 'human',
+    eventType: before ? 'member.role_changed' : 'member.added',
+    targetType: 'document_member',
+    targetId: identityId,
+    before: before ? { role: before.role } : undefined,
+    after: { role: member.role, identityId, displayName: identity.display_name },
+    metadata: { proofSlug },
+  });
+  res.status(before ? 200 : 201).json({
+    success: true,
+    document: serializeDocument(access.document, access.member),
+    member: serializeDocumentMember(member, identity, true),
   });
 });
 

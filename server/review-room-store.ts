@@ -258,6 +258,35 @@ export async function storeGetReviewRoomIdentity(id: string = REVIEW_ROOM_LOCAL_
   `, [id]);
 }
 
+export async function storeUpsertReviewRoomIdentity(input: {
+  id: string;
+  workspaceId?: string;
+  kind?: 'human' | 'agent';
+  displayName?: string | null;
+  managerIdentityId?: string | null;
+}): Promise<ReviewRoomIdentityRow> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const id = input.id.trim();
+  const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
+  const kind = input.kind === 'agent' ? 'agent' : 'human';
+  const displayName = input.displayName?.trim() || id;
+  await db.execute({
+    sql: `INSERT INTO review_room_identities (id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = excluded.workspace_id,
+            kind = excluded.kind,
+            display_name = excluded.display_name,
+            manager_identity_id = excluded.manager_identity_id,
+            updated_at = excluded.updated_at`,
+    args: [id, workspaceId, kind, displayName, input.managerIdentityId ?? null, now, now],
+  });
+  const row = await storeGetReviewRoomIdentity(id);
+  if (!row) throw new Error('Review Room identity was not persisted.');
+  return row;
+}
+
 export async function storeListReviewRoomIdentities(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID): Promise<ReviewRoomIdentityRow[]> {
   return executeAll<ReviewRoomIdentityRow>(`
     SELECT id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at
@@ -377,6 +406,18 @@ export async function storeGetReviewRoomDocumentMemberForProofSlugAndToken(
   `, [proofSlug, trimmed]);
 }
 
+export async function storeListReviewRoomDocumentMembersForProofSlug(
+  proofSlug: string,
+): Promise<ReviewRoomDocumentMemberRow[]> {
+  return executeAll<ReviewRoomDocumentMemberRow>(`
+    ${MEMBER_SELECT}
+    WHERE rr.proof_slug = ?
+    ORDER BY
+      CASE m.role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 WHEN 'commenter' THEN 2 ELSE 3 END,
+      m.updated_at ASC
+  `, [proofSlug]);
+}
+
 async function storeCreateDocumentAccessToken(
   slug: string,
   role: ShareRole,
@@ -401,11 +442,25 @@ export async function storeUpsertReviewRoomDocumentMember(input: {
   proofAccessTokenId?: string | null;
   proofAccessToken?: string | null;
 }): Promise<ReviewRoomDocumentMemberRow> {
+  const previous = await storeGetReviewRoomDocumentMemberForProofSlug(input.proofSlug, input.identityId);
   const access = input.proofAccessToken
     ? { tokenId: input.proofAccessTokenId ?? null, secret: input.proofAccessToken }
     : await storeCreateDocumentAccessToken(input.proofSlug, reviewRoomRoleToShareRole(input.role));
   const now = new Date().toISOString();
   const db = await ensureStore();
+  if (
+    previous?.proof_access_token_id
+    && previous.proof_access_token_id !== access.tokenId
+  ) {
+    await db.execute({
+      sql: `UPDATE document_access
+            SET revoked_at = ?
+            WHERE token_id = ?
+              AND document_slug = ?
+              AND revoked_at IS NULL`,
+      args: [now, previous.proof_access_token_id, input.proofSlug],
+    });
+  }
   await db.execute({
     sql: `INSERT INTO review_room_document_members (
       review_room_document_id, identity_id, role, proof_access_token_id, proof_access_token, created_at, updated_at

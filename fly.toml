@@ -1,0 +1,59 @@
+# Review Room on Fly.io - see docs/review-room-deployment.md.
+# Single always-on Machine. In-memory collab state means ONE instance only;
+# do not raise min/max machines without sticky routing and shared collab state.
+app = "review-room"
+primary_region = "sjc"   # closest to the prior Vercel sfo1; change if app name is taken
+
+[build]
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+  PROOF_ENV = "production"
+  PROOF_TRUST_PROXY_HEADERS = "true"
+  PROOF_PUBLIC_BASE_URL = "https://review-room.chrisjbell.dev"
+  PROOF_COLLAB_V2 = "1"
+  # Proof engine + Yjs live-collab state (better-sqlite3). Durable on the volume.
+  DATABASE_PATH = "/data/proof-share.db"
+  # Share snapshot images. Durable on the volume (or set SNAPSHOT_S3_* secrets instead).
+  SNAPSHOT_DIR = "/data/snapshots"
+
+# Set secrets, not env vars, for sensitive runtime configuration:
+#   fly secrets set PROOF_COLLAB_SIGNING_SECRET=...
+#   fly secrets set PROOF_SHARE_MARKDOWN_API_KEY=...                 # if used
+#   fly secrets set SNAPSHOT_S3_BUCKET=... SNAPSHOT_S3_ACCESS_KEY_ID=... ...   # if used
+#   fly secrets set PROOF_GITHUB_ISSUES_TOKEN=... PROOF_GITHUB_ISSUES_REPO=... # if used
+#
+# Do not set TURSO_DATABASE_URL for the live-collab Fly launch. In this codebase
+# that selects the Vercel-style hosted/libSQL path, which intentionally returns
+# non-collab editor bootstrap responses.
+
+[mounts]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 200
+    soft_limit = 150
+
+  [http_service.http_options]
+    idle_timeout = 600
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "get"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"   # the dependency bundle (satori, resvg, sqlite, milkdown, yjs) needs headroom

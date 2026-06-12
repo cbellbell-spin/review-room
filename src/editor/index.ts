@@ -149,6 +149,8 @@ import { fileClient } from '../bridge/file-client';
 import {
   shareClient,
   type CollabSessionInfo,
+  type ReviewRoomDocumentMember,
+  type ReviewRoomRole,
   type SharePendingEvent,
 } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
@@ -1045,6 +1047,8 @@ class ProofEditorImpl implements ProofEditor {
   private collabEnabled: boolean = false;
   private collabCanComment: boolean = false;
   private collabCanEdit: boolean = false;
+  private reviewRoomCurrentRole: ReviewRoomRole | null = null;
+  private reviewRoomCanManageMembers: boolean = false;
   private applyingCollabRemote: boolean = false;
   private activeCollabSession: CollabSessionInfo | null = null;
   private collabRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -1423,6 +1427,9 @@ class ProofEditorImpl implements ProofEditor {
       const canActInDocument = Boolean(context?.capabilities?.canComment || context?.capabilities?.canEdit);
       this.collabCanComment = Boolean(context?.capabilities?.canComment);
       this.collabCanEdit = Boolean(context?.capabilities?.canEdit);
+      const reviewRoomRole = this.parseReviewRoomRole(context?.reviewRoom?.currentRole);
+      this.reviewRoomCurrentRole = reviewRoomRole;
+      this.reviewRoomCanManageMembers = reviewRoomRole === 'owner';
       const existingViewerName = getViewerName();
       this.shareViewerName = existingViewerName ?? this.shareViewerName ?? this.deriveDefaultShareViewerName();
       setCurrentActorValue(`human:${this.shareViewerName || 'Anonymous'}`);
@@ -2587,7 +2594,7 @@ class ProofEditorImpl implements ProofEditor {
     this.updateReviewRoomToolbarEditState();
     this.updateReviewRoomSuggestingToggle();
     const shareButton = this.getActiveShareChromeRoot()?.querySelector('.share-pill-share-btn') as HTMLElement | null;
-    if (shareButton) shareButton.style.display = this.collabCanEdit ? 'inline-flex' : 'none';
+    if (shareButton) shareButton.style.display = (this.collabCanEdit || this.isReviewRoomRuntime()) ? 'inline-flex' : 'none';
   }
 
   private ensureShareWebSocketConnection(): void {
@@ -3896,6 +3903,210 @@ class ProofEditorImpl implements ProofEditor {
     refreshCursors();
   }
 
+  private openReviewRoomMembersModal(): void {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position:fixed;inset:0;z-index:1100;
+      background:rgba(0,0,0,0.55);
+      display:flex;align-items:flex-start;justify-content:center;
+      padding:48px 16px;
+    `;
+
+    const panel = document.createElement('div');
+    panel.style.cssText = `
+      width:min(620px, 100%);
+      background:rgba(17,24,39,0.98);
+      border:1px solid rgba(255,255,255,0.12);
+      border-radius:16px;
+      box-shadow:0 24px 60px rgba(0,0,0,0.45);
+      color:rgba(255,255,255,0.92);
+      overflow:hidden;
+    `;
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.10)';
+    const title = document.createElement('div');
+    title.textContent = 'Collaborators';
+    title.style.cssText = 'font-size:13px;font-weight:700;letter-spacing:0.02em';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.style.cssText = 'border:0;background:rgba(255,255,255,0.10);color:white;padding:6px 10px;border-radius:999px;font-size:12px;cursor:pointer';
+    header.append(title, close);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'max-height:70vh;overflow:auto;padding:14px 16px 16px 16px;color:rgba(255,255,255,0.86);font-size:12px;line-height:1.5;display:grid;gap:12px;';
+    panel.append(header, body);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    const cleanup = () => {
+      if (!overlay.isConnected) return;
+      overlay.remove();
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') cleanup();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    overlay.addEventListener('mousedown', (ev) => {
+      if (ev.target === overlay) cleanup();
+    });
+    close.onclick = cleanup;
+
+    const setStatus = (text: string, tone: 'neutral' | 'error' | 'success' = 'neutral') => {
+      const status = body.querySelector<HTMLElement>('[data-review-room-members-status]');
+      if (!status) return;
+      status.textContent = text;
+      status.style.color = tone === 'error'
+        ? '#fecaca'
+        : tone === 'success'
+          ? '#bbf7d0'
+          : 'rgba(255,255,255,0.68)';
+    };
+
+    const render = async () => {
+      body.replaceChildren();
+      const loading = document.createElement('div');
+      loading.textContent = 'Loading collaborators...';
+      loading.style.cssText = 'color:rgba(255,255,255,0.68);font-size:12px;';
+      body.appendChild(loading);
+
+      const response = await shareClient.fetchReviewRoomMembers();
+      body.replaceChildren();
+      if (!response || this.isShareRequestError(response) || response.success !== true) {
+        const error = document.createElement('div');
+        error.textContent = this.isShareRequestError(response)
+          ? response.error.message
+          : 'Could not load collaborators.';
+        error.style.cssText = 'color:#fecaca;font-size:12px;line-height:1.45;';
+        body.appendChild(error);
+        return;
+      }
+
+      const currentRole = response.currentMember?.role ?? this.reviewRoomCurrentRole;
+      const canManageMembers = currentRole === 'owner';
+      this.reviewRoomCurrentRole = currentRole;
+      this.reviewRoomCanManageMembers = canManageMembers;
+
+      const summary = document.createElement('div');
+      summary.textContent = `Your access: ${this.formatReviewRoomRole(currentRole)}${canManageMembers ? ' - you can manage collaborator roles.' : ' - only owners can manage collaborator roles.'}`;
+      summary.style.cssText = 'padding:10px 12px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.06);font-size:12px;color:rgba(255,255,255,0.84);';
+      body.appendChild(summary);
+
+      const listTitle = document.createElement('div');
+      listTitle.textContent = `Members (${response.members.length})`;
+      listTitle.style.cssText = 'font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;color:rgba(255,255,255,0.62);';
+      body.appendChild(listTitle);
+
+      const list = document.createElement('div');
+      list.style.cssText = 'display:grid;gap:8px;';
+      for (const member of response.members) {
+        list.appendChild(this.createReviewRoomMemberRow(member));
+      }
+      body.appendChild(list);
+
+      if (!canManageMembers) return;
+
+      const formTitle = document.createElement('div');
+      formTitle.textContent = 'Add or update collaborator';
+      formTitle.style.cssText = 'padding-top:4px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;color:rgba(255,255,255,0.62);';
+
+      const form = document.createElement('form');
+      form.style.cssText = 'display:grid;gap:9px;padding:12px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.05);';
+      const identity = document.createElement('input');
+      identity.name = 'identityId';
+      identity.placeholder = 'Identity id, e.g. editor-alice';
+      identity.required = true;
+      identity.style.cssText = 'min-height:36px;border:1px solid rgba(255,255,255,0.16);border-radius:10px;background:rgba(255,255,255,0.08);color:white;padding:0 10px;font:inherit;font-size:12px;';
+      const displayName = document.createElement('input');
+      displayName.name = 'displayName';
+      displayName.placeholder = 'Display name';
+      displayName.style.cssText = identity.style.cssText;
+      const role = document.createElement('select');
+      role.name = 'role';
+      role.style.cssText = 'min-height:36px;border:1px solid rgba(255,255,255,0.16);border-radius:10px;background:#111827;color:white;padding:0 10px;font:inherit;font-size:12px;';
+      for (const optionRole of ['editor', 'commenter', 'viewer', 'owner'] as ReviewRoomRole[]) {
+        const option = document.createElement('option');
+        option.value = optionRole;
+        option.textContent = this.formatReviewRoomRole(optionRole);
+        role.appendChild(option);
+      }
+      const submitRow = document.createElement('div');
+      submitRow.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;';
+      const submit = document.createElement('button');
+      submit.type = 'submit';
+      submit.textContent = 'Create collaborator link';
+      submit.style.cssText = 'border:0;background:#f9fafb;color:#111827;padding:8px 12px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;';
+      const status = document.createElement('div');
+      status.dataset.reviewRoomMembersStatus = '1';
+      status.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.68);';
+      submitRow.append(submit, status);
+      const result = document.createElement('div');
+      result.style.cssText = 'display:none;gap:8px;padding:10px;border:1px solid rgba(34,197,94,0.35);border-radius:12px;background:rgba(22,101,52,0.18);';
+      form.append(identity, displayName, role, submitRow, result);
+      form.onsubmit = (event) => {
+        event.preventDefault();
+        void (async () => {
+          const identityId = identity.value.trim();
+          if (!identityId) return;
+          submit.disabled = true;
+          setStatus('Saving...');
+          const saved = await shareClient.upsertReviewRoomMember({
+            identityId,
+            displayName: displayName.value.trim() || identityId,
+            role: this.parseReviewRoomRole(role.value) ?? 'viewer',
+          });
+          submit.disabled = false;
+          if (!saved || this.isShareRequestError(saved) || saved.success !== true) {
+            setStatus(this.isShareRequestError(saved) ? saved.error.message : 'Could not save collaborator.', 'error');
+            return;
+          }
+          const link = this.absoluteReviewRoomOpenUrl(saved.member.openPath);
+          result.style.display = 'grid';
+          result.replaceChildren();
+          const linkText = document.createElement('div');
+          linkText.textContent = `${saved.member.displayName || saved.member.identityId} can open as ${this.formatReviewRoomRole(saved.member.role)}.`;
+          linkText.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.88);';
+          const copy = document.createElement('button');
+          copy.type = 'button';
+          copy.textContent = 'Copy collaborator link';
+          copy.style.cssText = 'justify-self:start;border:0;background:rgba(255,255,255,0.92);color:#111827;padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;';
+          copy.onclick = () => {
+            void (async () => {
+              const copied = await this.copyLinkWithFallback(link);
+              copy.textContent = copied ? 'Copied' : 'Copy failed';
+            })();
+          };
+          result.append(linkText, copy);
+          setStatus('Saved.', 'success');
+        })();
+      };
+      body.append(formTitle, form);
+    };
+
+    void render();
+  }
+
+  private createReviewRoomMemberRow(member: ReviewRoomDocumentMember): HTMLElement {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.04);';
+    const left = document.createElement('div');
+    left.style.cssText = 'display:grid;gap:2px;min-width:0;';
+    const name = document.createElement('div');
+    name.textContent = member.displayName || member.identityId;
+    name.style.cssText = 'font-size:12px;font-weight:750;color:rgba(255,255,255,0.92);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    const meta = document.createElement('div');
+    meta.textContent = member.identityId;
+    meta.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.55);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    left.append(name, meta);
+    const role = document.createElement('div');
+    role.textContent = this.formatReviewRoomRole(member.role);
+    role.style.cssText = 'flex:0 0 auto;border:1px solid rgba(255,255,255,0.14);border-radius:999px;padding:4px 8px;font-size:11px;font-weight:750;color:rgba(255,255,255,0.80);background:rgba(255,255,255,0.06);';
+    row.append(left, role);
+    return row;
+  }
+
   private openShareActivityModal(): void {
     const overlay = document.createElement('div');
     overlay.style.cssText = `
@@ -4134,12 +4345,31 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  private parseReviewRoomRole(value: unknown): ReviewRoomRole | null {
+    return value === 'owner' || value === 'editor' || value === 'commenter' || value === 'viewer'
+      ? value
+      : null;
+  }
+
+  private formatReviewRoomRole(role: ReviewRoomRole | null): string {
+    if (!role) return 'Unknown access';
+    return role.charAt(0).toUpperCase() + role.slice(1);
+  }
+
   private copyWithPromptFallback(text: string, promptLabel = 'Copy link:'): boolean {
     try {
       window.prompt(promptLabel, text);
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private absoluteReviewRoomOpenUrl(pathOrUrl: string): string {
+    try {
+      return new URL(pathOrUrl, window.location.origin).toString();
+    } catch {
+      return pathOrUrl;
     }
   }
 
@@ -4754,6 +4984,8 @@ class ProofEditorImpl implements ProofEditor {
         const result = await shareClient.updateReviewRoomTaskStatus(taskId, status);
         return Boolean(result && !('error' in result) && result.success === true);
       },
+      canCreateBaseline: () => this.collabCanEdit,
+      canUpdateTasks: () => this.collabCanComment,
       isRealtimeAvailable: () => !this.reviewRoomRestSaveMode,
       onToggle: (expanded) => {
         this.reviewRoomReviewButtonEl?.setAttribute('aria-expanded', String(expanded));
@@ -4942,7 +5174,7 @@ class ProofEditorImpl implements ProofEditor {
   private createShareMenuButton(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'share-pill-share-btn';
-    container.style.cssText = `position:relative;display:${this.collabCanEdit ? 'inline-flex' : 'none'};align-items:center`;
+    container.style.cssText = `position:relative;display:${this.collabCanEdit || this.isReviewRoomRuntime() ? 'inline-flex' : 'none'};align-items:center`;
 
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -5067,6 +5299,10 @@ class ProofEditorImpl implements ProofEditor {
       };
 
       addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
+      if (this.isReviewRoomRuntime()) {
+        addActionItem(`Your access: ${this.formatReviewRoomRole(this.reviewRoomCurrentRole)}`, () => this.openReviewRoomMembersModal(), { subtle: true });
+        addActionItem(this.reviewRoomCanManageMembers ? 'Manage collaborators' : 'View collaborators', () => this.openReviewRoomMembersModal());
+      }
       addItem('Download Markdown', async () => this.downloadCurrentDocument('markdown'), { successText: 'Saved' });
       addItem('Download Text', async () => this.downloadCurrentDocument('text'), { successText: 'Saved' });
       addDivider();

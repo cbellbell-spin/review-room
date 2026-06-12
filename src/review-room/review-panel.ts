@@ -56,6 +56,8 @@ export type ReviewPanelHost = {
   createBaseline(note: string | null): Promise<ReviewRoomPublishedVersion | null>;
   fetchTasks(): Promise<ReviewRoomAssignmentTask[]>;
   updateTaskStatus(taskId: string, status: 'completed' | 'dismissed'): Promise<boolean>;
+  canCreateBaseline(): boolean;
+  canUpdateTasks(): boolean;
   isRealtimeAvailable(): boolean;
   onToggle(expanded: boolean): void;
 };
@@ -590,7 +592,15 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:8px;align-items:center;';
     const create = smallButton(latest ? 'Create new baseline' : 'Create baseline', 'primary');
+    const canCreateBaseline = host.canCreateBaseline();
+    textarea.disabled = !canCreateBaseline;
+    create.disabled = !canCreateBaseline;
+    if (!canCreateBaseline) {
+      textarea.placeholder = 'Only editors and owners can create baselines.';
+      create.title = 'Only editors and owners can create baselines.';
+    }
     create.onclick = () => {
+      if (!host.canCreateBaseline()) return;
       void (async () => {
         create.disabled = true;
         const created = await host.createBaseline(baselineNote.trim() || null);
@@ -662,7 +672,15 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       if (task.status === 'open') {
         const complete = smallButton('Complete', 'primary');
         const dismiss = smallButton('Dismiss');
+        const canUpdateTasks = host.canUpdateTasks();
+        complete.disabled = !canUpdateTasks;
+        dismiss.disabled = !canUpdateTasks;
+        if (!canUpdateTasks) {
+          complete.title = 'Comment access is required to update tasks.';
+          dismiss.title = 'Comment access is required to update tasks.';
+        }
         complete.onclick = () => {
+          if (!host.canUpdateTasks()) return;
           void (async () => {
             complete.disabled = true;
             dismiss.disabled = true;
@@ -675,6 +693,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
           })();
         };
         dismiss.onclick = () => {
+          if (!host.canUpdateTasks()) return;
           void (async () => {
             complete.disabled = true;
             dismiss.disabled = true;

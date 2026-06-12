@@ -5,6 +5,7 @@ build
 build-production
 build-release
 .worktrees
+snapshots/
 *.db
 *.db-shm
 *.db-wal

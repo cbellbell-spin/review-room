@@ -156,6 +156,34 @@ export interface ReviewRoomTaskStatusResponse {
   task: ReviewRoomAssignmentTask;
 }
 
+export type ReviewRoomRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
+export interface ReviewRoomDocumentMember {
+  documentId: string;
+  identityId: string;
+  identityKind?: string | null;
+  displayName: string;
+  role: ReviewRoomRole;
+  shareRole: ShareRole;
+  createdAt: string;
+  updatedAt: string;
+  openPath: string;
+  accessToken?: string | null;
+}
+
+export interface ReviewRoomMembersResponse {
+  success: boolean;
+  document?: Record<string, unknown>;
+  currentMember?: ReviewRoomDocumentMember | null;
+  members: ReviewRoomDocumentMember[];
+}
+
+export interface ReviewRoomUpsertMemberResponse {
+  success: boolean;
+  document?: Record<string, unknown>;
+  member: ReviewRoomDocumentMember;
+}
+
 export type ShareRequestError = {
   error: {
     status: number;
@@ -241,6 +269,31 @@ function parseReviewRoomPublishedVersion(value: Record<string, unknown>): Review
     createdByIdentityId: typeof value.createdByIdentityId === 'string' ? value.createdByIdentityId : 'unknown',
     createdAt: typeof value.createdAt === 'string' ? value.createdAt : '',
     note: typeof value.note === 'string' ? value.note : null,
+  };
+}
+
+function isReviewRoomRole(value: unknown): value is ReviewRoomRole {
+  return value === 'owner' || value === 'editor' || value === 'commenter' || value === 'viewer';
+}
+
+function parseShareRole(value: unknown): ShareRole {
+  return value === 'owner_bot' || value === 'editor' || value === 'commenter' || value === 'viewer'
+    ? value
+    : 'viewer';
+}
+
+function parseReviewRoomDocumentMember(value: Record<string, unknown>): ReviewRoomDocumentMember {
+  return {
+    documentId: typeof value.documentId === 'string' ? value.documentId : '',
+    identityId: typeof value.identityId === 'string' ? value.identityId : '',
+    identityKind: typeof value.identityKind === 'string' ? value.identityKind : null,
+    displayName: typeof value.displayName === 'string' ? value.displayName : '',
+    role: isReviewRoomRole(value.role) ? value.role : 'viewer',
+    shareRole: parseShareRole(value.shareRole),
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : '',
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : '',
+    openPath: typeof value.openPath === 'string' ? value.openPath : '',
+    accessToken: typeof value.accessToken === 'string' ? value.accessToken : null,
   };
 }
 
@@ -976,6 +1029,64 @@ export class ShareClient {
         updatedAt: typeof task.updatedAt === 'string' ? task.updatedAt : '',
         completedAt: typeof task.completedAt === 'string' ? task.completedAt : null,
       },
+    };
+  }
+
+  async fetchReviewRoomMembers(
+    options?: { token?: string },
+  ): Promise<ReviewRoomMembersResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/members`, {
+      headers: this.getShareAuthHeaders(options?.token),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const rawMembers = Array.isArray(payload?.members) ? payload.members : [];
+    const currentMember = payload?.currentMember && typeof payload.currentMember === 'object' && !Array.isArray(payload.currentMember)
+      ? parseReviewRoomDocumentMember(payload.currentMember as Record<string, unknown>)
+      : null;
+    return {
+      success: payload?.success === true,
+      document: payload?.document && typeof payload.document === 'object' && !Array.isArray(payload.document)
+        ? payload.document as Record<string, unknown>
+        : undefined,
+      currentMember,
+      members: rawMembers
+        .filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === 'object' && !Array.isArray(member))
+        .filter((member) => typeof member.identityId === 'string')
+        .map(parseReviewRoomDocumentMember),
+    };
+  }
+
+  async upsertReviewRoomMember(
+    input: { identityId: string; displayName?: string | null; role: ReviewRoomRole },
+    options?: { token?: string },
+  ): Promise<ReviewRoomUpsertMemberResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/members`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getShareAuthHeaders(options?.token),
+      },
+      body: JSON.stringify({
+        identityId: input.identityId,
+        displayName: input.displayName ?? null,
+        role: input.role,
+      }),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const member = payload?.member && typeof payload.member === 'object' && !Array.isArray(payload.member)
+      ? parseReviewRoomDocumentMember(payload.member as Record<string, unknown>)
+      : null;
+    if (!member) return { success: false, member: {} as ReviewRoomDocumentMember };
+    return {
+      success: payload?.success === true,
+      document: payload?.document && typeof payload.document === 'object' && !Array.isArray(payload.document)
+        ? payload.document as Record<string, unknown>
+        : undefined,
+      member,
     };
   }
 

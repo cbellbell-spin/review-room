@@ -127,6 +127,24 @@ assert(
   'Expected share client and sidebar host to expose typed Review Room history, task, and baseline loading/actions',
 );
 assert(
+  shareClientSource.includes('ReviewRoomDocumentMember')
+    && shareClientSource.includes('async fetchReviewRoomMembers(')
+    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/members')
+    && shareClientSource.includes('async upsertReviewRoomMember(')
+    && editorSource.includes('private openReviewRoomMembersModal()')
+    && editorSource.includes('Manage collaborators')
+    && editorSource.includes('View collaborators')
+    && editorSource.includes('shareClient.fetchReviewRoomMembers()')
+    && editorSource.includes('shareClient.upsertReviewRoomMember({')
+    && editorSource.includes('this.reviewRoomCanManageMembers = reviewRoomRole === \'owner\';')
+    && editorSource.includes('this.collabCanEdit || this.isReviewRoomRuntime()')
+    && reviewPanelSource.includes('canCreateBaseline(): boolean;')
+    && reviewPanelSource.includes('canUpdateTasks(): boolean;')
+    && reviewPanelSource.includes('Only editors and owners can create baselines.')
+    && reviewPanelSource.includes('Comment access is required to update tasks.'),
+  'Expected Review Room member management UI and role-gated cockpit actions',
+);
+assert(
   editorSource.includes('private createReviewRoomSaveButton()')
     && editorSource.includes('private createReviewRoomCancelButton()')
     && editorSource.includes("window.location.href = '/review-room';"),

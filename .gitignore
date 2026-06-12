@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 dist-server/
+.proof-build-info.json
 build/
 .vite/
 
