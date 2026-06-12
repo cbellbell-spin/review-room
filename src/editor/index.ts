@@ -4635,12 +4635,18 @@ class ProofEditorImpl implements ProofEditor {
     const serverMarks = doc.marks as Record<string, StoredMark>;
     this.lastReceivedServerMarks = { ...serverMarks };
     this.initialMarksSynced = true;
-    const contentWithMarks = embedMarks(doc.markdown, serverMarks);
-    this.loadDocument(contentWithMarks, { allowShareContentMutation: true });
-    if (Object.keys(serverMarks).length > 0) {
-      this.applyExternalMarks(serverMarks);
+    if (!this.collabEnabled) {
+      // Only the REST save mode may replace the document wholesale. With live
+      // collab connected, a local replaceWith races the same change arriving
+      // over the websocket (concurrent full replaces duplicate or revert
+      // content); the collab runtime delivers content and marks instead.
+      const contentWithMarks = embedMarks(doc.markdown, serverMarks);
+      this.loadDocument(contentWithMarks, { allowShareContentMutation: true });
+      if (Object.keys(serverMarks).length > 0) {
+        this.applyExternalMarks(serverMarks);
+      }
+      this.captureReviewRoomSavedSnapshot();
     }
-    this.captureReviewRoomSavedSnapshot();
     void this.updateReviewRoomReviewButtonCount();
   }
 

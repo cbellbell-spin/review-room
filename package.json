@@ -23,6 +23,7 @@
     "test:review-room-baselines": "tsx src/tests/review-room-baselines.test.ts",
     "test:hosted-agent-routes": "tsx src/tests/hosted-agent-routes.test.ts",
     "test:review-room-create-flow": "npm run build && tsx src/tests/review-room-create-flow.playwright.ts",
+    "test:review-room-accept-race": "npm run build && tsx src/tests/review-room-accept-live-collab-race.playwright.ts",
     "demo:agent": "npm --workspace proof-example run demo:agent"
   },
   "dependencies": {

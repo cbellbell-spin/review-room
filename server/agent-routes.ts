@@ -4068,7 +4068,11 @@ agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
         verify: true,
         source: 'marks.accept',
         stabilityMs: EDIT_COLLAB_STABILITY_MS,
-        strictLiveDoc: true,
+        // Accept bumps the access epoch and invalidates the collab room so live
+        // clients rehydrate the finalized document; with the room deliberately
+        // torn down, verification must accept the authoritative readback
+        // instead of requiring a loaded live doc.
+        strictLiveDoc: false,
         apply: false,
       },
     );

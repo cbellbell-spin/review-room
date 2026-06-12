@@ -59,6 +59,7 @@ type CollabSessionResponse = {
     slug: string;
     token: string;
     role: string;
+    accessEpoch: number;
   };
 };
 
@@ -134,36 +135,43 @@ async function run(): Promise<void> {
   const collabSession = await mustJson<CollabSessionResponse>(collabSessionRes, 'collab-session');
   assert(collabSession.success === true, 'Expected successful collab session');
 
-  const ydoc = new Y.Doc();
-  const provider = new HocuspocusProvider({
-    url: normalizeWsBase(collabSession.session.collabWsUrl),
-    name: collabSession.session.slug,
-    document: ydoc,
-    parameters: {
-      token: collabSession.session.token,
-      role: collabSession.session.role,
-    },
-    token: collabSession.session.token,
-    preserveConnection: false,
-    broadcast: false,
-  });
-
-  let connected = false;
-  let synced = false;
-  provider.on('status', (event: { status: string }) => {
-    if (event.status === 'connected') connected = true;
-  });
-  provider.on('synced', (event: { state?: boolean }) => {
-    if (event.state !== false) synced = true;
-  });
+  const collabClients: Array<{ ydoc: Y.Doc; provider: HocuspocusProvider }> = [];
+  async function connectCollab(session: CollabSessionResponse['session'], label: string): Promise<{ ydoc: Y.Doc; provider: HocuspocusProvider }> {
+    const ydoc = new Y.Doc();
+    let connected = false;
+    let synced = false;
+    const provider = new HocuspocusProvider({
+      url: normalizeWsBase(session.collabWsUrl),
+      name: session.slug,
+      document: ydoc,
+      parameters: {
+        token: session.token,
+        role: session.role,
+      },
+      token: session.token,
+      preserveConnection: false,
+      broadcast: false,
+    });
+    provider.on('status', (event: { status: string }) => {
+      if (event.status === 'connected') connected = true;
+    });
+    provider.on('synced', (event: { state?: boolean }) => {
+      if (event.state !== false) synced = true;
+    });
+    const client = { ydoc, provider };
+    collabClients.push(client);
+    await waitFor(() => connected && synced, 10_000, `${label} provider connected+synced`);
+    return client;
+  }
 
   try {
-    await waitFor(() => connected && synced, 10_000, 'provider connected+synced');
+    const liveViewer = await connectCollab(collabSession.session, 'live viewer');
 
-    const markdownText = ydoc.getText('markdown');
-    const marksMap = ydoc.getMap('marks');
-
-    const acceptPromise = fetch(`${httpBase}/api/agent/${created.slug}/marks/accept`, {
+    // Accept intentionally bumps the document access epoch and invalidates the
+    // collab room, so the pre-accept provider never observes the accepted mark.
+    // The contract under test: accept converges canonically, stale-epoch client
+    // writes are dropped, and a fresh collab session rehydrates the finalized doc.
+    const acceptRes = await fetch(`${httpBase}/api/agent/${created.slug}/marks/accept`, {
       method: 'POST',
       headers: {
         ...CLIENT_HEADERS,
@@ -172,21 +180,6 @@ async function run(): Promise<void> {
       },
       body: JSON.stringify({ markId: suggestionId, by: 'human:editor' }),
     });
-
-    await waitFor(() => markdownText.toString().includes('OSS'), 5_000, 'accepted markdown applied');
-
-    await waitFor(() => {
-      const mark = marksMap.get(suggestionId) as Record<string, unknown> | undefined;
-      return mark?.status === 'accepted';
-    }, 5_000, 'accepted mark present in collab map');
-
-    marksMap.doc?.transact(() => {
-      marksMap.delete(suggestionId);
-    }, 'test-accepted-mark-cleanup');
-
-    await sleep(75);
-
-    const acceptRes = await acceptPromise;
     const acceptPayload = await mustJson<{
       success?: boolean;
       collab?: { status?: string; markdownConfirmed?: boolean | null; fragmentConfirmed?: boolean | null; canonicalConfirmed?: boolean | null };
@@ -201,6 +194,16 @@ async function run(): Promise<void> {
       `Expected canonicalConfirmed true, got ${String(acceptPayload.collab?.canonicalConfirmed)}`,
     );
 
+    // A stale viewer echoing the old room state (mark deletion + pre-accept text)
+    // must not clobber the accepted canonical content.
+    liveViewer.ydoc.transact(() => {
+      const staleText = liveViewer.ydoc.getText('markdown');
+      if (staleText.length > 0) staleText.delete(0, staleText.length);
+      staleText.insert(0, 'Hello open source');
+      liveViewer.ydoc.getMap('marks').delete(suggestionId);
+    }, 'test-stale-viewer-echo');
+    await sleep(150);
+
     const stateRes = await fetch(`${httpBase}/api/agent/${created.slug}/state`, {
       headers: { ...CLIENT_HEADERS, 'x-share-token': created.ownerSecret },
     });
@@ -208,15 +211,39 @@ async function run(): Promise<void> {
     const markdown = typeof state.markdown === 'string' ? state.markdown : (state.content || '');
     assert(markdown.includes('OSS'), 'Expected accepted suggestion to persist in canonical markdown');
 
-    console.log('✓ marks/accept tolerates accepted mark cleanup during canonical stability verification');
+    const refreshedSessionRes = await fetch(`${httpBase}/api/documents/${created.slug}/collab-session`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': created.ownerSecret },
+    });
+    const refreshedSession = await mustJson<CollabSessionResponse>(refreshedSessionRes, 'refreshed collab-session');
+    assert(refreshedSession.success === true, 'Expected successful refreshed collab session');
+    assert(
+      refreshedSession.session.accessEpoch > collabSession.session.accessEpoch,
+      `Expected accept to bump the access epoch, got ${refreshedSession.session.accessEpoch} (was ${collabSession.session.accessEpoch})`,
+    );
+
+    const rehydrated = await connectCollab(refreshedSession.session, 'rehydrated viewer');
+    await waitFor(
+      () => rehydrated.ydoc.getText('markdown').toString().includes('OSS'),
+      5_000,
+      'rehydrated collab doc reflects accepted content',
+    );
+    const rehydratedMark = rehydrated.ydoc.getMap('marks').get(suggestionId) as Record<string, unknown> | undefined;
+    assert(
+      rehydratedMark === undefined || rehydratedMark.status === 'accepted',
+      `Expected rehydrated mark to be finalized, got ${JSON.stringify(rehydratedMark)}`,
+    );
+
+    console.log('✓ marks/accept invalidates the collab room and rehydrates the accepted document');
   } finally {
-    try {
-      provider.disconnect();
-      provider.destroy();
-    } catch {
-      // ignore
+    for (const client of collabClients) {
+      try {
+        client.provider.disconnect();
+        client.provider.destroy();
+      } catch {
+        // ignore
+      }
+      client.ydoc.destroy();
     }
-    ydoc.destroy();
     await collab.stopCollabRuntime();
     try {
       wss.close();
@@ -234,7 +261,9 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+run()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });

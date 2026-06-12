@@ -2583,12 +2583,14 @@ async function updateSuggestionStatusAsync(
       status,
     },
   };
-  if (status === 'rejected') {
-    if ((mutation.document.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
-      bumpDocumentAccessEpoch(slug);
-    }
-    invalidateCollabDocument(slug);
+  // Live collab replicas still hold the finalized suggestion span inline and can
+  // echo it back (resurrecting the mark or clobbering the applied content), so
+  // accept must force rehydration the same way reject does: bump the access
+  // epoch and invalidate the room so stale-epoch client writes are dropped.
+  if ((mutation.document.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
+    bumpDocumentAccessEpoch(slug);
   }
+  invalidateCollabDocument(slug);
 
   return {
     status: 200,
