@@ -100,6 +100,38 @@ export interface ReviewRoomHistoryResponse {
   document?: Record<string, unknown>;
 }
 
+export type ReviewRoomAssignmentTaskStatus = 'open' | 'running' | 'delegated' | 'dismissed' | 'completed';
+
+export interface ReviewRoomAssignmentTask {
+  id: string;
+  documentId: string;
+  proofEventId?: number | null;
+  sourceType: string;
+  sourceId?: string | null;
+  sourceText?: string | null;
+  createdByActorId: string;
+  createdByActorType: string;
+  assignedToActorId: string;
+  assignedToActorType: 'human' | 'agent';
+  assignedToLabel: string;
+  managerIdentityId?: string | null;
+  status: ReviewRoomAssignmentTaskStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+}
+
+export interface ReviewRoomTasksResponse {
+  success: boolean;
+  tasks: ReviewRoomAssignmentTask[];
+  document?: Record<string, unknown>;
+}
+
+export interface ReviewRoomTaskStatusResponse {
+  success: boolean;
+  task: ReviewRoomAssignmentTask;
+}
+
 export type ShareRequestError = {
   error: {
     status: number;
@@ -159,6 +191,14 @@ const MUTATION_BASE_STATE_RETRY_DELAY_MS = 100;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isReviewRoomAssignmentTaskStatus(value: unknown): value is ReviewRoomAssignmentTaskStatus {
+  return value === 'open'
+    || value === 'running'
+    || value === 'delegated'
+    || value === 'dismissed'
+    || value === 'completed';
 }
 
 export class ShareClient {
@@ -754,6 +794,89 @@ export class ShareClient {
             : {},
           createdAt: typeof event.createdAt === 'string' ? event.createdAt : '',
         })),
+    };
+  }
+
+  async fetchReviewRoomTasks(
+    options?: { token?: string; status?: ReviewRoomAssignmentTaskStatus | 'all' },
+  ): Promise<ReviewRoomTasksResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const status = options?.status ?? 'all';
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/tasks?status=${encodeURIComponent(status)}`, {
+      headers: this.getShareAuthHeaders(options?.token),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const rawTasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+    return {
+      success: payload?.success === true,
+      document: payload?.document && typeof payload.document === 'object' && !Array.isArray(payload.document)
+        ? payload.document as Record<string, unknown>
+        : undefined,
+      tasks: rawTasks
+        .filter((task): task is Record<string, unknown> => Boolean(task) && typeof task === 'object' && !Array.isArray(task))
+        .filter((task) => typeof task.id === 'string')
+        .map((task) => ({
+          id: String(task.id),
+          documentId: typeof task.documentId === 'string' ? task.documentId : '',
+          proofEventId: typeof task.proofEventId === 'number' ? task.proofEventId : null,
+          sourceType: typeof task.sourceType === 'string' ? task.sourceType : 'comment',
+          sourceId: typeof task.sourceId === 'string' ? task.sourceId : null,
+          sourceText: typeof task.sourceText === 'string' ? task.sourceText : null,
+          createdByActorId: typeof task.createdByActorId === 'string' ? task.createdByActorId : 'unknown',
+          createdByActorType: typeof task.createdByActorType === 'string' ? task.createdByActorType : 'unknown',
+          assignedToActorId: typeof task.assignedToActorId === 'string' ? task.assignedToActorId : 'unknown',
+          assignedToActorType: task.assignedToActorType === 'human' ? 'human' : 'agent',
+          assignedToLabel: typeof task.assignedToLabel === 'string' ? task.assignedToLabel : 'Unknown assignee',
+          managerIdentityId: typeof task.managerIdentityId === 'string' ? task.managerIdentityId : null,
+          status: isReviewRoomAssignmentTaskStatus(task.status) ? task.status : 'open',
+          createdAt: typeof task.createdAt === 'string' ? task.createdAt : '',
+          updatedAt: typeof task.updatedAt === 'string' ? task.updatedAt : '',
+          completedAt: typeof task.completedAt === 'string' ? task.completedAt : null,
+        })),
+    };
+  }
+
+  async updateReviewRoomTaskStatus(
+    taskId: string,
+    status: Extract<ReviewRoomAssignmentTaskStatus, 'completed' | 'dismissed'>,
+    options?: { token?: string },
+  ): Promise<ReviewRoomTaskStatusResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/tasks/${encodeURIComponent(taskId)}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getShareAuthHeaders(options?.token),
+      },
+      body: JSON.stringify({ status }),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const task = payload?.task && typeof payload.task === 'object' && !Array.isArray(payload.task)
+      ? payload.task as Record<string, unknown>
+      : null;
+    if (!task) return { success: false, task: {} as ReviewRoomAssignmentTask };
+    return {
+      success: payload?.success === true,
+      task: {
+        id: typeof task.id === 'string' ? task.id : taskId,
+        documentId: typeof task.documentId === 'string' ? task.documentId : '',
+        proofEventId: typeof task.proofEventId === 'number' ? task.proofEventId : null,
+        sourceType: typeof task.sourceType === 'string' ? task.sourceType : 'comment',
+        sourceId: typeof task.sourceId === 'string' ? task.sourceId : null,
+        sourceText: typeof task.sourceText === 'string' ? task.sourceText : null,
+        createdByActorId: typeof task.createdByActorId === 'string' ? task.createdByActorId : 'unknown',
+        createdByActorType: typeof task.createdByActorType === 'string' ? task.createdByActorType : 'unknown',
+        assignedToActorId: typeof task.assignedToActorId === 'string' ? task.assignedToActorId : 'unknown',
+        assignedToActorType: task.assignedToActorType === 'human' ? 'human' : 'agent',
+        assignedToLabel: typeof task.assignedToLabel === 'string' ? task.assignedToLabel : 'Unknown assignee',
+        managerIdentityId: typeof task.managerIdentityId === 'string' ? task.managerIdentityId : null,
+        status: isReviewRoomAssignmentTaskStatus(task.status) ? task.status : status,
+        createdAt: typeof task.createdAt === 'string' ? task.createdAt : '',
+        updatedAt: typeof task.updatedAt === 'string' ? task.updatedAt : '',
+        completedAt: typeof task.completedAt === 'string' ? task.completedAt : null,
+      },
     };
   }
 

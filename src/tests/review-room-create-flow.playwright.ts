@@ -94,9 +94,7 @@ async function run(): Promise<void> {
     await expect(page.locator('#review-room-status-slot .status-label')).toHaveText('Saved', { timeout: 12_000 });
     await page.getByRole('button', { name: 'Save and return to documents' }).click();
     await page.waitForURL(`${baseUrl}/review-room`);
-    await page.locator('details[aria-labelledby="docs-heading"]').evaluate((details) => {
-      (details as HTMLDetailsElement).open = true;
-    });
+    await expect(page.locator('section[aria-labelledby="docs-heading"]')).toBeVisible();
     await expect(page.getByText(title)).toBeVisible();
     await waitForNoHorizontalOverflow(page);
 

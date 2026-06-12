@@ -94,7 +94,7 @@ assert(
     && reviewPanelSource.includes('ensureReviewRoomTokens();')
     && reviewPanelSource.includes('var(--rr-accent)')
     && reviewPanelSource.includes("tabBar.setAttribute('role', 'tablist');")
-    && reviewPanelSource.includes("{ value: 'tasks', label: 'Tasks' }")
+    && reviewPanelSource.includes("{ value: 'tasks', label: `Tasks ${counts.tasks}` }")
     && reviewPanelSource.includes("{ value: 'publish', label: 'Publish' }")
     && reviewPanelSource.includes('Realtime sync unavailable on this host'),
   'Expected the extracted Review Room cockpit to use CJB tokens, tabs, and a realtime availability note',
@@ -104,8 +104,16 @@ assert(
     && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/history?limit=${limit}')
     && shareClientSource.includes('ReviewRoomHistoryEvent')
     && shareClientSource.includes('before: event.before')
-    && shareClientSource.includes('after: event.after'),
-  'Expected share client to expose typed Review Room history loading',
+    && shareClientSource.includes('after: event.after')
+    && shareClientSource.includes('async fetchReviewRoomTasks(')
+    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/tasks?status=${encodeURIComponent(status)}')
+    && shareClientSource.includes('async updateReviewRoomTaskStatus(')
+    && editorSource.includes('shareClient.fetchReviewRoomTasks({ status: \'all\' })')
+    && editorSource.includes('shareClient.updateReviewRoomTaskStatus(taskId, status)')
+    && reviewPanelSource.includes('renderTasks(tasks)')
+    && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'completed')")
+    && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'dismissed')"),
+  'Expected share client and sidebar host to expose typed Review Room history and task loading/actions',
 );
 assert(
   editorSource.includes('private createReviewRoomSaveButton()')

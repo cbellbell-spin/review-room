@@ -147,6 +147,7 @@ import {
   resolveHostedDocumentAccessRole,
   storeHostedGetActionDraftChunk,
 } from './hosted-review-room-db.js';
+import { safeCreateAssignmentTasksFromCommentMentions } from './mention-tasks.js';
 
 export const agentRoutes = Router({ mergeParams: true });
 
@@ -917,6 +918,26 @@ function sendMutationResponse(
 
 function asPayload(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
+}
+
+async function safeCreateMentionTasksFromMutationResult(input: {
+  slug: string;
+  payload: Record<string, unknown>;
+  result: EngineExecutionResult;
+  fallbackSourceId?: string | null;
+}): Promise<void> {
+  if (input.result.status < 200 || input.result.status >= 300) return;
+  const body = isRecord(input.result.body) ? input.result.body : {};
+  const sourceId = typeof body.markId === 'string' && body.markId.trim()
+    ? body.markId.trim()
+    : (typeof input.fallbackSourceId === 'string' && input.fallbackSourceId.trim() ? input.fallbackSourceId.trim() : null);
+  await safeCreateAssignmentTasksFromCommentMentions({
+    proofSlug: input.slug,
+    sourceId,
+    text: typeof input.payload.text === 'string' ? input.payload.text : '',
+    actorId: typeof input.payload.by === 'string' && input.payload.by.trim() ? input.payload.by.trim() : 'ai:unknown',
+    proofEventId: typeof body.eventId === 'number' ? body.eventId : null,
+  });
 }
 
 function readQueryString(value: unknown): string {
@@ -3874,7 +3895,9 @@ agentRoutes.post('/:slug/marks/comment', async (req: Request, res: Response) => 
       }, { route: mutationRoute, slug });
       return;
     }
-    const result = await executeHostedDocumentOperation(slug, 'POST', '/marks/comment', asPayload(req.body));
+    const payload = asPayload(req.body);
+    const result = await executeHostedDocumentOperation(slug, 'POST', '/marks/comment', payload);
+    await safeCreateMentionTasksFromMutationResult({ slug, payload, result });
     sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
     return;
   }
@@ -3888,6 +3911,7 @@ agentRoutes.post('/:slug/marks/comment', async (req: Request, res: Response) => 
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/comment', payload, mutationContext);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
+    await safeCreateMentionTasksFromMutationResult({ slug, payload, result });
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'comment.add' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
@@ -4145,6 +4169,12 @@ agentRoutes.post('/:slug/marks/reply', async (req: Request, res: Response) => {
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/reply', payload, mutationContext);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
+    await safeCreateMentionTasksFromMutationResult({
+      slug,
+      payload,
+      result,
+      fallbackSourceId: typeof payload.markId === 'string' ? payload.markId : null,
+    });
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'comment.reply' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });

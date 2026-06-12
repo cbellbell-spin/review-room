@@ -11,6 +11,7 @@ import {
   resolveDocumentAccess,
   reviewRoomRoleToShareRole,
   type DocumentRow,
+  type ReviewRoomAssignmentTaskRow,
   type ReviewRoomDocumentMemberRow,
   type ReviewRoomDocumentRow,
 } from './db.js';
@@ -25,13 +26,16 @@ import {
 import {
   storeCreateReviewRoomDocumentRecord,
   storeCreateReviewRoomHistoryEvent,
+  storeGetAssignmentTask,
   storeGetReviewRoomDocumentByProofSlug,
   storeGetReviewRoomDocumentMemberForProofSlug,
   storeGetReviewRoomIdentity,
+  storeListAssignmentTasks,
   storeListReviewRoomAgents,
   storeListReviewRoomDocuments,
   storeListReviewRoomHistoryEvents,
   storeListReviewRoomIdentities,
+  storeUpdateAssignmentTaskStatus,
   storeUpsertReviewRoomDocumentMember,
 } from './review-room-store.js';
 import {
@@ -240,6 +244,67 @@ function serializeHistoryEvent(row: {
     metadata: parseJsonObject(row.metadata_json) ?? {},
     createdAt: row.created_at,
   };
+}
+
+function serializeAssignmentTask(
+  row: ReviewRoomAssignmentTaskRow,
+  labels: Map<string, string> = new Map(),
+  sourceText: string | null = null,
+): Record<string, unknown> {
+  const assigneeKey = `${row.assigned_to_actor_type}:${row.assigned_to_actor_id}`;
+  return {
+    id: row.id,
+    documentId: row.document_id,
+    proofEventId: row.proof_event_id,
+    sourceType: row.source_type,
+    sourceId: row.source_id,
+    sourceText,
+    createdByActorId: row.created_by_actor_id,
+    createdByActorType: row.created_by_actor_type,
+    assignedToActorId: row.assigned_to_actor_id,
+    assignedToActorType: row.assigned_to_actor_type,
+    assignedToLabel: labels.get(assigneeKey) ?? row.assigned_to_actor_id,
+    managerIdentityId: row.manager_identity_id,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+  };
+}
+
+async function buildAssignmentTaskLabels(workspaceId: string): Promise<Map<string, string>> {
+  const labels = new Map<string, string>();
+  const [agents, identities] = await Promise.all([
+    storeListReviewRoomAgents(workspaceId),
+    storeListReviewRoomIdentities(workspaceId),
+  ]);
+  for (const agent of agents) labels.set(`agent:${agent.id}`, agent.name);
+  for (const identity of identities) labels.set(`${identity.kind}:${identity.id}`, identity.display_name);
+  return labels;
+}
+
+function sourceTextForTask(task: ReviewRoomAssignmentTaskRow, marks: Record<string, unknown>): string | null {
+  if (!task.source_id) return null;
+  const mark = marks[task.source_id];
+  if (!mark || typeof mark !== 'object' || Array.isArray(mark)) return null;
+  const data = mark as Record<string, unknown>;
+  if (typeof data.text === 'string' && data.text.trim()) return data.text.trim();
+  if (typeof data.quote === 'string' && data.quote.trim()) return data.quote.trim();
+  return null;
+}
+
+function parseTaskStatusFilter(value: unknown): 'open' | 'running' | 'delegated' | 'dismissed' | 'completed' | 'all' | null {
+  if (typeof value !== 'string' || !value.trim()) return 'all';
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === 'open'
+    || normalized === 'running'
+    || normalized === 'delegated'
+    || normalized === 'dismissed'
+    || normalized === 'completed'
+    || normalized === 'all'
+  ) return normalized;
+  return null;
 }
 
 function renderReviewRoomHome(): string {
@@ -742,6 +807,89 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req
     success: true,
     document: serializeDocument(document, null),
     events: events.map(serializeHistoryEvent),
+  });
+});
+
+reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/tasks', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  if (!proofSlug) {
+    res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
+    return;
+  }
+  const status = parseTaskStatusFilter(req.query.status);
+  if (!status) {
+    res.status(400).json({ success: false, code: 'INVALID_TASK_STATUS', error: 'Task status must be open, running, delegated, dismissed, completed, or all.' });
+    return;
+  }
+  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
+  if (!document) {
+    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+    return;
+  }
+  const [tasks, proofDoc, labels] = await Promise.all([
+    storeListAssignmentTasks(document.id, status),
+    engineGetDocumentBySlug(proofSlug),
+    buildAssignmentTaskLabels(document.workspace_id),
+  ]);
+  const marks = parseJsonObject(proofDoc?.marks) ?? {};
+  res.json({
+    success: true,
+    document: serializeDocument(document, null),
+    tasks: tasks.map((task) => serializeAssignmentTask(task, labels, sourceTextForTask(task, marks))),
+  });
+});
+
+reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/tasks/:taskId/status', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const taskId = String(req.params.taskId || '').trim();
+  const identityId = getCurrentReviewRoomIdentityId(req);
+  const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+  const status = typeof body.status === 'string' ? body.status.trim().toLowerCase() : '';
+  if (!proofSlug || !taskId) {
+    res.status(400).json({ success: false, code: 'TASK_TARGET_REQUIRED', error: 'Document slug and task id are required.' });
+    return;
+  }
+  if (status !== 'completed' && status !== 'dismissed') {
+    res.status(400).json({ success: false, code: 'INVALID_TASK_STATUS', error: 'Task status must be completed or dismissed.' });
+    return;
+  }
+  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
+  if (!document) {
+    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+    return;
+  }
+  const before = await storeGetAssignmentTask(taskId);
+  if (!before || before.document_id !== document.id) {
+    res.status(404).json({ success: false, code: 'TASK_MISSING', error: 'No assignment task exists for that document.' });
+    return;
+  }
+  const task = await storeUpdateAssignmentTaskStatus(taskId, status);
+  if (!task) {
+    res.status(409).json({ success: false, code: 'TASK_NOT_OPEN', error: 'Only open assignment tasks can be completed or dismissed.' });
+    return;
+  }
+  await storeCreateReviewRoomHistoryEvent({
+    workspaceId: document.workspace_id,
+    documentId: document.id,
+    actorId: identityId,
+    actorType: 'human',
+    eventType: 'task.status_changed',
+    targetType: 'assignment_task',
+    targetId: task.id,
+    before: { status: before.status },
+    after: { status: task.status },
+    metadata: {
+      proofSlug,
+      sourceType: task.source_type,
+      sourceId: task.source_id,
+      assignedToActorId: task.assigned_to_actor_id,
+      assignedToActorType: task.assigned_to_actor_type,
+    },
+  });
+  const labels = await buildAssignmentTaskLabels(document.workspace_id);
+  res.json({
+    success: true,
+    task: serializeAssignmentTask(task, labels),
   });
 });
 

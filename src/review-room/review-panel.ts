@@ -1,11 +1,26 @@
-import type { ReviewRoomHistoryEvent } from '../bridge/share-client';
+import type { ReviewRoomAssignmentTask, ReviewRoomHistoryEvent } from '../bridge/share-client';
 import {
+  collectReviewCommentActors,
+  collectReviewHistoryActors,
+  collectReviewHistoryEventTypes,
+  collectReviewSuggestionActors,
+  collectReviewSuggestionKinds,
+  collectReviewTaskActors,
+  collectReviewTaskStatuses,
   countReviewComments,
   deriveReviewComments,
   filterReviewComments,
+  filterReviewHistoryEvents,
+  filterReviewSuggestions,
+  filterReviewTasks,
+  historyEventTitle,
   shapeHistoryRow,
+  type ReviewActorFilter,
   type ReviewComment,
   type ReviewCommentFilter,
+  type ReviewHistoryEventTypeFilter,
+  type ReviewSuggestionKindFilter,
+  type ReviewTaskStatusFilter,
 } from './review-items';
 import { getReviewRoomSuggestionGroups } from './suggestion-groups';
 import { ensureReviewRoomTokens } from './tokens';
@@ -37,6 +52,8 @@ export type ReviewPanelHost = {
   focusMark(markId: string): void;
   fetchDocument(): Promise<{ markdown?: string | null; marks?: Record<string, unknown> } | null>;
   fetchHistory(limit: number): Promise<ReviewRoomHistoryEvent[]>;
+  fetchTasks(): Promise<ReviewRoomAssignmentTask[]>;
+  updateTaskStatus(taskId: string, status: 'completed' | 'dismissed'): Promise<boolean>;
   isRealtimeAvailable(): boolean;
   onToggle(expanded: boolean): void;
 };
@@ -60,6 +77,13 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
   let selectedReviewText = options.useSelection ? host.getSelectedText() : null;
   let focusedMarkId = options.focusMarkId ?? null;
   let commentFilter: ReviewCommentFilter = 'open';
+  let commentActorFilter: ReviewActorFilter = 'all';
+  let suggestionActorFilter: ReviewActorFilter = 'all';
+  let suggestionKindFilter: ReviewSuggestionKindFilter = 'all';
+  let historyActorFilter: ReviewActorFilter = 'all';
+  let historyEventTypeFilter: ReviewHistoryEventTypeFilter = 'all';
+  let taskActorFilter: ReviewActorFilter = 'all';
+  let taskStatusFilter: ReviewTaskStatusFilter = 'open';
   let activeTab: ReviewPanelTab = selectedReviewText ? 'comments' : 'suggestions';
 
   const panel = document.createElement('aside');
@@ -187,6 +211,44 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     return button;
   };
 
+  const formatFilterValue = (value: string): string => {
+    if (value === 'all') return 'All';
+    return value
+      .replace(/[_:.]/g, ' ')
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  };
+
+  const keepValidFilter = <T extends string>(value: T, options: readonly string[]): T | 'all' => (
+    value === 'all' || options.includes(value) ? value : 'all'
+  );
+
+  const renderFilterControls = (
+    label: string,
+    options: Array<{ value: string; label: string; count?: number }>,
+    activeValue: string,
+    onSelect: (value: string) => void,
+  ) => {
+    if (options.length <= 1) return;
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 18px 8px;';
+    const labelEl = document.createElement('span');
+    labelEl.textContent = label;
+    labelEl.style.cssText = 'font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:0.04em;color:var(--rr-faint);min-width:42px;';
+    wrap.appendChild(labelEl);
+    for (const option of options) {
+      const text = typeof option.count === 'number' ? `${option.label} ${option.count}` : option.label;
+      const button = pillButton(text, activeValue === option.value);
+      button.setAttribute('aria-pressed', String(activeValue === option.value));
+      button.onclick = () => {
+        onSelect(option.value);
+        focusedMarkId = null;
+        void loadPanel();
+      };
+      wrap.appendChild(button);
+    }
+    body.appendChild(wrap);
+  };
+
   const applyFocusedItemStyle = (item: HTMLElement, active: boolean) => {
     item.style.background = active ? 'var(--rr-surface-soft)' : 'var(--rr-surface)';
     item.style.boxShadow = active ? 'var(--rr-focus-inset)' : 'none';
@@ -223,12 +285,12 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     });
   };
 
-  const renderTabBar = (counts: { suggestions: number; comments: number; history: number }) => {
+  const renderTabBar = (counts: { suggestions: number; comments: number; history: number; tasks: number }) => {
     const tabs: Array<{ value: ReviewPanelTab; label: string }> = [
       { value: 'suggestions', label: `Suggestions ${counts.suggestions}` },
       { value: 'comments', label: `Comments ${counts.comments}` },
       { value: 'history', label: `History ${counts.history}` },
-      { value: 'tasks', label: 'Tasks' },
+      { value: 'tasks', label: `Tasks ${counts.tasks}` },
       { value: 'publish', label: 'Publish' },
     ];
     const buttons = tabs.map((tab) => {
@@ -244,9 +306,15 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     tabBar.replaceChildren(...buttons);
   };
 
-  const renderCommentFilterControls = (counts: { open: number; resolved: number; all: number }) => {
+  const renderCommentFilterControls = (comments: ReviewComment[], counts: { open: number; resolved: number; all: number }) => {
     const wrap = document.createElement('div');
-    wrap.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;padding:8px 18px 12px;border-top:1px solid var(--rr-border-soft);';
+    wrap.style.cssText = 'display:grid;gap:4px;padding:8px 0 12px;border-top:1px solid var(--rr-border-soft);';
+    const statusRow = document.createElement('div');
+    statusRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 18px;';
+    const statusLabel = document.createElement('span');
+    statusLabel.textContent = 'Status';
+    statusLabel.style.cssText = 'font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:0.04em;color:var(--rr-faint);min-width:42px;';
+    statusRow.appendChild(statusLabel);
     const labels: Array<{ value: ReviewCommentFilter; label: string; count: number }> = [
       { value: 'open', label: 'Open', count: counts.open },
       { value: 'resolved', label: 'Resolved', count: counts.resolved },
@@ -260,16 +328,116 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
         focusedMarkId = null;
         void loadPanel();
       };
-      wrap.appendChild(button);
+      statusRow.appendChild(button);
     }
+    wrap.appendChild(statusRow);
     body.appendChild(wrap);
+
+    const actors = collectReviewCommentActors(comments);
+    commentActorFilter = keepValidFilter(commentActorFilter, actors);
+    renderFilterControls('Actor', [
+      { value: 'all', label: 'All actors', count: comments.length },
+      ...actors.map((actor) => ({
+        value: actor,
+        label: actor,
+        count: filterReviewComments(comments, 'all', actor).length,
+      })),
+    ], commentActorFilter, (value) => {
+      commentActorFilter = value;
+    });
+  };
+
+  const renderSuggestionFilterControls = (suggestions: ReturnType<typeof getReviewRoomSuggestionGroups>) => {
+    const actors = collectReviewSuggestionActors(suggestions);
+    const kinds = collectReviewSuggestionKinds(suggestions);
+    suggestionActorFilter = keepValidFilter(suggestionActorFilter, actors);
+    suggestionKindFilter = keepValidFilter(suggestionKindFilter, kinds) as ReviewSuggestionKindFilter;
+    body.appendChild(document.createElement('div')).style.cssText = 'border-top:1px solid var(--rr-border-soft);padding-top:8px;';
+    renderFilterControls('Actor', [
+      { value: 'all', label: 'All actors', count: suggestions.length },
+      ...actors.map((actor) => ({
+        value: actor,
+        label: actor,
+        count: filterReviewSuggestions(suggestions, { actorFilter: actor }).length,
+      })),
+    ], suggestionActorFilter, (value) => {
+      suggestionActorFilter = value;
+    });
+    renderFilterControls('Type', [
+      { value: 'all', label: 'All types', count: suggestions.length },
+      ...kinds.map((kind) => ({
+        value: kind,
+        label: formatFilterValue(kind),
+        count: filterReviewSuggestions(suggestions, { kindFilter: kind }).length,
+      })),
+    ], suggestionKindFilter, (value) => {
+      suggestionKindFilter = value as ReviewSuggestionKindFilter;
+    });
+  };
+
+  const renderHistoryFilterControls = (events: ReviewRoomHistoryEvent[]) => {
+    const actors = collectReviewHistoryActors(events);
+    const eventTypes = collectReviewHistoryEventTypes(events);
+    historyActorFilter = keepValidFilter(historyActorFilter, actors);
+    historyEventTypeFilter = keepValidFilter(historyEventTypeFilter, eventTypes);
+    body.appendChild(document.createElement('div')).style.cssText = 'border-top:1px solid var(--rr-border-soft);padding-top:8px;';
+    renderFilterControls('Actor', [
+      { value: 'all', label: 'All actors', count: events.length },
+      ...actors.map((actor) => ({
+        value: actor,
+        label: actor,
+        count: filterReviewHistoryEvents(events, { actorFilter: actor }).length,
+      })),
+    ], historyActorFilter, (value) => {
+      historyActorFilter = value;
+    });
+    renderFilterControls('Event', [
+      { value: 'all', label: 'All events', count: events.length },
+      ...eventTypes.map((eventType) => ({
+        value: eventType,
+        label: historyEventTitle({ eventType } as ReviewRoomHistoryEvent),
+        count: filterReviewHistoryEvents(events, { eventTypeFilter: eventType }).length,
+      })),
+    ], historyEventTypeFilter, (value) => {
+      historyEventTypeFilter = value;
+    });
+  };
+
+  const renderTaskFilterControls = (tasks: ReviewRoomAssignmentTask[]) => {
+    const actors = collectReviewTaskActors(tasks);
+    const statuses = collectReviewTaskStatuses(tasks);
+    taskActorFilter = keepValidFilter(taskActorFilter, actors);
+    taskStatusFilter = keepValidFilter(taskStatusFilter, statuses) as ReviewTaskStatusFilter;
+    body.appendChild(document.createElement('div')).style.cssText = 'border-top:1px solid var(--rr-border-soft);padding-top:8px;';
+    renderFilterControls('Actor', [
+      { value: 'all', label: 'All actors', count: tasks.length },
+      ...actors.map((actor) => ({
+        value: actor,
+        label: actor,
+        count: filterReviewTasks(tasks, { actorFilter: actor }).length,
+      })),
+    ], taskActorFilter, (value) => {
+      taskActorFilter = value;
+    });
+    renderFilterControls('Status', [
+      { value: 'all', label: 'All statuses', count: tasks.length },
+      ...statuses.map((status) => ({
+        value: status,
+        label: formatFilterValue(status),
+        count: filterReviewTasks(tasks, { statusFilter: status }).length,
+      })),
+    ], taskStatusFilter, (value) => {
+      taskStatusFilter = value as ReviewTaskStatusFilter;
+    });
   };
 
   const renderHistoryEvents = (events: ReviewRoomHistoryEvent[]) => {
-    const visibleEvents = events.slice(0, 8);
-    body.appendChild(sectionHeading(`History (${events.length})`));
+    const filteredEvents = filterReviewHistoryEvents(events, { actorFilter: historyActorFilter, eventTypeFilter: historyEventTypeFilter });
+    const visibleEvents = filteredEvents.slice(0, 8);
+    body.appendChild(sectionHeading(`History (${filteredEvents.length})`));
+    renderHistoryFilterControls(events);
     if (visibleEvents.length === 0) {
-      body.appendChild(emptyNote('No Review Room history yet.'));
+      body.appendChild(emptyNote(events.length === 0 ? 'No Review Room history yet.' : 'No history items match these filters.'));
       return;
     }
     for (const event of visibleEvents) {
@@ -314,6 +482,78 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
   const renderPlaceholderTab = (label: string, message: string) => {
     body.appendChild(sectionHeading(label));
     body.appendChild(emptyNote(message));
+  };
+
+  const renderTasks = (tasks: ReviewRoomAssignmentTask[]) => {
+    const filteredTasks = filterReviewTasks(tasks, { actorFilter: taskActorFilter, statusFilter: taskStatusFilter });
+    body.appendChild(sectionHeading(`Tasks (${filteredTasks.length})`));
+    renderTaskFilterControls(tasks);
+    if (filteredTasks.length === 0) {
+      body.appendChild(emptyNote(tasks.length === 0
+        ? 'No assignment tasks yet. Mention an agent or collaborator in a comment to create one.'
+        : 'No assignment tasks match these filters.'));
+      return;
+    }
+    for (const task of filteredTasks) {
+      const item = row();
+      item.dataset.reviewTaskId = task.id;
+      item.style.background = task.status === 'open' ? 'var(--rr-surface)' : 'var(--rr-surface-soft)';
+
+      const meta = document.createElement('div');
+      const timestamp = task.createdAt ? ` - ${new Date(task.createdAt).toLocaleString()}` : '';
+      meta.textContent = `${task.assignedToLabel || task.assignedToActorId} · ${task.status}${timestamp}`;
+      meta.style.cssText = 'font-size:12px;font-weight:750;color:var(--rr-muted);';
+      item.appendChild(meta);
+
+      const excerpt = document.createElement('div');
+      excerpt.textContent = task.sourceText || 'Mentioned in a comment thread.';
+      excerpt.style.cssText = 'font-size:14px;line-height:1.45;color:var(--rr-ink);background:var(--rr-bg);border:1px solid var(--rr-border-soft);border-radius:var(--rr-radius);padding:8px;overflow-wrap:anywhere;';
+      item.appendChild(excerpt);
+
+      const detail = document.createElement('div');
+      detail.textContent = `Created by ${task.createdByActorId}${task.sourceId ? ` · Source ${task.sourceId}` : ''}`;
+      detail.style.cssText = 'font-size:11px;color:var(--rr-faint);overflow-wrap:anywhere;';
+      item.appendChild(detail);
+
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+      if (task.status === 'open') {
+        const complete = smallButton('Complete', 'primary');
+        const dismiss = smallButton('Dismiss');
+        complete.onclick = () => {
+          void (async () => {
+            complete.disabled = true;
+            dismiss.disabled = true;
+            const success = await host.updateTaskStatus(task.id, 'completed');
+            if (!success) {
+              renderError('Could not complete this task.');
+              return;
+            }
+            await loadPanel();
+          })();
+        };
+        dismiss.onclick = () => {
+          void (async () => {
+            complete.disabled = true;
+            dismiss.disabled = true;
+            const success = await host.updateTaskStatus(task.id, 'dismissed');
+            if (!success) {
+              renderError('Could not dismiss this task.');
+              return;
+            }
+            await loadPanel();
+          })();
+        };
+        actions.append(complete, dismiss);
+      } else {
+        const status = document.createElement('span');
+        status.textContent = task.status === 'completed' ? 'Completed' : 'Dismissed';
+        status.style.cssText = 'display:inline-flex;align-items:center;min-height:28px;border:1px solid var(--rr-border-soft);border-radius:var(--rr-radius-pill);padding:0 9px;font-size:12px;font-weight:750;color:var(--rr-muted);background:var(--rr-surface);';
+        actions.appendChild(status);
+      }
+      item.appendChild(actions);
+      body.appendChild(item);
+    }
   };
 
   const renderSelectedTextComposer = (): HTMLElement | null => {
@@ -363,11 +603,13 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
   };
 
   const renderSuggestions = (suggestions: ReturnType<typeof getReviewRoomSuggestionGroups>) => {
-    body.appendChild(sectionHeading(`Suggestions (${suggestions.length})`));
-    if (suggestions.length === 0) {
-      body.appendChild(emptyNote('No pending suggestions.'));
+    const visibleSuggestions = filterReviewSuggestions(suggestions, { actorFilter: suggestionActorFilter, kindFilter: suggestionKindFilter });
+    body.appendChild(sectionHeading(`Suggestions (${visibleSuggestions.length})`));
+    renderSuggestionFilterControls(suggestions);
+    if (visibleSuggestions.length === 0) {
+      body.appendChild(emptyNote(suggestions.length === 0 ? 'No pending suggestions.' : 'No suggestions match these filters.'));
     }
-    for (const suggestion of suggestions) {
+    for (const suggestion of visibleSuggestions) {
       const item = row();
       attachReviewItemFocus(item, suggestion.id);
       applyFocusedItemStyle(item, suggestion.ids.includes(focusedMarkId ?? ''));
@@ -421,11 +663,13 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
 
   const renderComments = (comments: ReviewComment[]) => {
     const counts = countReviewComments(comments);
-    const visibleComments = filterReviewComments(comments, commentFilter);
+    const visibleComments = filterReviewComments(comments, commentFilter, commentActorFilter);
     body.appendChild(sectionHeading(`Comments (${visibleComments.length})`));
-    renderCommentFilterControls(counts);
+    renderCommentFilterControls(comments, counts);
     if (visibleComments.length === 0) {
-      body.appendChild(emptyNote(commentFilter === 'resolved'
+      body.appendChild(emptyNote(comments.length > 0 && commentActorFilter !== 'all'
+        ? 'No comment threads match these filters.'
+        : commentFilter === 'resolved'
         ? 'No resolved comment threads.'
         : commentFilter === 'all'
           ? 'No comment threads yet.'
@@ -533,11 +777,15 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
   const loadPanel = async () => {
     renderLoading();
     try {
-      const [doc, historyEvents] = await Promise.all([
+      const [doc, historyEvents, tasks] = await Promise.all([
         host.fetchDocument(),
         host.fetchHistory(20).catch((error) => {
           console.warn('[review-room] history load failed', error);
           return [] as ReviewRoomHistoryEvent[];
+        }),
+        host.fetchTasks().catch((error) => {
+          console.warn('[review-room] task load failed', error);
+          return [] as ReviewRoomAssignmentTask[];
         }),
       ]);
       if (!doc) {
@@ -556,6 +804,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
         suggestions: suggestions.length,
         comments: countReviewComments(comments).open,
         history: historyEvents.length,
+        tasks: tasks.filter((task) => task.status === 'open').length,
       });
 
       body.replaceChildren();
@@ -579,7 +828,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
         return;
       }
       if (activeTab === 'tasks') {
-        renderPlaceholderTab('Tasks', 'Assignment tasks will appear here when mention-to-task wiring ships.');
+        renderTasks(tasks);
         return;
       }
       renderPlaceholderTab('Publish', 'Publish and baseline checkpoints will appear here when publishing ships.');

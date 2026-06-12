@@ -1,5 +1,5 @@
-import type { ReviewRoomHistoryEvent } from '../bridge/share-client';
-import { getReviewRoomSuggestionGroups } from './suggestion-groups';
+import type { ReviewRoomAssignmentTask, ReviewRoomAssignmentTaskStatus, ReviewRoomHistoryEvent } from '../bridge/share-client';
+import { getReviewRoomSuggestionGroups, type ReviewRoomSuggestionGroup, type ReviewRoomSuggestionKind } from './suggestion-groups';
 
 // Pure Review Room review-item logic, extracted from the editor monolith so the
 // cockpit UI, counts, and future tabs share one derivation path.
@@ -21,6 +21,10 @@ export type ReviewComment = {
 };
 
 export type ReviewCommentFilter = 'open' | 'resolved' | 'all';
+export type ReviewActorFilter = 'all' | string;
+export type ReviewSuggestionKindFilter = 'all' | ReviewRoomSuggestionKind;
+export type ReviewHistoryEventTypeFilter = 'all' | string;
+export type ReviewTaskStatusFilter = 'all' | ReviewRoomAssignmentTaskStatus;
 
 export type ReviewCommentCounts = {
   open: number;
@@ -67,10 +71,110 @@ export function countReviewComments(comments: ReviewComment[]): ReviewCommentCou
   return { open, resolved: comments.length - open, all: comments.length };
 }
 
-export function filterReviewComments(comments: ReviewComment[], filter: ReviewCommentFilter): ReviewComment[] {
-  if (filter === 'open') return comments.filter((comment) => !comment.resolved);
-  if (filter === 'resolved') return comments.filter((comment) => comment.resolved);
-  return comments;
+export function normalizeReviewActorFilter(value: string | null | undefined): ReviewActorFilter {
+  const actor = typeof value === 'string' ? value.trim() : '';
+  return actor || 'all';
+}
+
+export function reviewActorMatches(actor: string | null | undefined, filter: ReviewActorFilter): boolean {
+  if (filter === 'all') return true;
+  return (actor ?? '').trim() === filter;
+}
+
+export function collectReviewActorOptions(actors: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(
+    actors
+      .map((actor) => (actor ?? '').trim())
+      .filter((actor) => actor.length > 0),
+  )).sort((a, b) => a.localeCompare(b));
+}
+
+export function reviewCommentMatchesActor(comment: ReviewComment, filter: ReviewActorFilter): boolean {
+  if (reviewActorMatches(comment.by, filter)) return true;
+  return comment.replies.some((reply) => reviewActorMatches(reply.by, filter));
+}
+
+export function filterReviewComments(
+  comments: ReviewComment[],
+  filter: ReviewCommentFilter,
+  actorFilter: ReviewActorFilter = 'all',
+): ReviewComment[] {
+  return comments.filter((comment) => {
+    if (filter === 'open' && comment.resolved) return false;
+    if (filter === 'resolved' && !comment.resolved) return false;
+    return reviewCommentMatchesActor(comment, actorFilter);
+  });
+}
+
+export function collectReviewCommentActors(comments: ReviewComment[]): string[] {
+  return collectReviewActorOptions(comments.flatMap((comment) => [
+    comment.by,
+    ...comment.replies.map((reply) => reply.by),
+  ]));
+}
+
+export function filterReviewSuggestions(
+  suggestions: ReviewRoomSuggestionGroup[],
+  filters: { actorFilter?: ReviewActorFilter; kindFilter?: ReviewSuggestionKindFilter } = {},
+): ReviewRoomSuggestionGroup[] {
+  const actorFilter = filters.actorFilter ?? 'all';
+  const kindFilter = filters.kindFilter ?? 'all';
+  return suggestions.filter((suggestion) => (
+    reviewActorMatches(suggestion.by, actorFilter)
+    && (kindFilter === 'all' || suggestion.kind === kindFilter)
+  ));
+}
+
+export function collectReviewSuggestionActors(suggestions: ReviewRoomSuggestionGroup[]): string[] {
+  return collectReviewActorOptions(suggestions.map((suggestion) => suggestion.by));
+}
+
+export function collectReviewSuggestionKinds(suggestions: ReviewRoomSuggestionGroup[]): ReviewRoomSuggestionKind[] {
+  return Array.from(new Set(suggestions.map((suggestion) => suggestion.kind))).sort();
+}
+
+export function filterReviewHistoryEvents(
+  events: ReviewRoomHistoryEvent[],
+  filters: { actorFilter?: ReviewActorFilter; eventTypeFilter?: ReviewHistoryEventTypeFilter } = {},
+): ReviewRoomHistoryEvent[] {
+  const actorFilter = filters.actorFilter ?? 'all';
+  const eventTypeFilter = filters.eventTypeFilter ?? 'all';
+  return events.filter((event) => (
+    reviewActorMatches(event.actorId, actorFilter)
+    && (eventTypeFilter === 'all' || event.eventType === eventTypeFilter)
+  ));
+}
+
+export function collectReviewHistoryActors(events: ReviewRoomHistoryEvent[]): string[] {
+  return collectReviewActorOptions(events.map((event) => event.actorId));
+}
+
+export function collectReviewHistoryEventTypes(events: ReviewRoomHistoryEvent[]): string[] {
+  return Array.from(new Set(
+    events
+      .map((event) => event.eventType.trim())
+      .filter((eventType) => eventType.length > 0),
+  )).sort((a, b) => a.localeCompare(b));
+}
+
+export function filterReviewTasks(
+  tasks: ReviewRoomAssignmentTask[],
+  filters: { actorFilter?: ReviewActorFilter; statusFilter?: ReviewTaskStatusFilter } = {},
+): ReviewRoomAssignmentTask[] {
+  const actorFilter = filters.actorFilter ?? 'all';
+  const statusFilter = filters.statusFilter ?? 'all';
+  return tasks.filter((task) => (
+    (reviewActorMatches(task.assignedToActorId, actorFilter) || reviewActorMatches(task.createdByActorId, actorFilter))
+    && (statusFilter === 'all' || task.status === statusFilter)
+  ));
+}
+
+export function collectReviewTaskActors(tasks: ReviewRoomAssignmentTask[]): string[] {
+  return collectReviewActorOptions(tasks.flatMap((task) => [task.assignedToActorId, task.createdByActorId]));
+}
+
+export function collectReviewTaskStatuses(tasks: ReviewRoomAssignmentTask[]): ReviewRoomAssignmentTaskStatus[] {
+  return Array.from(new Set(tasks.map((task) => task.status))).sort();
 }
 
 export function countOpenReviewItems(doc: { marks?: MarksRecord }): number {
@@ -110,6 +214,8 @@ export function historyEventTitle(event: ReviewRoomHistoryEvent): string {
   if (event.eventType === 'suggestion.rejected') return 'Rejected suggestion';
   if (event.eventType === 'document.created') return 'Created document';
   if (event.eventType === 'document.registered') return 'Registered document';
+  if (event.eventType === 'task.created') return 'Created task';
+  if (event.eventType === 'task.status_changed') return 'Updated task status';
   return event.eventType.replace(/\./g, ' ');
 }
 

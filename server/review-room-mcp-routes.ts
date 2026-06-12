@@ -9,6 +9,7 @@ import {
 } from './hosted-review-room-db.js';
 import { getEffectiveShareStateForRole } from './share-access.js';
 import type { ShareRole } from './share-types.js';
+import { safeCreateAssignmentTasksFromCommentMentions } from './mention-tasks.js';
 
 type JsonRecord = Record<string, unknown>;
 type JsonRpcRequest = {
@@ -231,21 +232,43 @@ async function executeReviewRoomTool(req: Request, name: string, args: JsonRecor
   if (name === 'review_room_add_comment') {
     const auth = await resolveToolAuth(slug, token, ['commenter', 'editor', 'owner_bot']);
     if (!auth.ok) return { status: auth.status, body: auth.body };
-    return executeDocumentOperationAsync(slug, 'POST', '/marks/comment', {
+    const payload = {
       by,
       quote: readString(args.quote),
       text: readString(args.text),
-    });
+    };
+    const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/comment', payload);
+    if (result.status >= 200 && result.status < 300) {
+      await safeCreateAssignmentTasksFromCommentMentions({
+        proofSlug: slug,
+        sourceId: typeof result.body.markId === 'string' ? result.body.markId : null,
+        text: payload.text,
+        actorId: by,
+        proofEventId: typeof result.body.eventId === 'number' ? result.body.eventId : null,
+      });
+    }
+    return result;
   }
 
   if (name === 'review_room_reply_comment') {
     const auth = await resolveToolAuth(slug, token, ['commenter', 'editor', 'owner_bot']);
     if (!auth.ok) return { status: auth.status, body: auth.body };
-    return executeDocumentOperationAsync(slug, 'POST', '/marks/reply', {
+    const payload = {
       markId: readString(args.markId),
       text: readString(args.text),
       by,
-    });
+    };
+    const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/reply', payload);
+    if (result.status >= 200 && result.status < 300) {
+      await safeCreateAssignmentTasksFromCommentMentions({
+        proofSlug: slug,
+        sourceId: payload.markId || null,
+        text: payload.text,
+        actorId: by,
+        proofEventId: typeof result.body.eventId === 'number' ? result.body.eventId : null,
+      });
+    }
+    return result;
   }
 
   if (name === 'review_room_resolve_comment') {

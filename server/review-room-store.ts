@@ -4,6 +4,8 @@ import { fileURLToPath } from 'url';
 import { createClient, type Client, type ResultSet } from '@libsql/client';
 import type {
   ReviewRoomAgentRow,
+  ReviewRoomAssignmentTaskRow,
+  ReviewRoomAssignmentTaskStatus,
   ReviewRoomDocumentMemberRow,
   ReviewRoomDocumentRow,
   ReviewRoomHistoryEventRow,
@@ -138,6 +140,7 @@ const REVIEW_ROOM_TABLE_DDL = [
     completed_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_review_room_tasks_document_status ON review_room_assignment_tasks(document_id, status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_review_room_tasks_assignee_status ON review_room_assignment_tasks(assigned_to_actor_id, status, created_at)`,
   `CREATE TABLE IF NOT EXISTS review_room_published_versions (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
@@ -508,6 +511,97 @@ export async function storeCreateReviewRoomHistoryEvent(input: {
   `, [id]);
   if (!row) throw new Error('Review Room history event was not persisted.');
   return row;
+}
+
+export async function storeCreateAssignmentTask(input: {
+  documentId: string;
+  proofEventId?: number | null;
+  sourceType: string;
+  sourceId?: string | null;
+  createdByActorId: string;
+  createdByActorType: ReviewRoomAssignmentTaskRow['created_by_actor_type'];
+  assignedToActorId: string;
+  assignedToActorType: ReviewRoomAssignmentTaskRow['assigned_to_actor_type'];
+  managerIdentityId?: string | null;
+}): Promise<ReviewRoomAssignmentTaskRow> {
+  const db = await ensureStore();
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `INSERT INTO review_room_assignment_tasks (
+      id, document_id, proof_event_id, source_type, source_id, created_by_actor_id, created_by_actor_type,
+      assigned_to_actor_id, assigned_to_actor_type, manager_identity_id, status, created_at, updated_at, completed_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL)`,
+    args: [
+      id,
+      input.documentId,
+      input.proofEventId ?? null,
+      input.sourceType,
+      input.sourceId ?? null,
+      input.createdByActorId,
+      input.createdByActorType,
+      input.assignedToActorId,
+      input.assignedToActorType,
+      input.managerIdentityId ?? null,
+      now,
+      now,
+    ],
+  });
+  const row = await storeGetAssignmentTask(id);
+  if (!row) throw new Error('Review Room assignment task was not persisted.');
+  return row;
+}
+
+export async function storeGetAssignmentTask(id: string): Promise<ReviewRoomAssignmentTaskRow | null> {
+  return execute<ReviewRoomAssignmentTaskRow>(`
+    SELECT *
+    FROM review_room_assignment_tasks
+    WHERE id = ?
+    LIMIT 1
+  `, [id]);
+}
+
+export async function storeListAssignmentTasks(
+  documentId: string,
+  status?: ReviewRoomAssignmentTaskStatus | 'all' | null,
+): Promise<ReviewRoomAssignmentTaskRow[]> {
+  if (status && status !== 'all') {
+    return executeAll<ReviewRoomAssignmentTaskRow>(`
+      SELECT *
+      FROM review_room_assignment_tasks
+      WHERE document_id = ?
+        AND status = ?
+      ORDER BY created_at DESC
+    `, [documentId, status]);
+  }
+  return executeAll<ReviewRoomAssignmentTaskRow>(`
+    SELECT *
+    FROM review_room_assignment_tasks
+    WHERE document_id = ?
+    ORDER BY
+      CASE status WHEN 'open' THEN 0 WHEN 'running' THEN 1 WHEN 'delegated' THEN 2 WHEN 'dismissed' THEN 3 ELSE 4 END,
+      created_at DESC
+  `, [documentId]);
+}
+
+export async function storeUpdateAssignmentTaskStatus(
+  id: string,
+  status: Extract<ReviewRoomAssignmentTaskStatus, 'completed' | 'dismissed'>,
+): Promise<ReviewRoomAssignmentTaskRow | null> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `UPDATE review_room_assignment_tasks
+          SET status = ?,
+              updated_at = ?,
+              completed_at = ?
+          WHERE id = ?
+            AND status = 'open'`,
+    args: [status, now, status === 'completed' ? now : null, id],
+  });
+  if (Number(result.rowsAffected ?? 0) <= 0) return null;
+  return storeGetAssignmentTask(id);
 }
 
 export async function storeListReviewRoomHistoryEvents(input: {

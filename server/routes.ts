@@ -116,6 +116,7 @@ import {
   storeGetReviewRoomDocumentMemberForProofSlugAndToken,
   storeUpdateReviewRoomDocumentTitleByProofSlug,
 } from './review-room-store.js';
+import { safeCreateAssignmentTasksFromCommentMentions } from './mention-tasks.js';
 
 export const apiRoutes = Router();
 if (!isHostedReviewRoomDbEnabled()) {
@@ -1777,7 +1778,16 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
     : [];
   broadcastToRoom(slug, payload, clientId);
   for (const event of commentEvents) {
-    addDocumentEvent(slug, event.type, event.data, event.actor);
+    const proofEventId = addDocumentEvent(slug, event.type, event.data, event.actor);
+    if (event.type === 'comment.added' || event.type === 'comment.replied') {
+      await safeCreateAssignmentTasksFromCommentMentions({
+        proofSlug: slug,
+        sourceId: typeof event.data.markId === 'string' ? event.data.markId : null,
+        text: typeof event.data.text === 'string' ? event.data.text : '',
+        actorId: event.actor,
+        proofEventId,
+      });
+    }
   }
   addEvent(slug, 'document.updated', {
     actor: mutationActor,
