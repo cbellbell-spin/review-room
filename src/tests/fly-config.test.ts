@@ -71,6 +71,7 @@ assert(
 
 assert(
   workflow.includes('branches: [main]')
+    && workflow.includes('actions/checkout@v6')
     && workflow.includes('superfly/flyctl-actions/setup-flyctl@master')
     && workflow.includes('flyctl deploy --remote-only --build-arg GIT_COMMIT_SHA=${{ github.sha }} --build-arg BUILD_RELEASE_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)')
     && workflow.includes('FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}'),
