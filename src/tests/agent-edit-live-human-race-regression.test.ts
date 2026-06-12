@@ -53,7 +53,8 @@ type EditResponse = {
   };
 };
 type SnapshotResponse = {
-  revision: number;
+  revision: number | null;
+  mutationBase?: { token?: string };
   blocks?: Array<{ ref?: string; markdown?: string }>;
 };
 type CollabSessionResponse = {
@@ -257,6 +258,19 @@ async function run(): Promise<void> {
     const baseBlockRef = snapshot.blocks?.find((block) => typeof block.markdown === 'string' && block.markdown.includes('base'))?.ref;
     assert(typeof baseBlockRef === 'string' && baseBlockRef.length > 0, 'Expected snapshot block ref for base paragraph');
 
+    // With a live collab client attached the snapshot may report revision=null
+    // (canonical read not mutation-ready) and supply mutationBase.token instead.
+    const mutationBaseToken = typeof snapshot.mutationBase?.token === 'string' && snapshot.mutationBase.token.trim()
+      ? snapshot.mutationBase.token.trim()
+      : null;
+    const editBase = mutationBaseToken
+      ? { baseToken: mutationBaseToken }
+      : { baseRevision: snapshot.revision };
+    assert(
+      mutationBaseToken !== null || (Number.isInteger(snapshot.revision) && (snapshot.revision as number) > 0),
+      'Expected snapshot to provide a usable mutation base (mutationBase.token or revision)',
+    );
+
     const editV2Res = await fetch(`${httpBase}/api/agent/${created.slug}/edit/v2`, {
       method: 'POST',
       headers: {
@@ -266,7 +280,7 @@ async function run(): Promise<void> {
       },
       body: JSON.stringify({
         by: 'ai:r2c2',
-        baseRevision: snapshot.revision,
+        ...editBase,
         operations: [
           {
             op: 'insert_after',

@@ -44,10 +44,16 @@ function run(): void {
     'Expected markAcceptAll to persist each accepted suggestion through share mutations',
   );
 
+  const shareAcceptBlock = sliceBetween(shareClientSource, 'async acceptSuggestion(', '\n  async ');
   assert(
-    shareClientSource.includes('async acceptSuggestion(')
-      && shareClientSource.includes("/agent/${encodeURIComponent(this.slug)}/marks/accept"),
-    'Expected ShareClient to expose a dedicated acceptSuggestion mutation',
+    shareAcceptBlock.includes('return this.performMarkMutationWithRetry({')
+      && shareAcceptBlock.includes("path: 'accept',"),
+    'Expected ShareClient acceptSuggestion to submit an accept mark mutation',
+  );
+  const markMutationBlock = sliceBetween(shareClientSource, 'private async performMarkMutationWithRetry(', '\n  private ');
+  assert(
+    markMutationBlock.includes('/agent/${encodeURIComponent(this.slug as string)}/marks/${args.path}'),
+    'Expected ShareClient mark mutations to POST to the /marks/accept|reject share routes',
   );
 
   const acceptRouteBlock = sliceBetween(

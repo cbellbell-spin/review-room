@@ -429,7 +429,11 @@ export function expandRangeToIncludeFullyWrappedAuthoredSpan(
   let nextEnd = end;
 
   for (const span of listAuthoredProofSpanBounds(markdown)) {
-    if (nextStart === span.contentStart && nextEnd === span.contentEnd) {
+    // Authored-span-stripped anchor resolution can map a selection start to the
+    // boundary before the open tag instead of the content start, yielding a
+    // range that swallows the open tag but leaves the close tag dangling.
+    // Treat both shapes as "fully wrapped" and expand to the whole span.
+    if ((nextStart === span.contentStart || nextStart === span.openStart) && nextEnd === span.contentEnd) {
       nextStart = span.openStart;
       nextEnd = span.closeEnd;
       break;

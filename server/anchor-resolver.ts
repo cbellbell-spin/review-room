@@ -243,6 +243,29 @@ function filterContextualCandidates(
   });
 }
 
+function relaxContextualCandidates(
+  logical: string,
+  candidates: LogicalRange[],
+  contextBefore: string,
+  contextAfter: string,
+  windowChars: number,
+): LogicalRange[] {
+  const beforeLines = contextBefore ? contextBefore.split('\n') : [];
+  const afterLines = contextAfter ? contextAfter.split('\n') : [];
+  const maxDrop = Math.max(beforeLines.length, afterLines.length) - 1;
+  for (let drop = 1; drop <= maxDrop; drop += 1) {
+    const relaxedBefore = beforeLines.length > 0
+      ? beforeLines.slice(Math.min(drop, beforeLines.length - 1)).join('\n')
+      : '';
+    const relaxedAfter = afterLines.length > 0
+      ? afterLines.slice(0, Math.max(1, afterLines.length - drop)).join('\n')
+      : '';
+    const filtered = filterContextualCandidates(logical, candidates, relaxedBefore, relaxedAfter, windowChars);
+    if (filtered.length > 0) return filtered;
+  }
+  return [];
+}
+
 function pickCandidateIndex(
   occurrence: AnchorOccurrence | undefined,
   candidateCount: number,
@@ -290,13 +313,24 @@ export function resolveAnchorTarget(
   const contextBefore = typeof target.contextBefore === 'string' ? target.contextBefore : '';
   const contextAfter = typeof target.contextAfter === 'string' ? target.contextAfter : '';
   if (mode === 'contextual' || contextBefore || contextAfter) {
-    candidates = filterContextualCandidates(
+    const windowChars = options.contextWindowChars ?? DEFAULT_CONTEXT_WINDOW;
+    const filtered = filterContextualCandidates(
       view.logical,
       candidates,
       contextBefore,
       contextAfter,
-      options.contextWindowChars ?? DEFAULT_CONTEXT_WINDOW,
+      windowChars,
     );
+    // Stabilized contexts capture a wide window, so edits inside that window
+    // (e.g. a duplicate of the anchor inserted upstream) break verbatim
+    // inclusion even though the nearest context still identifies the target.
+    // When the full context matches nothing, retry with the farthest context
+    // lines progressively dropped, always keeping the line closest to the
+    // anchor; zero matches previously hard-failed, so this only recovers
+    // cases that would otherwise 409.
+    candidates = (filtered.length === 0 && candidates.length > 0)
+      ? relaxContextualCandidates(view.logical, candidates, contextBefore, contextAfter, windowChars)
+      : filtered;
   }
 
   const picked = pickCandidateIndex(target.occurrence, candidates.length, failClosedDuplicates);

@@ -1942,8 +1942,10 @@ export function resolve(view: EditorView, markId: string): boolean {
   if (!existing) return false;
 
   const next = { ...metadata, [markId]: { ...existing, resolved: true } };
-  finalizeMarkTransaction(view, view.state.tr, next);
+  // Tombstone before dispatching: stale server marks merged during dispatch
+  // must not flip this mark back.
   markResolvedMarkIds([markId], Date.now(), RESOLVED_COMMENT_TOMBSTONE_TTL_MS, 'resolved');
+  finalizeMarkTransaction(view, view.state.tr, next);
   emitMarkEvent('comment.resolved', { markId });
   return true;
 }
@@ -2792,8 +2794,8 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
 
   if (!applied) return false;
   const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  finalizeMarkTransaction(view, tr, updatedMetadata);
   markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  finalizeMarkTransaction(view, tr, updatedMetadata);
   emitMarkEvent('suggestion.accepted', { markId, kind: mark.kind, by: mark.by });
   return true;
 }
@@ -2835,8 +2837,8 @@ export function reject(view: EditorView, markId: string): boolean {
   }
 
   const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  finalizeMarkTransaction(view, tr, updatedMetadata);
   markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  finalizeMarkTransaction(view, tr, updatedMetadata);
   emitMarkEvent('suggestion.rejected', { markId, kind: mark.kind, by: mark.by });
   return true;
 }
@@ -2932,8 +2934,8 @@ export function rejectAll(view: EditorView): number {
 
   if (removedIds.length > 0) {
     const updatedMetadata = removeMetadataEntries(metadata, removedIds);
-    finalizeMarkTransaction(view, tr, updatedMetadata);
     markResolvedMarkIds(removedIds, Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+    finalizeMarkTransaction(view, tr, updatedMetadata);
   }
 
   return removedIds.length;
@@ -2955,8 +2957,8 @@ export function deleteMark(view: EditorView, markId: string): boolean {
     tr = tr.removeMark(range.from, range.to, markType);
   }
   const metadata = removeMetadataEntries(getMarkMetadata(view.state), [markId]);
-  finalizeMarkTransaction(view, tr, metadata);
   markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  finalizeMarkTransaction(view, tr, metadata);
   return true;
 }
 
