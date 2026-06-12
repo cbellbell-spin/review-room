@@ -186,11 +186,18 @@ export function countOpenReviewItems(doc: { marks?: MarksRecord }): number {
 export type ReviewHistoryRow = {
   id: string;
   title: string;
+  summary: string;
   actorId: string;
   timestamp: string;
   beforeText: string;
   afterText: string;
   targetLabel: string;
+  changeKind: 'addition' | 'replacement' | 'deletion' | 'unchanged' | 'status' | 'baseline' | 'document' | 'event';
+  details: Array<{
+    label: string;
+    text: string;
+    tone: 'neutral' | 'added' | 'removed';
+  }>;
 };
 
 function readHistoryText(payload: Record<string, unknown> | null | undefined, keys: string[]): string {
@@ -202,6 +209,28 @@ function readHistoryText(payload: Record<string, unknown> | null | undefined, ke
   return '';
 }
 
+function readHistoryNumber(payload: Record<string, unknown> | null | undefined, keys: string[]): number | null {
+  if (!payload) return null;
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function previewHistoryText(value: string, maxLength = 90): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function formatSuggestionKind(value: string): string {
+  if (value === 'insert') return 'insertion';
+  if (value === 'delete') return 'deletion';
+  if (value === 'replace') return 'replacement';
+  return 'suggestion';
+}
+
 export function formatReviewTimestamp(value: string): string {
   if (!value) return '';
   const date = new Date(value);
@@ -210,8 +239,9 @@ export function formatReviewTimestamp(value: string): string {
 }
 
 export function historyEventTitle(event: ReviewRoomHistoryEvent): string {
-  if (event.eventType === 'suggestion.accepted') return 'Accepted suggestion';
-  if (event.eventType === 'suggestion.rejected') return 'Rejected suggestion';
+  const suggestionKind = readHistoryText(event.after, ['kind']) || readHistoryText(event.before, ['kind']);
+  if (event.eventType === 'suggestion.accepted') return `Accepted ${formatSuggestionKind(suggestionKind)}`;
+  if (event.eventType === 'suggestion.rejected') return `Rejected ${formatSuggestionKind(suggestionKind)}`;
   if (event.eventType === 'document.created') return 'Created document';
   if (event.eventType === 'document.registered') return 'Registered document';
   if (event.eventType === 'task.created') return 'Created task';
@@ -220,14 +250,140 @@ export function historyEventTitle(event: ReviewRoomHistoryEvent): string {
   return event.eventType.replace(/\./g, ' ');
 }
 
+function shapeSuggestionHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistoryRow, 'summary' | 'changeKind' | 'details'> {
+  const beforeText = readHistoryText(event.before, ['beforeContent', 'quote', 'content']);
+  const afterText = readHistoryText(event.after, ['afterContent', 'content', 'quote']);
+  const kind = readHistoryText(event.after, ['kind']) || readHistoryText(event.before, ['kind']);
+  const rejected = event.eventType === 'suggestion.rejected';
+  const details: ReviewHistoryRow['details'] = [];
+
+  if (rejected) {
+    const unchanged = beforeText || afterText;
+    if (unchanged) details.push({ label: 'Unchanged text', text: unchanged, tone: 'neutral' });
+    return {
+      summary: `Left document unchanged after rejecting ${formatSuggestionKind(kind)}.`,
+      changeKind: 'unchanged',
+      details,
+    };
+  }
+
+  if (kind === 'insert') {
+    if (afterText) details.push({ label: 'Added', text: afterText, tone: 'added' });
+    return {
+      summary: afterText ? `Added: ${previewHistoryText(afterText)}` : 'Accepted insertion.',
+      changeKind: 'addition',
+      details,
+    };
+  }
+
+  if (kind === 'delete') {
+    if (beforeText) details.push({ label: 'Deleted', text: beforeText, tone: 'removed' });
+    return {
+      summary: beforeText ? `Deleted: ${previewHistoryText(beforeText)}` : 'Accepted deletion.',
+      changeKind: 'deletion',
+      details,
+    };
+  }
+
+  if (beforeText) details.push({ label: 'Before', text: beforeText, tone: 'removed' });
+  if (afterText) details.push({ label: 'After', text: afterText, tone: 'added' });
+  return {
+    summary: beforeText || afterText
+      ? `Replaced ${beforeText ? `"${previewHistoryText(beforeText, 42)}"` : 'selected text'} with ${afterText ? `"${previewHistoryText(afterText, 42)}"` : 'empty text'}.`
+      : 'Accepted replacement.',
+    changeKind: 'replacement',
+    details,
+  };
+}
+
+function shapeBaselineHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistoryRow, 'summary' | 'changeKind' | 'details'> {
+  const version = readHistoryNumber(event.after, ['versionNumber']);
+  const previousVersion = readHistoryNumber(event.before, ['versionNumber']);
+  const proofRevision = readHistoryNumber(event.after, ['proofRevision']);
+  const contentLength = readHistoryNumber(event.after, ['contentLength']);
+  const note = readHistoryText(event.after, ['note']);
+  const details: ReviewHistoryRow['details'] = [];
+  if (previousVersion !== null) details.push({ label: 'Previous baseline', text: `v${previousVersion}`, tone: 'neutral' });
+  if (version !== null) details.push({ label: 'New baseline', text: `v${version}`, tone: 'added' });
+  if (proofRevision !== null) details.push({ label: 'Proof revision', text: String(proofRevision), tone: 'neutral' });
+  if (contentLength !== null) details.push({ label: 'Snapshot size', text: `${contentLength} characters`, tone: 'neutral' });
+  if (note) details.push({ label: 'Note', text: note, tone: 'neutral' });
+  return {
+    summary: `Created baseline${version === null ? '' : ` v${version}`}${note ? `: ${previewHistoryText(note)}` : '.'}`,
+    changeKind: 'baseline',
+    details,
+  };
+}
+
+function shapeTaskHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistoryRow, 'summary' | 'changeKind' | 'details'> {
+  const afterStatus = readHistoryText(event.after, ['status']);
+  const beforeStatus = readHistoryText(event.before, ['status']);
+  const assignedTo = readHistoryText(event.after, ['assignedToLabel', 'assignedToActorId'])
+    || readHistoryText(event.after, ['assignedToActorId']);
+  const sourceText = readHistoryText(event.after, ['sourceText']);
+  const details: ReviewHistoryRow['details'] = [];
+  if (assignedTo) details.push({ label: 'Assigned to', text: assignedTo, tone: 'neutral' });
+  if (beforeStatus || afterStatus) {
+    details.push({
+      label: 'Status',
+      text: beforeStatus && afterStatus ? `${beforeStatus} -> ${afterStatus}` : (afterStatus || beforeStatus),
+      tone: 'neutral',
+    });
+  }
+  if (sourceText) details.push({ label: 'Source', text: sourceText, tone: 'neutral' });
+  return {
+    summary: event.eventType === 'task.created'
+      ? `Created task${assignedTo ? ` for ${assignedTo}` : ''}.`
+      : `Changed task status${beforeStatus || afterStatus ? ` from ${beforeStatus || 'unknown'} to ${afterStatus || 'unknown'}` : ''}.`,
+    changeKind: 'status',
+    details,
+  };
+}
+
+function shapeDocumentHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistoryRow, 'summary' | 'changeKind' | 'details'> {
+  const title = readHistoryText(event.after, ['title']) || readHistoryText(event.before, ['title']);
+  const proofSlug = readHistoryText(event.after, ['proofSlug']) || readHistoryText(event.metadata, ['proofSlug']);
+  const details: ReviewHistoryRow['details'] = [];
+  if (title) details.push({ label: 'Title', text: title, tone: 'neutral' });
+  if (proofSlug) details.push({ label: 'Proof slug', text: proofSlug, tone: 'neutral' });
+  return {
+    summary: title ? `${historyEventTitle(event)}: ${title}.` : `${historyEventTitle(event)}.`,
+    changeKind: 'document',
+    details,
+  };
+}
+
 export function shapeHistoryRow(event: ReviewRoomHistoryEvent): ReviewHistoryRow {
+  const shaped = event.eventType === 'suggestion.accepted' || event.eventType === 'suggestion.rejected'
+    ? shapeSuggestionHistoryRow(event)
+    : event.eventType === 'baseline.created'
+      ? shapeBaselineHistoryRow(event)
+      : event.eventType === 'task.created' || event.eventType === 'task.status_changed'
+        ? shapeTaskHistoryRow(event)
+        : event.eventType === 'document.created' || event.eventType === 'document.registered'
+          ? shapeDocumentHistoryRow(event)
+          : {
+            summary: historyEventTitle(event),
+            changeKind: 'event' as const,
+            details: [] as ReviewHistoryRow['details'],
+          };
+  const beforeText = readHistoryText(event.before, ['beforeContent', 'quote', 'content', 'title']);
+  const afterText = readHistoryText(event.after, ['afterContent', 'content', 'title', 'quote']);
   return {
     id: event.id,
     title: historyEventTitle(event),
+    summary: shaped.summary,
     actorId: event.actorId,
     timestamp: formatReviewTimestamp(event.createdAt),
-    beforeText: readHistoryText(event.before, ['beforeContent', 'quote', 'content', 'title']),
-    afterText: readHistoryText(event.after, ['afterContent', 'content', 'title', 'quote']),
+    beforeText,
+    afterText,
     targetLabel: event.targetId ? `${event.targetType || 'item'} ${event.targetId}` : '',
+    changeKind: shaped.changeKind,
+    details: shaped.details.length > 0
+      ? shaped.details
+      : [
+        ...(beforeText ? [{ label: 'Before', text: beforeText, tone: 'removed' as const }] : []),
+        ...(afterText ? [{ label: 'After', text: afterText, tone: 'added' as const }] : []),
+      ],
   };
 }

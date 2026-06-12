@@ -87,42 +87,44 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
   let taskActorFilter: ReviewActorFilter = 'all';
   let taskStatusFilter: ReviewTaskStatusFilter = 'open';
   let baselineNote = '';
+  const expandedHistoryRows = new Set<string>();
   let activeTab: ReviewPanelTab = selectedReviewText ? 'comments' : 'suggestions';
 
   const panel = document.createElement('aside');
   panel.id = REVIEW_PANEL_ID;
   panel.setAttribute('aria-label', 'Review items');
   panel.style.cssText = `
-    position:fixed;top:var(--review-room-bar-height, 64px);right:0;bottom:0;z-index:1200;
-    width:min(440px, 100vw);background:var(--rr-surface);color:var(--rr-ink);
+    position:fixed;top:calc(var(--review-room-bar-height, 64px) + 8px);right:8px;bottom:8px;z-index:1200;
+    width:min(440px, calc(100dvw - 16px));max-width:calc(100vw - 16px);box-sizing:border-box;
+    background:var(--rr-surface);color:var(--rr-ink);
     border-left:1px solid var(--rr-border);box-shadow:var(--rr-shadow-overlay);
-    display:grid;grid-template-rows:auto auto 1fr;overflow:hidden;
+    display:grid;grid-template-rows:auto auto minmax(0, 1fr);overflow:hidden;
   `;
 
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--rr-border-soft);';
+  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--rr-border-soft);min-width:0;';
   const title = document.createElement('div');
   title.textContent = 'Review';
-  title.style.cssText = 'font-size:17px;font-weight:750;letter-spacing:0;color:var(--rr-ink);';
+  title.style.cssText = 'font-size:17px;font-weight:750;letter-spacing:0;color:var(--rr-ink);flex:0 0 auto;';
   const close = document.createElement('button');
   close.type = 'button';
   close.textContent = 'Close';
-  close.style.cssText = 'border:1px solid var(--rr-control-border);background:var(--rr-surface);color:var(--rr-ink);border-radius:18px;min-height:32px;padding:0 11px;font-size:13px;font-weight:650;cursor:pointer;';
+  close.style.cssText = 'border:1px solid var(--rr-control-border);background:var(--rr-surface);color:var(--rr-ink);border-radius:18px;min-height:32px;padding:0 11px;font-size:13px;font-weight:650;cursor:pointer;flex:0 0 auto;';
   header.append(title, close);
   if (!host.isRealtimeAvailable()) {
     const realtimeNote = document.createElement('div');
     realtimeNote.textContent = 'Realtime sync unavailable on this host - manual save mode';
-    realtimeNote.style.cssText = 'font-size:11px;color:var(--rr-faint);padding:2px 8px;border:1px solid var(--rr-border-soft);border-radius:var(--rr-radius-pill);background:var(--rr-surface-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    realtimeNote.style.cssText = 'font-size:11px;color:var(--rr-faint);padding:2px 8px;border:1px solid var(--rr-border-soft);border-radius:var(--rr-radius-pill);background:var(--rr-surface-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0;';
     header.insertBefore(realtimeNote, close);
   }
 
   const tabBar = document.createElement('div');
   tabBar.setAttribute('role', 'tablist');
   tabBar.setAttribute('aria-label', 'Review sections');
-  tabBar.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid var(--rr-border-soft);background:var(--rr-surface-soft);';
+  tabBar.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid var(--rr-border-soft);background:var(--rr-surface-soft);min-width:0;box-sizing:border-box;';
 
   const body = document.createElement('div');
-  body.style.cssText = 'overflow:auto;padding:0;';
+  body.style.cssText = 'overflow:auto;padding:0;min-width:0;min-height:0;';
   panel.append(header, tabBar, body);
   document.body.appendChild(panel);
   host.onToggle(true);
@@ -444,47 +446,108 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       return;
     }
     for (const event of visibleEvents) {
-      const rowView = shapeHistoryRow(event);
-      const item = row();
-      item.dataset.reviewHistoryEvent = rowView.id;
-      item.style.background = 'var(--rr-surface-soft)';
-      const meta = document.createElement('div');
-      meta.textContent = `${rowView.title} by ${rowView.actorId}${rowView.timestamp ? ` - ${rowView.timestamp}` : ''}`;
-      meta.style.cssText = 'font-size:12px;font-weight:750;color:var(--rr-muted);';
-      item.appendChild(meta);
-
-      const { beforeText, afterText } = rowView;
-      if (beforeText || afterText) {
-        const diff = document.createElement('div');
-        diff.style.cssText = 'display:grid;gap:7px;';
-        if (beforeText) {
-          const before = document.createElement('div');
-          before.textContent = `Before: ${beforeText}`;
-          before.style.cssText = 'font-size:13px;line-height:1.4;color:var(--rr-removed-ink);background:var(--rr-removed-bg);border:1px solid var(--rr-removed-border);border-radius:var(--rr-radius);padding:8px;overflow-wrap:anywhere;';
-          diff.appendChild(before);
-        }
-        if (afterText) {
-          const after = document.createElement('div');
-          after.textContent = `After: ${afterText}`;
-          after.style.cssText = 'font-size:13px;line-height:1.4;color:var(--rr-added-ink);background:var(--rr-added-bg);border:1px solid var(--rr-added-border);border-radius:var(--rr-radius);padding:8px;overflow-wrap:anywhere;';
-          diff.appendChild(after);
-        }
-        item.appendChild(diff);
-      }
-
-      if (rowView.targetLabel) {
-        const target = document.createElement('div');
-        target.textContent = `Target: ${rowView.targetLabel}`;
-        target.style.cssText = 'font-size:11px;color:var(--rr-faint);overflow-wrap:anywhere;';
-        item.appendChild(target);
-      }
-      body.appendChild(item);
+      body.appendChild(renderHistoryEventRow(event));
     }
   };
 
   const renderPlaceholderTab = (label: string, message: string) => {
     body.appendChild(sectionHeading(label));
     body.appendChild(emptyNote(message));
+  };
+
+  const historyToneStyle = (tone: 'neutral' | 'added' | 'removed'): string => {
+    if (tone === 'added') {
+      return 'color:var(--rr-added-ink);background:var(--rr-added-bg);border:1px solid var(--rr-added-border);';
+    }
+    if (tone === 'removed') {
+      return 'color:var(--rr-removed-ink);background:var(--rr-removed-bg);border:1px solid var(--rr-removed-border);';
+    }
+    return 'color:var(--rr-ink);background:var(--rr-bg);border:1px solid var(--rr-border-soft);';
+  };
+
+  const changeKindLabel = (changeKind: ReturnType<typeof shapeHistoryRow>['changeKind']): string => {
+    if (changeKind === 'addition') return 'Addition';
+    if (changeKind === 'replacement') return 'Replacement';
+    if (changeKind === 'deletion') return 'Deletion';
+    if (changeKind === 'unchanged') return 'Unchanged';
+    if (changeKind === 'status') return 'Status';
+    if (changeKind === 'baseline') return 'Baseline';
+    if (changeKind === 'document') return 'Document';
+    return 'Event';
+  };
+
+  const renderHistoryEventRow = (event: ReviewRoomHistoryEvent): HTMLElement => {
+    const rowView = shapeHistoryRow(event);
+    const item = row();
+    const expanded = expandedHistoryRows.has(rowView.id);
+    const hasDetails = rowView.details.length > 0 || Boolean(rowView.targetLabel);
+    item.dataset.reviewHistoryEvent = rowView.id;
+    item.dataset.reviewHistoryKind = rowView.changeKind;
+    item.style.background = 'var(--rr-surface-soft)';
+
+    const meta = document.createElement('div');
+    meta.style.cssText = 'display:flex;align-items:center;gap:7px;flex-wrap:wrap;';
+    const title = document.createElement('span');
+    title.textContent = rowView.title;
+    title.style.cssText = 'font-size:12px;font-weight:750;color:var(--rr-muted);';
+    const badge = document.createElement('span');
+    badge.textContent = changeKindLabel(rowView.changeKind);
+    badge.style.cssText = 'display:inline-flex;align-items:center;min-height:20px;border:1px solid var(--rr-border-soft);border-radius:var(--rr-radius-pill);padding:0 7px;font-size:10px;font-weight:750;color:var(--rr-faint);background:var(--rr-surface);text-transform:uppercase;letter-spacing:0.03em;';
+    meta.append(title, badge);
+    item.appendChild(meta);
+
+    const actor = document.createElement('div');
+    actor.textContent = `${rowView.actorId}${rowView.timestamp ? ` - ${rowView.timestamp}` : ''}`;
+    actor.style.cssText = 'font-size:11px;color:var(--rr-faint);overflow-wrap:anywhere;';
+    item.appendChild(actor);
+
+    const summary = document.createElement('div');
+    summary.textContent = rowView.summary;
+    summary.style.cssText = 'font-size:13px;line-height:1.45;color:var(--rr-ink);overflow-wrap:anywhere;';
+    item.appendChild(summary);
+
+    if (hasDetails) {
+      const toggle = smallButton(expanded ? 'Hide details' : 'Show details');
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.onclick = () => {
+        if (expandedHistoryRows.has(rowView.id)) {
+          expandedHistoryRows.delete(rowView.id);
+        } else {
+          expandedHistoryRows.add(rowView.id);
+        }
+        void loadPanel();
+      };
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;align-items:center;gap:8px;';
+      actions.appendChild(toggle);
+      item.appendChild(actions);
+    }
+
+    if (expanded && hasDetails) {
+      const details = document.createElement('div');
+      details.style.cssText = 'display:grid;gap:7px;';
+      for (const detail of rowView.details) {
+        const block = document.createElement('div');
+        block.style.cssText = `${historyToneStyle(detail.tone)}border-radius:var(--rr-radius);padding:8px;display:grid;gap:3px;overflow-wrap:anywhere;`;
+        const label = document.createElement('div');
+        label.textContent = detail.label;
+        label.style.cssText = 'font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;opacity:0.78;';
+        const text = document.createElement('div');
+        text.textContent = detail.text;
+        text.style.cssText = 'font-size:13px;line-height:1.4;white-space:pre-wrap;';
+        block.append(label, text);
+        details.appendChild(block);
+      }
+      if (rowView.targetLabel) {
+        const target = document.createElement('div');
+        target.textContent = `Target: ${rowView.targetLabel}`;
+        target.style.cssText = 'font-size:11px;color:var(--rr-faint);overflow-wrap:anywhere;';
+        details.appendChild(target);
+      }
+      item.appendChild(details);
+    }
+
+    return item;
   };
 
   const renderPublish = (baselines: ReviewRoomPublishedVersion[], historyEvents: ReviewRoomHistoryEvent[]) => {
@@ -559,20 +622,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       return;
     }
     for (const event of changes.slice(0, 8)) {
-      const rowView = shapeHistoryRow(event);
-      const item = row();
-      const meta = document.createElement('div');
-      meta.textContent = `${rowView.title} by ${rowView.actorId}${rowView.timestamp ? ` - ${rowView.timestamp}` : ''}`;
-      meta.style.cssText = 'font-size:12px;font-weight:750;color:var(--rr-muted);';
-      item.appendChild(meta);
-      const detailText = rowView.afterText || rowView.beforeText || rowView.targetLabel || event.eventType;
-      if (detailText) {
-        const detail = document.createElement('div');
-        detail.textContent = detailText;
-        detail.style.cssText = 'font-size:13px;line-height:1.45;color:var(--rr-ink);overflow-wrap:anywhere;';
-        item.appendChild(detail);
-      }
-      body.appendChild(item);
+      body.appendChild(renderHistoryEventRow(event));
     }
   };
 

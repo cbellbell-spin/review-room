@@ -14,6 +14,7 @@ import {
   filterReviewHistoryEvents,
   filterReviewSuggestions,
   filterReviewTasks,
+  shapeHistoryRow,
 } from '../review-room/review-items';
 
 const comments = deriveReviewComments({
@@ -84,6 +85,83 @@ assert.deepEqual(collectReviewHistoryEventTypes(historyEvents), ['suggestion.acc
 assert.deepEqual(
   filterReviewHistoryEvents(historyEvents, { actorFilter: 'ai:codex', eventTypeFilter: 'task.created' }).map((event) => event.id),
   ['history2'],
+);
+
+const acceptedReplacement = shapeHistoryRow({
+  id: 'replace-history',
+  actorId: 'ai:codex',
+  actorType: 'agent',
+  eventType: 'suggestion.accepted',
+  targetType: 'suggestion',
+  targetId: 'mark-replace',
+  before: { kind: 'replace', beforeContent: 'Old paragraph.' },
+  after: { kind: 'replace', afterContent: 'New paragraph.' },
+  createdAt: '2026-06-11T10:06:00.000Z',
+});
+assert.equal(acceptedReplacement.title, 'Accepted replacement');
+assert.equal(acceptedReplacement.changeKind, 'replacement');
+assert(acceptedReplacement.summary.includes('Replaced'), 'replacement summary should explain the change');
+assert.deepEqual(
+  acceptedReplacement.details.map((detail) => [detail.label, detail.tone]),
+  [['Before', 'removed'], ['After', 'added']],
+  'replacement rows should expose before/after detail blocks',
+);
+
+const acceptedInsert = shapeHistoryRow({
+  id: 'insert-history',
+  actorId: 'ai:codex',
+  actorType: 'agent',
+  eventType: 'suggestion.accepted',
+  before: { kind: 'insert', beforeContent: '' },
+  after: { kind: 'insert', afterContent: 'New section.' },
+  createdAt: '2026-06-11T10:07:00.000Z',
+});
+assert.equal(acceptedInsert.title, 'Accepted insertion');
+assert.equal(acceptedInsert.changeKind, 'addition');
+assert.deepEqual(acceptedInsert.details.map((detail) => detail.label), ['Added']);
+
+const acceptedDelete = shapeHistoryRow({
+  id: 'delete-history',
+  actorId: 'ai:codex',
+  actorType: 'agent',
+  eventType: 'suggestion.accepted',
+  before: { kind: 'delete', beforeContent: 'Remove this.' },
+  after: { kind: 'delete', afterContent: '' },
+  createdAt: '2026-06-11T10:08:00.000Z',
+});
+assert.equal(acceptedDelete.title, 'Accepted deletion');
+assert.equal(acceptedDelete.changeKind, 'deletion');
+assert.deepEqual(acceptedDelete.details.map((detail) => [detail.label, detail.tone]), [['Deleted', 'removed']]);
+
+const rejectedSuggestion = shapeHistoryRow({
+  id: 'reject-history',
+  actorId: 'human:chris',
+  actorType: 'human',
+  eventType: 'suggestion.rejected',
+  before: { kind: 'replace', beforeContent: 'Keep this.' },
+  after: { kind: 'replace', afterContent: 'Keep this.' },
+  createdAt: '2026-06-11T10:09:00.000Z',
+});
+assert.equal(rejectedSuggestion.title, 'Rejected replacement');
+assert.equal(rejectedSuggestion.changeKind, 'unchanged');
+assert(rejectedSuggestion.summary.includes('unchanged'), 'rejected suggestion summary should say the document did not change');
+
+const baselineRow = shapeHistoryRow({
+  id: 'baseline-history',
+  actorId: 'human:chris',
+  actorType: 'human',
+  eventType: 'baseline.created',
+  targetType: 'published_version',
+  targetId: 'baseline1',
+  before: { versionNumber: 1 },
+  after: { versionNumber: 2, proofRevision: 9, contentLength: 123, note: 'Ready for review' },
+  createdAt: '2026-06-11T10:10:00.000Z',
+});
+assert.equal(baselineRow.changeKind, 'baseline');
+assert(baselineRow.summary.includes('v2'), 'baseline summary should include the version number');
+assert.deepEqual(
+  baselineRow.details.map((detail) => detail.label),
+  ['Previous baseline', 'New baseline', 'Proof revision', 'Snapshot size', 'Note'],
 );
 
 const taskBase = {

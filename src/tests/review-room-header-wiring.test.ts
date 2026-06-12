@@ -62,7 +62,9 @@ assert(
     && reviewPanelSource.includes('Review selected text')
     && editorSource.includes('this.addReviewRoomSelectionComment(selection, text)')
     && reviewPanelSource.includes('host.addSelectionComment(activeSelection, textarea.value)')
-    && reviewPanelSource.includes("top:var(--review-room-bar-height, 64px);right:0;bottom:0;")
+    && reviewPanelSource.includes("top:calc(var(--review-room-bar-height, 64px) + 8px);right:8px;bottom:8px;")
+    && reviewPanelSource.includes('width:min(440px, calc(100dvw - 16px));max-width:calc(100vw - 16px);')
+    && reviewPanelSource.includes('flex:1 1 auto;min-width:0;')
     && !reviewPanelSource.includes('background:rgba(31,41,51,0.46);'),
   'Expected Review Room review items to open as a docked sidebar that can use selected text',
 );
@@ -82,9 +84,10 @@ assert(
     && editorSource.includes('shareClient.fetchReviewRoomHistory({ limit })')
     && reviewPanelSource.includes('host.fetchHistory(20)')
     && reviewPanelSource.includes('renderHistoryEvents(historyEvents)')
-    && reviewItemsSource.includes('Accepted suggestion')
-    && reviewPanelSource.includes('Before: ${beforeText}')
-    && reviewPanelSource.includes('After: ${afterText}')
+    && reviewItemsSource.includes('Accepted replacement')
+    && reviewPanelSource.includes('renderHistoryEventRow(event)')
+    && reviewPanelSource.includes('Show details')
+    && reviewPanelSource.includes('changeKindLabel(rowView.changeKind)')
     && markPopoverSource.includes('proof?.isReviewRoomRuntime?.()')
     && markPopoverSource.includes('proof.openReviewRoomReviewSidebar({ focusMarkId: markId })'),
   'Expected Review Room comment threads and accepted suggestion history to open inside the Review sidebar',
