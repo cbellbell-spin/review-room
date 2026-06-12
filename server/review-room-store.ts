@@ -10,6 +10,7 @@ import type {
   ReviewRoomDocumentRow,
   ReviewRoomHistoryEventRow,
   ReviewRoomIdentityRow,
+  ReviewRoomPublishedVersionRow,
   ReviewRoomRole,
 } from './db.js';
 import { reviewRoomRoleToShareRole } from './db.js';
@@ -152,6 +153,7 @@ const REVIEW_ROOM_TABLE_DDL = [
     note TEXT,
     UNIQUE (document_id, version_number)
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_review_room_published_versions_document ON review_room_published_versions(document_id, version_number)`,
   `CREATE TABLE IF NOT EXISTS review_room_history_events (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -604,13 +606,94 @@ export async function storeUpdateAssignmentTaskStatus(
   return storeGetAssignmentTask(id);
 }
 
+export async function storeCreatePublishedVersion(input: {
+  documentId: string;
+  proofRevision?: number | null;
+  contentSnapshot: string;
+  createdByIdentityId: string;
+  note?: string | null;
+}): Promise<ReviewRoomPublishedVersionRow> {
+  const db = await ensureStore();
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const latest = await execute<{ max_version: number | null }>(`
+    SELECT MAX(version_number) AS max_version
+    FROM review_room_published_versions
+    WHERE document_id = ?
+  `, [input.documentId]);
+  const versionNumber = Math.max(0, Number(latest?.max_version ?? 0)) + 1;
+  await db.execute({
+    sql: `INSERT INTO review_room_published_versions (
+      id, document_id, version_number, proof_revision, content_snapshot, created_by_identity_id, created_at, note
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      id,
+      input.documentId,
+      versionNumber,
+      input.proofRevision ?? null,
+      input.contentSnapshot,
+      input.createdByIdentityId,
+      now,
+      input.note ?? null,
+    ],
+  });
+  const row = await storeGetPublishedVersion(id);
+  if (!row) throw new Error('Review Room published version was not persisted.');
+  return row;
+}
+
+export async function storeGetPublishedVersion(id: string): Promise<ReviewRoomPublishedVersionRow | null> {
+  return execute<ReviewRoomPublishedVersionRow>(`
+    SELECT *
+    FROM review_room_published_versions
+    WHERE id = ?
+    LIMIT 1
+  `, [id]);
+}
+
+export async function storeListPublishedVersions(
+  documentId: string,
+  limit: number = 20,
+): Promise<ReviewRoomPublishedVersionRow[]> {
+  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+  return executeAll<ReviewRoomPublishedVersionRow>(`
+    SELECT *
+    FROM review_room_published_versions
+    WHERE document_id = ?
+    ORDER BY version_number DESC
+    LIMIT ?
+  `, [documentId, safeLimit]);
+}
+
+export async function storeGetLatestPublishedVersion(documentId: string): Promise<ReviewRoomPublishedVersionRow | null> {
+  return execute<ReviewRoomPublishedVersionRow>(`
+    SELECT *
+    FROM review_room_published_versions
+    WHERE document_id = ?
+    ORDER BY version_number DESC
+    LIMIT 1
+  `, [documentId]);
+}
+
 export async function storeListReviewRoomHistoryEvents(input: {
   workspaceId?: string;
   documentId?: string | null;
   limit?: number;
+  since?: string | null;
 } = {}): Promise<ReviewRoomHistoryEventRow[]> {
   const safeLimit = Math.max(1, Math.min(Math.trunc(input.limit ?? 100), 500));
   if (input.documentId) {
+    if (input.since) {
+      return executeAll<ReviewRoomHistoryEventRow>(`
+        SELECT *
+        FROM review_room_history_events
+        WHERE document_id = ?
+          AND created_at > ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `, [input.documentId, input.since, safeLimit]);
+    }
     return executeAll<ReviewRoomHistoryEventRow>(`
       SELECT *
       FROM review_room_history_events

@@ -101,7 +101,7 @@ assert(
 );
 assert(
   shareClientSource.includes('async fetchReviewRoomHistory(')
-    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/history?limit=${limit}')
+    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/history?${params.toString()}')
     && shareClientSource.includes('ReviewRoomHistoryEvent')
     && shareClientSource.includes('before: event.before')
     && shareClientSource.includes('after: event.after')
@@ -112,8 +112,16 @@ assert(
     && editorSource.includes('shareClient.updateReviewRoomTaskStatus(taskId, status)')
     && reviewPanelSource.includes('renderTasks(tasks)')
     && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'completed')")
-    && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'dismissed')"),
-  'Expected share client and sidebar host to expose typed Review Room history and task loading/actions',
+    && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'dismissed')")
+    && shareClientSource.includes('async fetchReviewRoomBaselines(')
+    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/baselines?limit=${limit}')
+    && shareClientSource.includes('async createReviewRoomBaseline(')
+    && editorSource.includes('shareClient.fetchReviewRoomBaselines({ limit: 10 })')
+    && editorSource.includes('shareClient.createReviewRoomBaseline({ note })')
+    && reviewPanelSource.includes('renderPublish(baselines, historyEvents)')
+    && reviewPanelSource.includes('Changes since baseline')
+    && reviewItemsSource.includes('Created baseline'),
+  'Expected share client and sidebar host to expose typed Review Room history, task, and baseline loading/actions',
 );
 assert(
   editorSource.includes('private createReviewRoomSaveButton()')

@@ -14,6 +14,7 @@ import {
   type ReviewRoomAssignmentTaskRow,
   type ReviewRoomDocumentMemberRow,
   type ReviewRoomDocumentRow,
+  type ReviewRoomPublishedVersionRow,
 } from './db.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
 import {
@@ -24,13 +25,16 @@ import {
   resolveHostedDocumentAccess,
 } from './hosted-review-room-db.js';
 import {
+  storeCreatePublishedVersion,
   storeCreateReviewRoomDocumentRecord,
   storeCreateReviewRoomHistoryEvent,
   storeGetAssignmentTask,
+  storeGetLatestPublishedVersion,
   storeGetReviewRoomDocumentByProofSlug,
   storeGetReviewRoomDocumentMemberForProofSlug,
   storeGetReviewRoomIdentity,
   storeListAssignmentTasks,
+  storeListPublishedVersions,
   storeListReviewRoomAgents,
   storeListReviewRoomDocuments,
   storeListReviewRoomHistoryEvents,
@@ -166,6 +170,7 @@ function serializeDocument(
     openPath: appendTokenToPath(buildReviewRoomOpenPath(row.proof_slug), member?.proof_access_token ?? null),
     statePath: `/documents/${encodeURIComponent(row.proof_slug)}/state`,
     historyPath: `/review-room/api/documents/${encodeURIComponent(row.proof_slug)}/history`,
+    baselinePath: `/review-room/api/documents/${encodeURIComponent(row.proof_slug)}/baselines`,
   };
 }
 
@@ -243,6 +248,19 @@ function serializeHistoryEvent(row: {
     rationale: row.rationale,
     metadata: parseJsonObject(row.metadata_json) ?? {},
     createdAt: row.created_at,
+  };
+}
+
+function serializePublishedVersion(row: ReviewRoomPublishedVersionRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    documentId: row.document_id,
+    versionNumber: row.version_number,
+    proofRevision: row.proof_revision,
+    contentLength: row.content_snapshot.length,
+    createdByIdentityId: row.created_by_identity_id,
+    createdAt: row.created_at,
+    note: row.note,
   };
 }
 
@@ -790,6 +808,7 @@ reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Res
 reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req: Request, res: Response) => {
   const proofSlug = String(req.params.proofSlug || '').trim();
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 100;
+  const since = typeof req.query.since === 'string' && req.query.since.trim() ? req.query.since.trim() : null;
   if (!proofSlug) {
     res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
     return;
@@ -802,11 +821,91 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req
   const events = await storeListReviewRoomHistoryEvents({
     documentId: document.id,
     limit: Number.isFinite(limit) ? limit : 100,
+    since,
   });
   res.json({
     success: true,
     document: serializeDocument(document, null),
     events: events.map(serializeHistoryEvent),
+  });
+});
+
+reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/baselines', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 20;
+  if (!proofSlug) {
+    res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
+    return;
+  }
+  const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
+  if (!document) {
+    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+    return;
+  }
+  const baselines = await storeListPublishedVersions(document.id, Number.isFinite(limit) ? limit : 20);
+  res.json({
+    success: true,
+    document: serializeDocument(document, null),
+    latest: baselines[0] ? serializePublishedVersion(baselines[0]) : null,
+    baselines: baselines.map(serializePublishedVersion),
+  });
+});
+
+reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/baselines', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const identityId = getCurrentReviewRoomIdentityId(req);
+  const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+  const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim().slice(0, 500) : null;
+  if (!proofSlug) {
+    res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
+    return;
+  }
+  const [document, proofDoc] = await Promise.all([
+    storeGetReviewRoomDocumentByProofSlug(proofSlug),
+    engineGetDocumentBySlug(proofSlug),
+  ]);
+  if (!document) {
+    res.status(404).json({ success: false, code: 'DOCUMENT_MISSING', error: 'No Review Room document exists for that slug.' });
+    return;
+  }
+  if (!proofDoc) {
+    res.status(404).json({ success: false, code: 'PROOF_DOCUMENT_MISSING', error: 'The underlying Proof document is missing.' });
+    return;
+  }
+  const previous = await storeGetLatestPublishedVersion(document.id);
+  const baseline = await storeCreatePublishedVersion({
+    documentId: document.id,
+    proofRevision: proofDoc.revision,
+    contentSnapshot: proofDoc.markdown,
+    createdByIdentityId: identityId,
+    note,
+  });
+  await storeCreateReviewRoomHistoryEvent({
+    workspaceId: document.workspace_id,
+    documentId: document.id,
+    actorId: identityId,
+    actorType: 'human',
+    eventType: 'baseline.created',
+    targetType: 'published_version',
+    targetId: baseline.id,
+    before: previous ? {
+      versionNumber: previous.version_number,
+      proofRevision: previous.proof_revision,
+      createdAt: previous.created_at,
+    } : undefined,
+    after: {
+      versionNumber: baseline.version_number,
+      proofRevision: baseline.proof_revision,
+      createdAt: baseline.created_at,
+      note: baseline.note,
+      contentLength: baseline.content_snapshot.length,
+    },
+    metadata: { proofSlug },
+  });
+  res.status(201).json({
+    success: true,
+    document: serializeDocument(document, null),
+    baseline: serializePublishedVersion(baseline),
   });
 });
 

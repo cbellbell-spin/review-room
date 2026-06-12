@@ -216,6 +216,7 @@ export function historyEventTitle(event: ReviewRoomHistoryEvent): string {
   if (event.eventType === 'document.registered') return 'Registered document';
   if (event.eventType === 'task.created') return 'Created task';
   if (event.eventType === 'task.status_changed') return 'Updated task status';
+  if (event.eventType === 'baseline.created') return 'Created baseline';
   return event.eventType.replace(/\./g, ' ');
 }
 

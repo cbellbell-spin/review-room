@@ -4732,6 +4732,14 @@ class ProofEditorImpl implements ProofEditor {
         const result = await shareClient.fetchReviewRoomHistory({ limit });
         return result && !('error' in result) && result.success ? result.events : [];
       },
+      fetchBaselines: async () => {
+        const result = await shareClient.fetchReviewRoomBaselines({ limit: 10 });
+        return result && !('error' in result) && result.success ? result.baselines : [];
+      },
+      createBaseline: async (note) => {
+        const result = await shareClient.createReviewRoomBaseline({ note });
+        return result && !('error' in result) && result.success ? result.baseline : null;
+      },
       fetchTasks: async () => {
         const result = await shareClient.fetchReviewRoomTasks({ status: 'all' });
         return result && !('error' in result) && result.success ? result.tasks : [];

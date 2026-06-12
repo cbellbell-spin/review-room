@@ -1,4 +1,4 @@
-import type { ReviewRoomAssignmentTask, ReviewRoomHistoryEvent } from '../bridge/share-client';
+import type { ReviewRoomAssignmentTask, ReviewRoomHistoryEvent, ReviewRoomPublishedVersion } from '../bridge/share-client';
 import {
   collectReviewCommentActors,
   collectReviewHistoryActors,
@@ -52,6 +52,8 @@ export type ReviewPanelHost = {
   focusMark(markId: string): void;
   fetchDocument(): Promise<{ markdown?: string | null; marks?: Record<string, unknown> } | null>;
   fetchHistory(limit: number): Promise<ReviewRoomHistoryEvent[]>;
+  fetchBaselines(): Promise<ReviewRoomPublishedVersion[]>;
+  createBaseline(note: string | null): Promise<ReviewRoomPublishedVersion | null>;
   fetchTasks(): Promise<ReviewRoomAssignmentTask[]>;
   updateTaskStatus(taskId: string, status: 'completed' | 'dismissed'): Promise<boolean>;
   isRealtimeAvailable(): boolean;
@@ -84,6 +86,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
   let historyEventTypeFilter: ReviewHistoryEventTypeFilter = 'all';
   let taskActorFilter: ReviewActorFilter = 'all';
   let taskStatusFilter: ReviewTaskStatusFilter = 'open';
+  let baselineNote = '';
   let activeTab: ReviewPanelTab = selectedReviewText ? 'comments' : 'suggestions';
 
   const panel = document.createElement('aside');
@@ -484,6 +487,95 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     body.appendChild(emptyNote(message));
   };
 
+  const renderPublish = (baselines: ReviewRoomPublishedVersion[], historyEvents: ReviewRoomHistoryEvent[]) => {
+    const latest = baselines[0] ?? null;
+    body.appendChild(sectionHeading('Publish'));
+
+    const summary = row();
+    summary.style.borderTop = '0';
+    const title = document.createElement('div');
+    title.textContent = latest ? `Latest baseline v${latest.versionNumber}` : 'No published baseline yet';
+    title.style.cssText = 'font-size:15px;font-weight:750;color:var(--rr-ink);';
+    const copy = document.createElement('div');
+    const latestDate = latest?.createdAt ? new Date(latest.createdAt).toLocaleString() : '';
+    copy.textContent = latest
+      ? `Created ${latestDate}${latest.proofRevision ? ` at Proof revision ${latest.proofRevision}` : ''}. Snapshot size ${latest.contentLength} characters.`
+      : 'Create a baseline before sharing or before a major review pass so later changes have a checkpoint.';
+    copy.style.cssText = 'font-size:13px;line-height:1.45;color:var(--rr-muted);';
+    summary.append(title, copy);
+    if (latest?.note) {
+      const note = document.createElement('div');
+      note.textContent = latest.note;
+      note.style.cssText = 'font-size:13px;line-height:1.45;color:var(--rr-ink);background:var(--rr-bg);border:1px solid var(--rr-border-soft);border-radius:var(--rr-radius);padding:8px;overflow-wrap:anywhere;';
+      summary.appendChild(note);
+    }
+    body.appendChild(summary);
+
+    const composer = row();
+    const label = document.createElement('div');
+    label.textContent = 'Create baseline';
+    label.style.cssText = 'font-size:12px;font-weight:750;text-transform:uppercase;letter-spacing:0.04em;color:var(--rr-muted);';
+    const textarea = document.createElement('textarea');
+    textarea.placeholder = 'Optional note, e.g. Sent to reviewers';
+    textarea.value = baselineNote;
+    textarea.rows = 2;
+    textarea.maxLength = 500;
+    textarea.style.cssText = 'width:100%;box-sizing:border-box;min-height:62px;resize:vertical;border:1px solid var(--rr-control-border);border-radius:var(--rr-radius);padding:8px 9px;font:inherit;font-size:13px;line-height:1.45;color:var(--rr-ink);background:var(--rr-surface);';
+    textarea.oninput = () => {
+      baselineNote = textarea.value;
+    };
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;align-items:center;';
+    const create = smallButton(latest ? 'Create new baseline' : 'Create baseline', 'primary');
+    create.onclick = () => {
+      void (async () => {
+        create.disabled = true;
+        const created = await host.createBaseline(baselineNote.trim() || null);
+        if (!created) {
+          renderError('Could not create this baseline.');
+          return;
+        }
+        baselineNote = '';
+        await loadPanel();
+      })();
+    };
+    actions.appendChild(create);
+    composer.append(label, textarea, actions);
+    body.appendChild(composer);
+
+    const changes = latest
+      ? historyEvents.filter((event) => (
+        event.createdAt > latest.createdAt
+        && event.eventType !== 'baseline.created'
+      ))
+      : [];
+    body.appendChild(sectionHeading(latest ? `Changes since baseline (${changes.length})` : 'Changes since baseline'));
+    if (!latest) {
+      body.appendChild(emptyNote('No baseline exists yet.'));
+      return;
+    }
+    if (changes.length === 0) {
+      body.appendChild(emptyNote('No Review Room history events after the latest baseline.'));
+      return;
+    }
+    for (const event of changes.slice(0, 8)) {
+      const rowView = shapeHistoryRow(event);
+      const item = row();
+      const meta = document.createElement('div');
+      meta.textContent = `${rowView.title} by ${rowView.actorId}${rowView.timestamp ? ` - ${rowView.timestamp}` : ''}`;
+      meta.style.cssText = 'font-size:12px;font-weight:750;color:var(--rr-muted);';
+      item.appendChild(meta);
+      const detailText = rowView.afterText || rowView.beforeText || rowView.targetLabel || event.eventType;
+      if (detailText) {
+        const detail = document.createElement('div');
+        detail.textContent = detailText;
+        detail.style.cssText = 'font-size:13px;line-height:1.45;color:var(--rr-ink);overflow-wrap:anywhere;';
+        item.appendChild(detail);
+      }
+      body.appendChild(item);
+    }
+  };
+
   const renderTasks = (tasks: ReviewRoomAssignmentTask[]) => {
     const filteredTasks = filterReviewTasks(tasks, { actorFilter: taskActorFilter, statusFilter: taskStatusFilter });
     body.appendChild(sectionHeading(`Tasks (${filteredTasks.length})`));
@@ -788,6 +880,12 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
           return [] as ReviewRoomAssignmentTask[];
         }),
       ]);
+      const baselines = activeTab === 'publish'
+        ? await host.fetchBaselines().catch((error) => {
+          console.warn('[review-room] baselines load failed', error);
+          return [] as ReviewRoomPublishedVersion[];
+        })
+        : [];
       if (!doc) {
         renderError('Could not load this document.');
         return;
@@ -831,7 +929,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
         renderTasks(tasks);
         return;
       }
-      renderPlaceholderTab('Publish', 'Publish and baseline checkpoints will appear here when publishing ships.');
+      renderPublish(baselines, historyEvents);
     } catch (error) {
       renderError(error instanceof Error ? error.message : 'Could not load review items.');
     }

@@ -100,6 +100,30 @@ export interface ReviewRoomHistoryResponse {
   document?: Record<string, unknown>;
 }
 
+export interface ReviewRoomPublishedVersion {
+  id: string;
+  documentId: string;
+  versionNumber: number;
+  proofRevision?: number | null;
+  contentLength: number;
+  createdByIdentityId: string;
+  createdAt: string;
+  note?: string | null;
+}
+
+export interface ReviewRoomBaselinesResponse {
+  success: boolean;
+  latest?: ReviewRoomPublishedVersion | null;
+  baselines: ReviewRoomPublishedVersion[];
+  document?: Record<string, unknown>;
+}
+
+export interface ReviewRoomCreateBaselineResponse {
+  success: boolean;
+  baseline: ReviewRoomPublishedVersion;
+  document?: Record<string, unknown>;
+}
+
 export type ReviewRoomAssignmentTaskStatus = 'open' | 'running' | 'delegated' | 'dismissed' | 'completed';
 
 export interface ReviewRoomAssignmentTask {
@@ -199,6 +223,25 @@ function isReviewRoomAssignmentTaskStatus(value: unknown): value is ReviewRoomAs
     || value === 'delegated'
     || value === 'dismissed'
     || value === 'completed';
+}
+
+function parseReviewRoomPublishedVersion(value: Record<string, unknown>): ReviewRoomPublishedVersion {
+  return {
+    id: typeof value.id === 'string' ? value.id : '',
+    documentId: typeof value.documentId === 'string' ? value.documentId : '',
+    versionNumber: typeof value.versionNumber === 'number' && Number.isFinite(value.versionNumber)
+      ? Math.trunc(value.versionNumber)
+      : 0,
+    proofRevision: typeof value.proofRevision === 'number' && Number.isFinite(value.proofRevision)
+      ? Math.trunc(value.proofRevision)
+      : null,
+    contentLength: typeof value.contentLength === 'number' && Number.isFinite(value.contentLength)
+      ? Math.max(0, Math.trunc(value.contentLength))
+      : 0,
+    createdByIdentityId: typeof value.createdByIdentityId === 'string' ? value.createdByIdentityId : 'unknown',
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : '',
+    note: typeof value.note === 'string' ? value.note : null,
+  };
 }
 
 export class ShareClient {
@@ -755,11 +798,13 @@ export class ShareClient {
   }
 
   async fetchReviewRoomHistory(
-    options?: { token?: string; limit?: number },
+    options?: { token?: string; limit?: number; since?: string | null },
   ): Promise<ReviewRoomHistoryResponse | ShareRequestError | null> {
     if (!this.slug) return null;
     const limit = Math.max(1, Math.min(100, Math.trunc(options?.limit ?? 20)));
-    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/history?limit=${limit}`, {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (options?.since) params.set('since', options.since);
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/history?${params.toString()}`, {
       headers: this.getShareAuthHeaders(options?.token),
     });
     if (!response.ok) return this.parseRequestError(response);
@@ -794,6 +839,60 @@ export class ShareClient {
             : {},
           createdAt: typeof event.createdAt === 'string' ? event.createdAt : '',
         })),
+    };
+  }
+
+  async fetchReviewRoomBaselines(
+    options?: { token?: string; limit?: number },
+  ): Promise<ReviewRoomBaselinesResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const limit = Math.max(1, Math.min(100, Math.trunc(options?.limit ?? 20)));
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/baselines?limit=${limit}`, {
+      headers: this.getShareAuthHeaders(options?.token),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const rawBaselines = Array.isArray(payload?.baselines) ? payload.baselines : [];
+    const latest = payload?.latest && typeof payload.latest === 'object' && !Array.isArray(payload.latest)
+      ? parseReviewRoomPublishedVersion(payload.latest as Record<string, unknown>)
+      : null;
+    return {
+      success: payload?.success === true,
+      latest,
+      document: payload?.document && typeof payload.document === 'object' && !Array.isArray(payload.document)
+        ? payload.document as Record<string, unknown>
+        : undefined,
+      baselines: rawBaselines
+        .filter((baseline): baseline is Record<string, unknown> => Boolean(baseline) && typeof baseline === 'object' && !Array.isArray(baseline))
+        .filter((baseline) => typeof baseline.id === 'string')
+        .map(parseReviewRoomPublishedVersion),
+    };
+  }
+
+  async createReviewRoomBaseline(
+    options?: { token?: string; note?: string | null },
+  ): Promise<ReviewRoomCreateBaselineResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/baselines`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getShareAuthHeaders(options?.token),
+      },
+      body: JSON.stringify({ note: options?.note ?? null }),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const baseline = payload?.baseline && typeof payload.baseline === 'object' && !Array.isArray(payload.baseline)
+      ? parseReviewRoomPublishedVersion(payload.baseline as Record<string, unknown>)
+      : null;
+    if (!baseline) return { success: false, baseline: {} as ReviewRoomPublishedVersion };
+    return {
+      success: payload?.success === true,
+      baseline,
+      document: payload?.document && typeof payload.document === 'object' && !Array.isArray(payload.document)
+        ? payload.document as Record<string, unknown>
+        : undefined,
     };
   }
 
