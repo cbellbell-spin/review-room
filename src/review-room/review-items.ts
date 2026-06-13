@@ -157,6 +157,22 @@ export function collectReviewHistoryEventTypes(events: ReviewRoomHistoryEvent[])
   )).sort((a, b) => a.localeCompare(b));
 }
 
+export function isReviewAuditMutationEvent(event: ReviewRoomHistoryEvent): boolean {
+  return event.eventType === 'document.direct_mutation';
+}
+
+export function collectReviewedAuditEventIds(events: ReviewRoomHistoryEvent[]): Set<string> {
+  return new Set(events
+    .filter((event) => event.eventType === 'audit.reviewed' && event.targetType === 'review_room_history_event')
+    .map((event) => event.targetId ?? '')
+    .filter((targetId) => targetId.length > 0));
+}
+
+export function filterOpenReviewAuditEvents(events: ReviewRoomHistoryEvent[]): ReviewRoomHistoryEvent[] {
+  const reviewedIds = collectReviewedAuditEventIds(events);
+  return events.filter((event) => isReviewAuditMutationEvent(event) && !reviewedIds.has(event.id));
+}
+
 export function filterReviewTasks(
   tasks: ReviewRoomAssignmentTask[],
   filters: { actorFilter?: ReviewActorFilter; statusFilter?: ReviewTaskStatusFilter } = {},
@@ -192,7 +208,7 @@ export type ReviewHistoryRow = {
   beforeText: string;
   afterText: string;
   targetLabel: string;
-  changeKind: 'addition' | 'replacement' | 'deletion' | 'unchanged' | 'status' | 'baseline' | 'document' | 'event';
+  changeKind: 'addition' | 'replacement' | 'deletion' | 'unchanged' | 'status' | 'baseline' | 'document' | 'audit' | 'event';
   details: Array<{
     label: string;
     text: string;
@@ -216,6 +232,12 @@ function readHistoryNumber(payload: Record<string, unknown> | null | undefined, 
     if (typeof value === 'number' && Number.isFinite(value)) return value;
   }
   return null;
+}
+
+function readHistoryStringArray(payload: Record<string, unknown> | null | undefined, key: string): string[] {
+  const value = payload?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
 function previewHistoryText(value: string, maxLength = 90): string {
@@ -244,10 +266,67 @@ export function historyEventTitle(event: ReviewRoomHistoryEvent): string {
   if (event.eventType === 'suggestion.rejected') return `Rejected ${formatSuggestionKind(suggestionKind)}`;
   if (event.eventType === 'document.created') return 'Created document';
   if (event.eventType === 'document.registered') return 'Registered document';
+  if (event.eventType === 'document.direct_mutation') return 'Direct change to review';
+  if (event.eventType === 'audit.reviewed') return 'Reviewed direct change';
   if (event.eventType === 'task.created') return 'Created task';
   if (event.eventType === 'task.status_changed') return 'Updated task status';
   if (event.eventType === 'baseline.created') return 'Created baseline';
   return event.eventType.replace(/\./g, ' ');
+}
+
+function shapeAuditHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistoryRow, 'summary' | 'changeKind' | 'details'> {
+  const changedFields = readHistoryStringArray(event.after, 'changedFields');
+  const route = readHistoryText(event.metadata, ['route']);
+  const source = readHistoryText(event.metadata, ['source']);
+  const beforeRevision = readHistoryNumber(event.before, ['revision']);
+  const afterRevision = readHistoryNumber(event.after, ['revision']);
+  const beforeMarkdownLength = readHistoryNumber(event.before, ['markdownLength']);
+  const afterMarkdownLength = readHistoryNumber(event.after, ['markdownLength']);
+  const beforeTitle = readHistoryText(event.before, ['title']);
+  const afterTitle = readHistoryText(event.after, ['title']);
+  const details: ReviewHistoryRow['details'] = [];
+  if (changedFields.length > 0) {
+    details.push({ label: 'Changed fields', text: changedFields.join(', '), tone: 'neutral' });
+  }
+  if (route || source) {
+    details.push({ label: 'Source', text: [route, source].filter(Boolean).join(' · '), tone: 'neutral' });
+  }
+  if (beforeRevision !== null || afterRevision !== null) {
+    details.push({
+      label: 'Revision',
+      text: `${beforeRevision ?? 'unknown'} -> ${afterRevision ?? 'unknown'}`,
+      tone: 'neutral',
+    });
+  }
+  if (beforeTitle || afterTitle) {
+    details.push({
+      label: 'Title',
+      text: `${beforeTitle || '(empty)'} -> ${afterTitle || '(empty)'}`,
+      tone: beforeTitle === afterTitle ? 'neutral' : 'added',
+    });
+  }
+  if (beforeMarkdownLength !== null || afterMarkdownLength !== null) {
+    details.push({
+      label: 'Markdown length',
+      text: `${beforeMarkdownLength ?? 'unknown'} -> ${afterMarkdownLength ?? 'unknown'} characters`,
+      tone: beforeMarkdownLength === afterMarkdownLength ? 'neutral' : 'added',
+    });
+  }
+  const beforeMarkdownHash = readHistoryText(event.before, ['markdownHash']);
+  const afterMarkdownHash = readHistoryText(event.after, ['markdownHash']);
+  if (beforeMarkdownHash || afterMarkdownHash) {
+    details.push({
+      label: 'Markdown hash',
+      text: `${beforeMarkdownHash ? beforeMarkdownHash.slice(0, 12) : 'unknown'} -> ${afterMarkdownHash ? afterMarkdownHash.slice(0, 12) : 'unknown'}`,
+      tone: 'neutral',
+    });
+  }
+  const fields = changedFields.length > 0 ? changedFields.join(', ') : 'document state';
+  return {
+    summary: `Direct ${fields} change${route ? ` through ${route}` : ''}.`,
+    changeKind: 'audit',
+    details,
+  };
 }
 
 function shapeSuggestionHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistoryRow, 'summary' | 'changeKind' | 'details'> {
@@ -358,15 +437,17 @@ export function shapeHistoryRow(event: ReviewRoomHistoryEvent): ReviewHistoryRow
     ? shapeSuggestionHistoryRow(event)
     : event.eventType === 'baseline.created'
       ? shapeBaselineHistoryRow(event)
-      : event.eventType === 'task.created' || event.eventType === 'task.status_changed'
-        ? shapeTaskHistoryRow(event)
-        : event.eventType === 'document.created' || event.eventType === 'document.registered'
-          ? shapeDocumentHistoryRow(event)
-          : {
-            summary: historyEventTitle(event),
-            changeKind: 'event' as const,
-            details: [] as ReviewHistoryRow['details'],
-          };
+      : event.eventType === 'document.direct_mutation'
+        ? shapeAuditHistoryRow(event)
+        : event.eventType === 'task.created' || event.eventType === 'task.status_changed'
+          ? shapeTaskHistoryRow(event)
+          : event.eventType === 'document.created' || event.eventType === 'document.registered'
+            ? shapeDocumentHistoryRow(event)
+            : {
+              summary: historyEventTitle(event),
+              changeKind: 'event' as const,
+              details: [] as ReviewHistoryRow['details'],
+            };
   const beforeText = readHistoryText(event.before, ['beforeContent', 'quote', 'content', 'title']);
   const afterText = readHistoryText(event.after, ['afterContent', 'content', 'title', 'quote']);
   return {

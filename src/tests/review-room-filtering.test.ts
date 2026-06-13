@@ -10,6 +10,7 @@ import {
   collectReviewTaskActors,
   collectReviewTaskStatuses,
   deriveReviewComments,
+  filterOpenReviewAuditEvents,
   filterReviewComments,
   filterReviewHistoryEvents,
   filterReviewSuggestions,
@@ -162,6 +163,42 @@ assert(baselineRow.summary.includes('v2'), 'baseline summary should include the 
 assert.deepEqual(
   baselineRow.details.map((detail) => detail.label),
   ['Previous baseline', 'New baseline', 'Proof revision', 'Snapshot size', 'Note'],
+);
+
+const directMutationEvent: ReviewRoomHistoryEvent = {
+  id: 'audit-direct-1',
+  actorId: 'human:direct',
+  actorType: 'human',
+  eventType: 'document.direct_mutation',
+  targetType: 'document',
+  targetId: 'doc1',
+  before: { revision: 1, markdownLength: 12, markdownHash: 'beforehash' },
+  after: { revision: 2, markdownLength: 18, markdownHash: 'afterhash', changedFields: ['markdown'] },
+  metadata: { route: 'PUT /api/documents/:slug', source: 'rest-put' },
+  createdAt: '2026-06-13T12:00:00.000Z',
+};
+const directMutationRow = shapeHistoryRow(directMutationEvent);
+assert.equal(directMutationRow.changeKind, 'audit');
+assert.equal(directMutationRow.title, 'Direct change to review');
+assert(directMutationRow.summary.includes('PUT /api/documents/:slug'), 'Audit summary should name the mutation route');
+assert.deepEqual(
+  filterOpenReviewAuditEvents([
+    directMutationEvent,
+    {
+      id: 'audit-reviewed-1',
+      actorId: 'human:reviewer',
+      actorType: 'human',
+      eventType: 'audit.reviewed',
+      targetType: 'review_room_history_event',
+      targetId: 'audit-direct-1',
+      before: { status: 'open' },
+      after: { status: 'reviewed' },
+      metadata: {},
+      createdAt: '2026-06-13T12:05:00.000Z',
+    },
+  ]),
+  [],
+  'Reviewed direct mutation events should leave the Audit Inbox',
 );
 
 const taskBase = {

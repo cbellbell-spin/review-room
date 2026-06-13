@@ -100,6 +100,12 @@ export interface ReviewRoomHistoryResponse {
   document?: Record<string, unknown>;
 }
 
+export interface ReviewRoomAuditReviewedResponse {
+  success: boolean;
+  alreadyReviewed?: boolean;
+  event: ReviewRoomHistoryEvent;
+}
+
 export interface ReviewRoomPublishedVersion {
   id: string;
   documentId: string;
@@ -871,27 +877,31 @@ export class ShareClient {
       events: rawEvents
         .filter((event): event is Record<string, unknown> => Boolean(event) && typeof event === 'object' && !Array.isArray(event))
         .filter((event) => typeof event.id === 'string' && typeof event.eventType === 'string')
-        .map((event) => ({
-          id: String(event.id),
-          workspaceId: typeof event.workspaceId === 'string' ? event.workspaceId : undefined,
-          documentId: typeof event.documentId === 'string' ? event.documentId : null,
-          actorId: typeof event.actorId === 'string' ? event.actorId : 'unknown',
-          actorType: typeof event.actorType === 'string' ? event.actorType : 'unknown',
-          eventType: String(event.eventType),
-          targetType: typeof event.targetType === 'string' ? event.targetType : null,
-          targetId: typeof event.targetId === 'string' ? event.targetId : null,
-          before: event.before && typeof event.before === 'object' && !Array.isArray(event.before)
-            ? event.before as Record<string, unknown>
-            : null,
-          after: event.after && typeof event.after === 'object' && !Array.isArray(event.after)
-            ? event.after as Record<string, unknown>
-            : null,
-          rationale: typeof event.rationale === 'string' ? event.rationale : null,
-          metadata: event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
-            ? event.metadata as Record<string, unknown>
-            : {},
-          createdAt: typeof event.createdAt === 'string' ? event.createdAt : '',
-        })),
+        .map((event) => this.parseReviewRoomHistoryEvent(event)),
+    };
+  }
+
+  private parseReviewRoomHistoryEvent(event: Record<string, unknown>): ReviewRoomHistoryEvent {
+    return {
+      id: String(event.id),
+      workspaceId: typeof event.workspaceId === 'string' ? event.workspaceId : undefined,
+      documentId: typeof event.documentId === 'string' ? event.documentId : null,
+      actorId: typeof event.actorId === 'string' ? event.actorId : 'unknown',
+      actorType: typeof event.actorType === 'string' ? event.actorType : 'unknown',
+      eventType: String(event.eventType),
+      targetType: typeof event.targetType === 'string' ? event.targetType : null,
+      targetId: typeof event.targetId === 'string' ? event.targetId : null,
+      before: event.before && typeof event.before === 'object' && !Array.isArray(event.before)
+        ? event.before as Record<string, unknown>
+        : null,
+      after: event.after && typeof event.after === 'object' && !Array.isArray(event.after)
+        ? event.after as Record<string, unknown>
+        : null,
+      rationale: typeof event.rationale === 'string' ? event.rationale : null,
+      metadata: event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
+        ? event.metadata as Record<string, unknown>
+        : {},
+      createdAt: typeof event.createdAt === 'string' ? event.createdAt : '',
     };
   }
 
@@ -946,6 +956,32 @@ export class ShareClient {
       document: payload?.document && typeof payload.document === 'object' && !Array.isArray(payload.document)
         ? payload.document as Record<string, unknown>
         : undefined,
+    };
+  }
+
+  async markReviewRoomAuditEventReviewed(
+    eventId: string,
+    options?: { token?: string },
+  ): Promise<ReviewRoomAuditReviewedResponse | ShareRequestError | null> {
+    if (!this.slug || !eventId.trim()) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/audit/${encodeURIComponent(eventId)}/reviewed`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getShareAuthHeaders(options?.token),
+      },
+      body: JSON.stringify({}),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const event = payload?.event && typeof payload.event === 'object' && !Array.isArray(payload.event)
+      ? this.parseReviewRoomHistoryEvent(payload.event as Record<string, unknown>)
+      : null;
+    if (!event) return { success: false, event: {} as ReviewRoomHistoryEvent };
+    return {
+      success: payload?.success === true,
+      alreadyReviewed: payload?.alreadyReviewed === true,
+      event,
     };
   }
 

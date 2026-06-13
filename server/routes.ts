@@ -113,12 +113,114 @@ import {
   updateHostedDocument,
 } from './hosted-review-room-db.js';
 import {
+  storeCreateReviewRoomHistoryEvent,
+  storeGetReviewRoomDocumentByProofSlug,
   storeGetReviewRoomDocumentMemberForProofSlugAndToken,
   storeUpdateReviewRoomDocumentTitleByProofSlug,
 } from './review-room-store.js';
 import { safeCreateAssignmentTasksFromCommentMentions } from './mention-tasks.js';
 
 export const apiRoutes = Router();
+
+function reviewRoomActorType(actor: string): 'human' | 'agent' {
+  return actor.trim().startsWith('ai:') ? 'agent' : 'human';
+}
+
+function hashAuditValue(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function hashAuditJson(value: unknown): string {
+  return hashAuditValue(JSON.stringify(value ?? null));
+}
+
+function auditMutationFields(input: {
+  markdown: boolean;
+  marks: boolean;
+  title: boolean;
+}): string[] {
+  return [
+    ...(input.markdown ? ['markdown'] : []),
+    ...(input.marks ? ['marks'] : []),
+    ...(input.title ? ['title'] : []),
+  ];
+}
+
+async function recordReviewRoomDirectMutationAudit(input: {
+  slug: string;
+  actor: string;
+  route: string;
+  source: string;
+  changedFields: string[];
+  before: {
+    title?: string | null;
+    markdown?: string | null;
+    marks?: Record<string, unknown> | null;
+    revision?: number | null;
+    updatedAt?: string | null;
+  };
+  after: {
+    title?: string | null;
+    markdown?: string | null;
+    marks?: Record<string, unknown> | null;
+    revision?: number | null;
+    updatedAt?: string | null;
+  };
+}): Promise<void> {
+  if (input.changedFields.length === 0) return;
+  try {
+    const reviewRoomDocument = await storeGetReviewRoomDocumentByProofSlug(input.slug);
+    if (!reviewRoomDocument) return;
+    const before: Record<string, unknown> = {
+      revision: input.before.revision ?? null,
+      updatedAt: input.before.updatedAt ?? null,
+    };
+    const after: Record<string, unknown> = {
+      revision: input.after.revision ?? null,
+      updatedAt: input.after.updatedAt ?? null,
+      changedFields: input.changedFields,
+    };
+    if (input.changedFields.includes('title')) {
+      before.title = input.before.title ?? null;
+      after.title = input.after.title ?? null;
+    }
+    if (input.changedFields.includes('markdown')) {
+      before.markdownHash = hashAuditValue(input.before.markdown ?? '');
+      before.markdownLength = (input.before.markdown ?? '').length;
+      after.markdownHash = hashAuditValue(input.after.markdown ?? '');
+      after.markdownLength = (input.after.markdown ?? '').length;
+    }
+    if (input.changedFields.includes('marks')) {
+      before.marksHash = hashAuditJson(input.before.marks ?? {});
+      after.marksHash = hashAuditJson(input.after.marks ?? {});
+    }
+    await storeCreateReviewRoomHistoryEvent({
+      workspaceId: reviewRoomDocument.workspace_id,
+      documentId: reviewRoomDocument.id,
+      actorId: input.actor,
+      actorType: reviewRoomActorType(input.actor),
+      eventType: 'document.direct_mutation',
+      targetType: 'document',
+      targetId: reviewRoomDocument.id,
+      before,
+      after,
+      metadata: {
+        proofSlug: input.slug,
+        route: input.route,
+        source: input.source,
+        reviewStatus: 'open',
+        reviewable: true,
+      },
+    });
+  } catch (error) {
+    console.error('[review-room] failed to record direct mutation audit event', {
+      slug: input.slug,
+      route: input.route,
+      error,
+    });
+  }
+}
+
 if (!isHostedReviewRoomDbEnabled()) {
   runLegacyMarkRangeBackfillOnce();
 }
@@ -1396,6 +1498,8 @@ apiRoutes.put('/documents/:slug/title', async (req: Request, res: Response) => {
       slug,
       title: canonicalTitle,
       actor: (typeof actor === 'string' && actor.trim()) ? actor.trim() : 'anonymous',
+      auditRoute: 'PUT /api/documents/:slug/title',
+      auditSource: 'rest-title-put',
     });
     res.status(result.status).json(result.body);
     return;
@@ -1451,6 +1555,23 @@ apiRoutes.put('/documents/:slug/title', async (req: Request, res: Response) => {
     actor: actor || 'anonymous',
   }, clientId);
   addEvent(slug, 'document.title.updated', { actor }, actor || 'anonymous');
+  await recordReviewRoomDirectMutationAudit({
+    slug,
+    actor: (typeof actor === 'string' && actor.trim()) ? actor.trim() : 'anonymous',
+    route: 'PUT /api/documents/:slug/title',
+    source: 'rest-title-put',
+    changedFields: ['title'],
+    before: {
+      title: doc.title,
+      revision: doc.revision,
+      updatedAt: doc.updated_at,
+    },
+    after: {
+      title: updatedDoc.title,
+      revision: updatedDoc.revision,
+      updatedAt: updatedDoc.updated_at,
+    },
+  });
 
   refreshSnapshotForSlug(slug);
 
@@ -1797,6 +1918,31 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
       ...integrity,
     },
   }, mutationActor);
+  await recordReviewRoomDirectMutationAudit({
+    slug,
+    actor: mutationActor,
+    route: 'PUT /api/documents/:slug',
+    source: 'rest-put',
+    changedFields: auditMutationFields({
+      markdown: hasMarkdownUpdate,
+      marks: hasMarkdownUpdate && hasMarksUpdate,
+      title: hasTitleUpdate,
+    }),
+    before: {
+      title: doc.title,
+      markdown: doc.markdown,
+      marks: hasMarksUpdate ? previousMarks : parseJson(doc.marks) as Record<string, unknown>,
+      revision: doc.revision,
+      updatedAt: doc.updated_at,
+    },
+    after: {
+      title: updatedDoc.title,
+      markdown: updatedDoc.markdown,
+      marks: parseJson(updatedDoc.marks) as Record<string, unknown>,
+      revision: updatedDoc.revision,
+      updatedAt: updatedDoc.updated_at,
+    },
+  });
   if (integrity.repeatedHeadings.length > 0) {
     console.warn('[document.updated.integrity_warning]', {
       slug,

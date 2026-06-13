@@ -155,7 +155,7 @@ import {
 } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
-import { countOpenReviewItems } from '../review-room/review-items';
+import { countOpenReviewItems, filterOpenReviewAuditEvents } from '../review-room/review-items';
 import {
   openReviewRoomReviewPanel as openReviewPanelUi,
   type ReviewPanelHost,
@@ -731,6 +731,7 @@ type ShareRuntimeActivationOptions = {
 type ReviewRoomReviewPanelOptions = {
   focusMarkId?: string;
   useSelection?: boolean;
+  initialTab?: 'suggestions' | 'comments' | 'audit' | 'history' | 'tasks' | 'publish';
 };
 
 type ReviewRoomSelectedText = {
@@ -1097,6 +1098,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private reviewRoomFormatSlotEl: HTMLElement | null = null;
+  private reviewRoomAuditBannerEl: HTMLButtonElement | null = null;
   private reviewRoomSuggestingButtonEl: HTMLButtonElement | null = null;
   private reviewRoomReviewButtonEl: HTMLButtonElement | null = null;
   private reviewRoomSaveButtonEl: HTMLButtonElement | null = null;
@@ -3651,7 +3653,10 @@ class ProofEditorImpl implements ProofEditor {
         titleSlot.replaceChildren(title);
         statusSlot.replaceChildren(syncStatusInline);
         presenceSlot.replaceChildren(avatars);
-        reviewSlot.replaceChildren(this.createReviewRoomReviewButton());
+        const reviewWrap = document.createElement('span');
+        reviewWrap.style.cssText = 'display:inline-flex;align-items:center;gap:8px;min-width:0;flex-shrink:0;';
+        reviewWrap.append(this.createReviewRoomAuditBannerButton(), this.createReviewRoomReviewButton());
+        reviewSlot.replaceChildren(reviewWrap);
         agentSlotContainer.replaceChildren(agentSlot);
         this.reviewRoomFormatSlotEl = formatSlot;
         formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());
@@ -4845,16 +4850,48 @@ class ProofEditorImpl implements ProofEditor {
     return button;
   }
 
+  private createReviewRoomAuditBannerButton(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.hidden = true;
+    button.textContent = 'Direct changes to review';
+    button.setAttribute('aria-label', 'Open direct changes to review');
+    button.style.cssText = `
+      display:inline-flex;align-items:center;justify-content:center;min-height:32px;max-width:220px;padding:0 10px;
+      border:1px solid #f0b75b;border-radius:18px;background:#fff8e8;color:#7a4a08;
+      font-size:12px;font-weight:750;cursor:pointer;font-family:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    `;
+    button.onclick = () => {
+      void this.openReviewRoomReviewPanel({ initialTab: 'audit' });
+    };
+    this.reviewRoomAuditBannerEl = button;
+    return button;
+  }
+
   private async updateReviewRoomReviewButtonCount(): Promise<void> {
     const button = this.reviewRoomReviewButtonEl;
     if (!button || !this.isShareMode) return;
     try {
-      const doc = await shareClient.fetchDocument();
+      const [doc, history] = await Promise.all([
+        shareClient.fetchDocument(),
+        shareClient.fetchReviewRoomHistory({ limit: 100 }).catch(() => null),
+      ]);
       if (!doc || this.reviewRoomReviewButtonEl !== button) return;
       const count = countOpenReviewItems(doc);
       button.textContent = count > 0 ? `Review ${count}` : 'Review';
+      const auditEvents = history && !('error' in history) && history.success
+        ? filterOpenReviewAuditEvents(history.events)
+        : [];
+      if (this.reviewRoomAuditBannerEl) {
+        const auditCount = auditEvents.length;
+        this.reviewRoomAuditBannerEl.hidden = auditCount === 0;
+        this.reviewRoomAuditBannerEl.textContent = auditCount === 1
+          ? '1 direct change to review'
+          : `${auditCount} direct changes to review`;
+      }
     } catch {
       button.textContent = 'Review';
+      if (this.reviewRoomAuditBannerEl) this.reviewRoomAuditBannerEl.hidden = true;
     }
   }
 
@@ -4983,6 +5020,14 @@ class ProofEditorImpl implements ProofEditor {
       updateTaskStatus: async (taskId, status) => {
         const result = await shareClient.updateReviewRoomTaskStatus(taskId, status);
         return Boolean(result && !('error' in result) && result.success === true);
+      },
+      markAuditEventReviewed: async (eventId) => {
+        const result = await shareClient.markReviewRoomAuditEventReviewed(eventId);
+        if (result && !('error' in result) && result.success === true) {
+          void this.updateReviewRoomReviewButtonCount();
+          return true;
+        }
+        return false;
       },
       canCreateBaseline: () => this.collabCanEdit,
       canUpdateTasks: () => this.collabCanComment,
@@ -5802,6 +5847,7 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
     this.reviewRoomFormatSlotEl = null;
+    this.reviewRoomAuditBannerEl = null;
     this.reviewRoomSuggestingButtonEl = null;
     this.reviewRoomReviewButtonEl = null;
     this.reviewRoomSaveButtonEl = null;

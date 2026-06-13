@@ -1045,6 +1045,8 @@ export async function updateHostedDocument(input: {
   marks?: Record<string, unknown>;
   title?: string | null;
   actor?: string;
+  auditRoute?: string;
+  auditSource?: string;
 }): Promise<HostedEngineExecutionResult> {
   const doc = await getHostedDocumentBySlug(input.slug);
   if (!doc || doc.share_state === 'DELETED') {
@@ -1129,6 +1131,62 @@ export async function updateHostedDocument(input: {
 
   if (Number(results[0].rowsAffected ?? 0) <= 0) {
     return { status: 409, body: { success: false, error: 'Document changed during update; retry with latest state' } };
+  }
+  const changedFields = [
+    ...(hasMarkdown ? ['markdown'] : []),
+    ...(hasMarkdown && hasMarks ? ['marks'] : []),
+    ...(hasTitle ? ['title'] : []),
+  ];
+  try {
+    const reviewRoomDocument = await getHostedReviewRoomDocumentByProofSlug(input.slug);
+    if (reviewRoomDocument && changedFields.length > 0) {
+      const before: Record<string, unknown> = {
+        revision: doc.revision,
+        updatedAt: doc.updated_at,
+      };
+      const after: Record<string, unknown> = {
+        revision,
+        updatedAt: now,
+        changedFields,
+      };
+      if (hasTitle) {
+        before.title = doc.title;
+        after.title = title;
+      }
+      if (hasMarkdown) {
+        before.markdownHash = createHash('sha256').update(doc.markdown ?? '').digest('hex');
+        before.markdownLength = (doc.markdown ?? '').length;
+        after.markdownHash = createHash('sha256').update(markdown ?? '').digest('hex');
+        after.markdownLength = (markdown ?? '').length;
+      }
+      if (hasMarks) {
+        before.marksHash = createHash('sha256').update(JSON.stringify(parseMarks(doc.marks))).digest('hex');
+        after.marksHash = createHash('sha256').update(JSON.stringify(marks)).digest('hex');
+      }
+      await createHostedReviewRoomHistoryEvent({
+        workspaceId: reviewRoomDocument.workspace_id,
+        documentId: reviewRoomDocument.id,
+        actorId: actor,
+        actorType: actor.startsWith('ai:') ? 'agent' : 'human',
+        eventType: 'document.direct_mutation',
+        targetType: 'document',
+        targetId: reviewRoomDocument.id,
+        before,
+        after,
+        metadata: {
+          proofSlug: input.slug,
+          route: input.auditRoute ?? 'PUT /api/documents/:slug',
+          source: input.auditSource ?? 'rest-put',
+          reviewStatus: 'open',
+          reviewable: true,
+        },
+      });
+    }
+  } catch (error) {
+    console.error('[review-room] failed to record hosted direct mutation audit event', {
+      slug: input.slug,
+      error,
+    });
   }
 
   return {

@@ -9,6 +9,7 @@ import {
   collectReviewTaskStatuses,
   countReviewComments,
   deriveReviewComments,
+  filterOpenReviewAuditEvents,
   filterReviewComments,
   filterReviewHistoryEvents,
   filterReviewSuggestions,
@@ -37,6 +38,7 @@ export type ReviewPanelSelection = {
 export type ReviewPanelOptions = {
   focusMarkId?: string | null;
   useSelection?: boolean;
+  initialTab?: 'suggestions' | 'comments' | 'audit' | 'history' | 'tasks' | 'publish';
 };
 
 export type ReviewPanelHost = {
@@ -56,6 +58,7 @@ export type ReviewPanelHost = {
   createBaseline(note: string | null): Promise<ReviewRoomPublishedVersion | null>;
   fetchTasks(): Promise<ReviewRoomAssignmentTask[]>;
   updateTaskStatus(taskId: string, status: 'completed' | 'dismissed'): Promise<boolean>;
+  markAuditEventReviewed(eventId: string): Promise<boolean>;
   canCreateBaseline(): boolean;
   canUpdateTasks(): boolean;
   isRealtimeAvailable(): boolean;
@@ -64,7 +67,7 @@ export type ReviewPanelHost = {
 
 export const REVIEW_PANEL_ID = 'review-room-review-sidebar';
 
-type ReviewPanelTab = 'suggestions' | 'comments' | 'history' | 'tasks' | 'publish';
+type ReviewPanelTab = 'suggestions' | 'comments' | 'audit' | 'history' | 'tasks' | 'publish';
 
 export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: ReviewPanelOptions = {}): Promise<void> {
   const existing = document.getElementById(REVIEW_PANEL_ID);
@@ -90,7 +93,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
   let taskStatusFilter: ReviewTaskStatusFilter = 'open';
   let baselineNote = '';
   const expandedHistoryRows = new Set<string>();
-  let activeTab: ReviewPanelTab = selectedReviewText ? 'comments' : 'suggestions';
+  let activeTab: ReviewPanelTab = options.initialTab ?? (selectedReviewText ? 'comments' : 'suggestions');
 
   const panel = document.createElement('aside');
   panel.id = REVIEW_PANEL_ID;
@@ -292,10 +295,11 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     });
   };
 
-  const renderTabBar = (counts: { suggestions: number; comments: number; history: number; tasks: number }) => {
+  const renderTabBar = (counts: { suggestions: number; comments: number; audit: number; history: number; tasks: number }) => {
     const tabs: Array<{ value: ReviewPanelTab; label: string }> = [
       { value: 'suggestions', label: `Suggestions ${counts.suggestions}` },
       { value: 'comments', label: `Comments ${counts.comments}` },
+      { value: 'audit', label: `Audit ${counts.audit}` },
       { value: 'history', label: `History ${counts.history}` },
       { value: 'tasks', label: `Tasks ${counts.tasks}` },
       { value: 'publish', label: 'Publish' },
@@ -475,6 +479,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     if (changeKind === 'status') return 'Status';
     if (changeKind === 'baseline') return 'Baseline';
     if (changeKind === 'document') return 'Document';
+    if (changeKind === 'audit') return 'Audit';
     return 'Event';
   };
 
@@ -633,6 +638,50 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     }
     for (const event of changes.slice(0, 8)) {
       body.appendChild(renderHistoryEventRow(event));
+    }
+  };
+
+  const renderAuditInbox = (historyEvents: ReviewRoomHistoryEvent[]) => {
+    const openAuditEvents = filterOpenReviewAuditEvents(historyEvents);
+    body.appendChild(sectionHeading(`Audit Inbox (${openAuditEvents.length})`));
+
+    const intro = row();
+    intro.style.borderTop = '0';
+    const title = document.createElement('div');
+    title.textContent = openAuditEvents.length > 0
+      ? `${openAuditEvents.length} direct change${openAuditEvents.length === 1 ? '' : 's'} need review`
+      : 'No direct changes waiting for review';
+    title.style.cssText = 'font-size:15px;font-weight:750;color:var(--rr-ink);';
+    const copy = document.createElement('div');
+    copy.textContent = openAuditEvents.length > 0
+      ? 'These changes bypassed the suggestion flow. Review the source and metadata, then mark them reviewed when the change is understood.'
+      : 'Direct REST or admin changes will appear here before they can fade into ordinary history.';
+    copy.style.cssText = 'font-size:13px;line-height:1.45;color:var(--rr-muted);';
+    intro.append(title, copy);
+    body.appendChild(intro);
+
+    if (openAuditEvents.length === 0) return;
+
+    for (const event of openAuditEvents) {
+      const item = renderHistoryEventRow(event);
+      item.style.background = 'var(--rr-surface)';
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+      const reviewed = smallButton('Mark reviewed', 'primary');
+      reviewed.onclick = () => {
+        void (async () => {
+          reviewed.disabled = true;
+          const success = await host.markAuditEventReviewed(event.id);
+          if (!success) {
+            renderError('Could not mark this direct change reviewed.');
+            return;
+          }
+          await loadPanel();
+        })();
+      };
+      actions.appendChild(reviewed);
+      item.appendChild(actions);
+      body.appendChild(item);
     }
   };
 
@@ -940,7 +989,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     try {
       const [doc, historyEvents, tasks] = await Promise.all([
         host.fetchDocument(),
-        host.fetchHistory(20).catch((error) => {
+        host.fetchHistory(100).catch((error) => {
           console.warn('[review-room] history load failed', error);
           return [] as ReviewRoomHistoryEvent[];
         }),
@@ -970,6 +1019,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       renderTabBar({
         suggestions: suggestions.length,
         comments: countReviewComments(comments).open,
+        audit: filterOpenReviewAuditEvents(historyEvents).length,
         history: historyEvents.length,
         tasks: tasks.filter((task) => task.status === 'open').length,
       });
@@ -988,6 +1038,10 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       }
       if (activeTab === 'comments') {
         renderComments(comments);
+        return;
+      }
+      if (activeTab === 'audit') {
+        renderAuditInbox(historyEvents);
         return;
       }
       if (activeTab === 'history') {

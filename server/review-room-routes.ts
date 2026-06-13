@@ -916,6 +916,67 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req
   });
 });
 
+reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/audit/:eventId/reviewed', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const eventId = String(req.params.eventId || '').trim();
+  const identityId = getCurrentReviewRoomIdentityId(req);
+  if (!proofSlug || !eventId) {
+    res.status(400).json({ success: false, code: 'AUDIT_TARGET_REQUIRED', error: 'Document slug and audit event id are required.' });
+    return;
+  }
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (!access.capabilities.canComment) {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_AUDIT_FORBIDDEN', 'Comment access is required to review direct changes.');
+    return;
+  }
+  const events = await storeListReviewRoomHistoryEvents({
+    documentId: access.document.id,
+    limit: 500,
+  });
+  const target = events.find((event) => event.id === eventId);
+  if (!target || target.event_type !== 'document.direct_mutation') {
+    res.status(404).json({ success: false, code: 'AUDIT_EVENT_MISSING', error: 'No direct-change audit event exists for that document.' });
+    return;
+  }
+  const existing = events.find((event) => (
+    event.event_type === 'audit.reviewed'
+    && event.target_type === 'review_room_history_event'
+    && event.target_id === eventId
+  ));
+  if (existing) {
+    res.json({
+      success: true,
+      alreadyReviewed: true,
+      event: serializeHistoryEvent(existing),
+    });
+    return;
+  }
+  const reviewed = await storeCreateReviewRoomHistoryEvent({
+    workspaceId: access.document.workspace_id,
+    documentId: access.document.id,
+    actorId: identityId,
+    actorType: 'human',
+    eventType: 'audit.reviewed',
+    targetType: 'review_room_history_event',
+    targetId: eventId,
+    before: { status: 'open' },
+    after: { status: 'reviewed' },
+    metadata: {
+      proofSlug,
+      reviewedEventType: 'document.direct_mutation',
+    },
+  });
+  res.status(201).json({
+    success: true,
+    alreadyReviewed: false,
+    event: serializeHistoryEvent(reviewed),
+  });
+});
+
 reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/baselines', async (req: Request, res: Response) => {
   const proofSlug = String(req.params.proofSlug || '').trim();
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 20;
