@@ -822,7 +822,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
   }
   const hostedRemoteLiveLease = collabRuntimeEnabled
     && hostedRuntime
-    && collabClientBreakdown.total > 0
+    && collabClientBreakdown.anyEpochCount > 0
     && collabClientBreakdown.exactEpochCount === 0;
   if (strictLiveDocRequested && hostedRemoteLiveLease) {
     return {
