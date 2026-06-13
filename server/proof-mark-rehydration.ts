@@ -261,7 +261,10 @@ function collectRequiredHydrationIds(marks: Record<string, StoredMark>, markdown
     const remaining = serializedAuthoredCounts.get(fingerprint) ?? 0;
     if (remaining <= 0) continue;
     serializedAuthoredCounts.set(fingerprint, remaining - 1);
-    requiredIds.push(id);
+    // Authored mark IDs are NOT added to requiredIds — they are informational anchors.
+    // Only excess spans (spans with no matching mark) generate blocking virtual IDs below.
+    // Adding authored IDs here would block accepts when authored marks have stale position
+    // data (e.g. after a document edit shifts char: offsets that applyRemoteMarks relies on).
   }
 
   for (const [fingerprint, count] of serializedAuthoredCounts.entries()) {
