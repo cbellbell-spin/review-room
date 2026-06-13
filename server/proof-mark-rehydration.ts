@@ -318,7 +318,23 @@ async function buildRehydratedState(markdown: string, marks: Record<string, Stor
     plugins: [createMarksStatePlugin()],
   });
   const { view, getState } = createHeadlessView(state);
-  applyRemoteMarks(view as EditorView, effectiveMarks, { hydrateAnchors: true });
+  // Suggestion marks submitted via the MCP may have backtick markdown syntax in their
+  // quotes (e.g. "`main`"). ProseMirror stores plain text, so strip inline code syntax
+  // before the text search inside applyRemoteMarks. Only normalize suggestion marks;
+  // authored mark quotes come from ProseMirror directly and are already plain text.
+  const marksForHydration = Object.fromEntries(
+    Object.entries(effectiveMarks).map(([id, mark]) => {
+      if (
+        (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+        && typeof mark.quote === 'string'
+        && mark.quote.includes('`')
+      ) {
+        return [id, { ...mark, quote: stripMarkdownCode(mark.quote) }];
+      }
+      return [id, mark];
+    }),
+  );
+  applyRemoteMarks(view as EditorView, marksForHydration, { hydrateAnchors: true });
 
   const hydratedState = getState();
   const requiredIds = collectRequiredHydrationIds(effectiveMarks, markdown ?? '');
