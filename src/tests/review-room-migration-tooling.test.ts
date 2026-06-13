@@ -10,6 +10,7 @@ function read(relativePath: string): string {
 
 const packageJson = read('package.json');
 const exportScript = read('scripts/review-room-export-vercel.ts');
+const exportApiScript = read('scripts/review-room-export-vercel-api.ts');
 const importScript = read('scripts/review-room-import-fly.ts');
 const verifyScript = read('scripts/review-room-verify-migration.ts');
 const migrationRunbook = read('docs/review-room-vercel-to-fly-migration.md');
@@ -17,6 +18,7 @@ const deploymentNotes = read('docs/review-room-deployment.md');
 
 assert(
   packageJson.includes('"migrate:review-room:export": "tsx scripts/review-room-export-vercel.ts"')
+    && packageJson.includes('"migrate:review-room:export-api": "tsx scripts/review-room-export-vercel-api.ts"')
     && packageJson.includes('"migrate:review-room:import": "tsx scripts/review-room-import-fly.ts"')
     && packageJson.includes('"migrate:review-room:verify": "tsx scripts/review-room-verify-migration.ts"'),
   'Expected package scripts for Vercel to Fly document migration',
@@ -29,6 +31,14 @@ assert(
     && exportScript.includes('row.owner_secret_hash = null')
     && !exportScript.includes('SELECT * FROM document_access'),
   'Expected exporter to omit legacy access rows and owner secrets',
+);
+
+assert(
+  exportApiScript.includes("tokenPolicy: 'used-for-export-only'")
+    && exportApiScript.includes('proof_access_token: null')
+    && exportApiScript.includes('extractTokenFromOpenPath')
+    && exportApiScript.includes('baseline ${stringValue(baseline.id)} metadata found'),
+  'Expected API exporter to use old tokens only for reads and omit them from the bundle',
 );
 
 assert(

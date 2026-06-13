@@ -37,6 +37,15 @@ TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=... \
 
 The export file is written with mode `0600`. It intentionally omits old tokens and owner secrets.
 
+If the legacy Turso credentials are not available but the old Vercel API can still list documents, use the API fallback:
+
+```bash
+npm run migrate:review-room:export-api -- \
+  --out /tmp/review-room-vercel-export.json
+```
+
+The API fallback uses old share tokens only to read each document. It does not write those old tokens into the export bundle. Baseline rows are preserved only when the API response includes their content snapshot.
+
 ## 3. Back Up Fly SQLite
 
 Before importing, copy `/data/proof-share.db` out of the Fly machine or take a volume snapshot. Keep the matching `-wal` and `-shm` files if they exist and you copy the database while the app is running.
