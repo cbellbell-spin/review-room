@@ -172,6 +172,16 @@ function extractDataBy(tag: string): string | null {
   return typeof by === 'string' && by.trim().length > 0 ? by.trim() : null;
 }
 
+function extractDataProofId(tag: string): string | null {
+  const match = tag.match(/data-proof-id\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+  const id = match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+  return typeof id === 'string' && id.trim().length > 0 ? id.trim() : null;
+}
+
+function stripMarkdownCode(text: string): string {
+  return text.replace(/`([^`]*)`/g, '$1');
+}
+
 function stripHtmlTags(value: string): string {
   return value.replace(/<[^>]+>/g, '');
 }
@@ -190,17 +200,47 @@ function buildSerializedAuthoredRequirementIds(fingerprint: string, count: numbe
 }
 
 function buildSerializedAuthoredFingerprintCounts(markdown: string): Map<string, number> {
-  const counts = new Map<string, number>();
+  // Group spans by data-proof-id so that inline formatting (e.g. **bold**) which splits
+  // a single authored mark into adjacent sibling spans with the same id is handled as one
+  // unit. Spans without a proof-id are counted individually.
+  const grouped = new Map<string, { by: string; parts: string[] }>();
+  const ungrouped: Array<{ by: string; inner: string }> = [];
+
   for (const span of listAuthoredProofSpanBounds(markdown)) {
     const openTag = markdown.slice(span.openStart, span.contentStart);
     const by = extractDataBy(openTag);
     if (!by) continue;
+    const proofId = extractDataProofId(openTag);
     const inner = markdown.slice(span.contentStart, span.contentEnd);
-    const quote = normalizeQuote(stripHtmlTags(stripAllProofSpanTags(inner)));
-    if (!quote) continue;
+    if (proofId) {
+      const existing = grouped.get(proofId);
+      if (existing) {
+        existing.parts.push(inner);
+      } else {
+        grouped.set(proofId, { by, parts: [inner] });
+      }
+    } else {
+      ungrouped.push({ by, inner });
+    }
+  }
+
+  const counts = new Map<string, number>();
+  const addCount = (by: string, rawInner: string) => {
+    // Strip backtick-wrapped inline code so the fingerprint matches the ProseMirror-derived
+    // quote field on authored marks (ProseMirror stores text content; backticks are syntax).
+    const quote = normalizeQuote(stripMarkdownCode(stripHtmlTags(stripAllProofSpanTags(rawInner))));
+    if (!quote) return;
     const key = `${by}::${quote}`;
     counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+
+  for (const { by, parts } of grouped.values()) {
+    addCount(by, parts.join(''));
   }
+  for (const { by, inner } of ungrouped) {
+    addCount(by, inner);
+  }
+
   return counts;
 }
 

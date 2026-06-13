@@ -758,6 +758,101 @@ async function run(): Promise<void> {
     assert(authoredRejectFixture.afterId in authoredRejectedMarks, 'Expected authored preservation reject to keep the trailing authored mark id');
 
     console.log('✓ proof mark rehydration repairs legacy accept/reject/add-accepted and nested repair flows');
+
+    // Regression: authored spans with inline backtick code caused serialized-authored fingerprint
+    // mismatch (raw markdown preserves backticks; ProseMirror quotes strip them), blocking accepts.
+    {
+      const backtickPmBase = 'use foo to call it Replace this old text.';
+      const backtickAuthoredQuote = 'use foo to call it';
+      const backtickSuggestionQuote = 'Replace this old text.';
+      const backtickAuthoredAnchors = buildRelativeAnchors(backtickPmBase, backtickAuthoredQuote);
+      const backtickSuggestionAnchors = buildRelativeAnchors(backtickPmBase, backtickSuggestionQuote);
+      const backtickAuthoredId = 'authored-backtick-regression';
+      const backtickSuggestionId = 'suggestion-backtick-regression';
+      // Markdown has backtick code span in authored content; authored mark quote has no backticks
+      // (as ProseMirror would store it after parsing the markdown).
+      const backtickMarkdown = [
+        `<span data-proof="authored" data-proof-id="authored:ai:claude:bt-1" data-by="ai:claude">use \`foo\` to call it</span> `,
+        `<span data-proof="suggestion" data-id="${backtickSuggestionId}" data-by="ai:test" data-kind="replace">${backtickSuggestionQuote}</span>`,
+      ].join('');
+      const backtickSlug = `rehydrate-backtick-regression-${Math.random().toString(36).slice(2, 10)}`;
+      db.createDocument(backtickSlug, backtickMarkdown, canonicalizeStoredMarks({
+        [backtickAuthoredId]: {
+          kind: 'authored',
+          by: 'ai:claude',
+          createdAt,
+          quote: backtickAuthoredQuote,
+          startRel: backtickAuthoredAnchors.startRel,
+          endRel: backtickAuthoredAnchors.endRel,
+          range: backtickAuthoredAnchors.range,
+        } satisfies StoredMark,
+        [backtickSuggestionId]: {
+          kind: 'replace',
+          by: 'ai:test',
+          createdAt,
+          quote: backtickSuggestionQuote,
+          content: 'new accepted text.',
+          status: 'pending',
+          startRel: backtickSuggestionAnchors.startRel,
+          endRel: backtickSuggestionAnchors.endRel,
+          range: backtickSuggestionAnchors.range,
+        } satisfies StoredMark,
+      }), 'Backtick regression');
+      const backtickResult = await executeDocumentOperationAsync(backtickSlug, 'POST', '/marks/accept', {
+        markId: backtickSuggestionId,
+        by: 'human:test',
+      });
+      assertEqual(backtickResult.status, 200, `Authored span with inline backtick code should not block accept (got ${backtickResult.status})`);
+    }
+
+    // Regression: bold formatting (**text**) splits a single authored span into two adjacent sibling
+    // spans sharing the same data-proof-id; each span was counted separately, causing fingerprint
+    // mismatch with the authored mark's combined ProseMirror quote and excess serialized-authored IDs.
+    {
+      const boldPmBase = 'Open the door: enter freely. Replace this now.';
+      const boldAuthoredQuote = 'Open the door: enter freely.';
+      const boldSuggestionQuote = 'Replace this now.';
+      const boldAuthoredAnchors = buildRelativeAnchors(boldPmBase, boldAuthoredQuote);
+      const boldSuggestionAnchors = buildRelativeAnchors(boldPmBase, boldSuggestionQuote);
+      const boldAuthoredId = 'authored-bold-split-regression';
+      const boldSuggestionId = 'suggestion-bold-split-regression';
+      // Two sibling spans share the same proof-id; the bold marker (**) sits between them.
+      const boldMarkdown = [
+        `**<span data-proof="authored" data-proof-id="authored:ai:claude:bs-1" data-by="ai:claude">Open the door</span>**`,
+        `<span data-proof="authored" data-proof-id="authored:ai:claude:bs-1" data-by="ai:claude">: enter freely.</span> `,
+        `<span data-proof="suggestion" data-id="${boldSuggestionId}" data-by="ai:test" data-kind="replace">${boldSuggestionQuote}</span>`,
+      ].join('');
+      const boldSlug = `rehydrate-bold-split-regression-${Math.random().toString(36).slice(2, 10)}`;
+      db.createDocument(boldSlug, boldMarkdown, canonicalizeStoredMarks({
+        [boldAuthoredId]: {
+          kind: 'authored',
+          by: 'ai:claude',
+          createdAt,
+          quote: boldAuthoredQuote,
+          startRel: boldAuthoredAnchors.startRel,
+          endRel: boldAuthoredAnchors.endRel,
+          range: boldAuthoredAnchors.range,
+        } satisfies StoredMark,
+        [boldSuggestionId]: {
+          kind: 'replace',
+          by: 'ai:test',
+          createdAt,
+          quote: boldSuggestionQuote,
+          content: 'new accepted text.',
+          status: 'pending',
+          startRel: boldSuggestionAnchors.startRel,
+          endRel: boldSuggestionAnchors.endRel,
+          range: boldSuggestionAnchors.range,
+        } satisfies StoredMark,
+      }), 'Bold split regression');
+      const boldResult = await executeDocumentOperationAsync(boldSlug, 'POST', '/marks/accept', {
+        markId: boldSuggestionId,
+        by: 'human:test',
+      });
+      assertEqual(boldResult.status, 200, `Bold-split authored span with same proof-id should not block accept (got ${boldResult.status})`);
+    }
+
+    console.log('✓ authored span fingerprint regressions: inline backtick code and bold-split proof-id');
   } finally {
     try {
       unlinkSync(dbPath);
