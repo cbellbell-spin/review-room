@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const root = process.cwd();
@@ -67,6 +67,11 @@ assert(
 assert(
   gitignore.includes('.proof-build-info.json'),
   'Expected generated runtime build metadata to stay out of git',
+);
+
+assert(
+  existsSync(path.join(root, 'package-lock.json')) && !/^\s*package-lock\.json\s*$/m.test(gitignore),
+  'Expected package-lock.json to be tracked because the Fly Dockerfile uses npm ci',
 );
 
 assert(
