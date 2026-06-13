@@ -130,6 +130,10 @@ Prefer rolling forward unless the deployed app cannot serve `/health`, open exis
 
 5. If Fly itself is unreachable and a temporary service fallback is required, point DNS back to the legacy Vercel alias only after accepting that live-collab sessions will be disabled and Fly-volume documents will not automatically exist in the Vercel/Turso store.
 
+## Legacy Vercel Document Migration
+
+Legacy Vercel/Turso documents do not appear on Fly until they are exported and imported into the Fly volume database. Use [review-room-vercel-to-fly-migration.md](./review-room-vercel-to-fly-migration.md) for the runbook. The migration preserves slugs and content, but mints fresh Fly access tokens instead of carrying old Vercel tokens forward.
+
 Fly DNS setup options for `review-room.chrisjbell.dev`:
 
 ```text

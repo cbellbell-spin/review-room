@@ -12,7 +12,7 @@
     "dev": "vite",
     "build": "vite build && node scripts/finalize-web-build.mjs",
     "serve": "tsx server/index.ts",
-    "test": "npm run test:agent-bridge && npm run test:server-routes-share && npm run test:review-room-header && npm run test:review-room-suggestion-grouping && npm run test:review-room-filtering && npm run test:review-room-mcp && npm run test:review-room-mention-tasks && npm run test:review-room-baselines && npm run test:review-room-permissions && npm run test:review-room-hosted-accept && npm run test:hosted-agent-routes && npm run test:fly-config",
+    "test": "npm run test:agent-bridge && npm run test:server-routes-share && npm run test:review-room-header && npm run test:review-room-suggestion-grouping && npm run test:review-room-filtering && npm run test:review-room-mcp && npm run test:review-room-mention-tasks && npm run test:review-room-baselines && npm run test:review-room-permissions && npm run test:review-room-hosted-accept && npm run test:hosted-agent-routes && npm run test:review-room-migration && npm run test:fly-config",
     "test:agent-bridge": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:server-routes-share": "tsx src/tests/server-routes-and-share.test.ts",
     "test:review-room-header": "tsx src/tests/review-room-header-wiring.test.ts",
@@ -24,10 +24,14 @@
     "test:review-room-permissions": "tsx src/tests/review-room-permissions.test.ts",
     "test:review-room-hosted-accept": "tsx src/tests/review-room-hosted-accept-anchor.test.ts",
     "test:hosted-agent-routes": "tsx src/tests/hosted-agent-routes.test.ts",
+    "test:review-room-migration": "tsx src/tests/review-room-migration-tooling.test.ts",
     "test:fly-config": "tsx src/tests/fly-config.test.ts",
     "test:review-room-create-flow": "npm run build && tsx src/tests/review-room-create-flow.playwright.ts",
     "test:review-room-accept-race": "npm run build && tsx src/tests/review-room-accept-live-collab-race.playwright.ts",
     "smoke:review-room-production": "node scripts/review-room-production-smoke.mjs",
+    "migrate:review-room:export": "tsx scripts/review-room-export-vercel.ts",
+    "migrate:review-room:import": "tsx scripts/review-room-import-fly.ts",
+    "migrate:review-room:verify": "tsx scripts/review-room-verify-migration.ts",
     "demo:agent": "npm --workspace proof-example run demo:agent"
   },
   "dependencies": {
