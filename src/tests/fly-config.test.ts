@@ -17,6 +17,7 @@ const deploymentNotes = read('docs/review-room-deployment.md');
 const agentDocs = read('docs/agent-docs.md');
 const coworkMcpConfig = read('cowork-plugin/.mcp.json');
 const coworkSkill = read('cowork-plugin/skills/review-room/SKILL.md');
+const pluginPackage = read('server/claude-plugin-package.ts');
 
 assert(
   dockerfile.includes('FROM node:20-slim')
@@ -105,8 +106,12 @@ assert(
   agentDocs.includes('https://review-room.chrisjbell.dev/mcp')
     && !agentDocs.includes('proof-sdk-psi.vercel.app')
     && coworkMcpConfig.includes('https://review-room.chrisjbell.dev/mcp')
-    && coworkSkill.includes('https://review-room.chrisjbell.dev/agent-docs'),
-  'Expected public agent docs and Cowork plugin config to advertise the Fly production hostname',
+    && !coworkMcpConfig.includes('proof-sdk-psi.vercel.app')
+    && coworkSkill.includes('https://review-room.chrisjbell.dev/agent-docs')
+    && !coworkSkill.includes('proof-sdk-psi.vercel.app')
+    && pluginPackage.includes('https://review-room.chrisjbell.dev/mcp')
+    && !pluginPackage.includes('proof-sdk-psi.vercel.app'),
+  'Expected public agent docs, Cowork plugin config, and plugin package fallback to advertise the Fly production hostname',
 );
 
 console.log('✓ Fly deployment config pins live-collab volume mode');
