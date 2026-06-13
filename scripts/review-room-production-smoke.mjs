@@ -6,6 +6,11 @@ const base = (process.env.REVIEW_ROOM_PROD_BASE || 'https://review-room.chrisjbe
 const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
 const ownerIdentityId = `smoke-owner-${runId}`;
 const reviewerIdentityId = `smoke-reviewer-${runId}`;
+const clientHeaders = {
+  'X-Proof-Client-Version': '0.31.0',
+  'X-Proof-Client-Build': 'production-smoke',
+  'X-Proof-Client-Protocol': '3',
+};
 
 async function readJson(response, label) {
   const text = await response.text();
@@ -73,6 +78,7 @@ assert.match(String(health.collab?.wsUrlBase ?? ''), /^wss:\/\/review-room\.chri
 const created = await fetchJson('/review-room/api/documents', {
   method: 'POST',
   headers: {
+    ...clientHeaders,
     'Content-Type': 'application/json',
     'x-review-room-identity-id': ownerIdentityId,
   },
@@ -90,13 +96,13 @@ assert.ok(slug && ownerToken, 'Expected created document slug and owner access t
 assert.ok(String(created.openPath || '').includes('rr=1'), 'Expected Review Room open path');
 
 const ownerDoc = await fetchJson(withToken(`/d/${encodeURIComponent(slug)}`, ownerToken), {
-  headers: { Accept: 'application/json' },
+  headers: { ...clientHeaders, Accept: 'application/json' },
 }, 'owner document open context');
 assert.equal(ownerDoc.success, true, 'Expected owner open JSON success');
 assert.match(String(ownerDoc.markdown ?? ownerDoc.doc?.markdown ?? ''), /Anchor paragraph/, 'Expected owner document markdown');
 
 const ownerSession = await fetchJson(`/api/documents/${encodeURIComponent(slug)}/collab-session`, {
-  headers: { 'x-share-token': ownerToken },
+  headers: { ...clientHeaders, 'x-share-token': ownerToken },
 }, 'owner collab session');
 assert.equal(ownerSession.success, true, 'Expected owner collab session success');
 assert.equal(ownerSession.capabilities?.canEdit, true, 'Expected owner/editor token to edit');
@@ -107,6 +113,7 @@ await openWebSocket(collabWebSocketUrl(ownerSession.session), 'owner live-collab
 const member = await fetchJson(`/review-room/api/documents/${encodeURIComponent(slug)}/members`, {
   method: 'POST',
   headers: {
+    ...clientHeaders,
     'Content-Type': 'application/json',
     'x-review-room-identity-id': ownerIdentityId,
   },
@@ -123,12 +130,12 @@ assert.ok(String(member.member?.openPath ?? '').includes('token='), 'Expected ro
 
 const reviewerToken = member.member.accessToken;
 const reviewerDoc = await fetchJson(withToken(`/d/${encodeURIComponent(slug)}`, reviewerToken), {
-  headers: { Accept: 'application/json' },
+  headers: { ...clientHeaders, Accept: 'application/json' },
 }, 'reviewer document open context');
 assert.equal(reviewerDoc.success, true, 'Expected reviewer open JSON success');
 
 const reviewerSession = await fetchJson(`/api/documents/${encodeURIComponent(slug)}/collab-session`, {
-  headers: { 'x-share-token': reviewerToken },
+  headers: { ...clientHeaders, 'x-share-token': reviewerToken },
 }, 'reviewer collab session');
 assert.equal(reviewerSession.success, true, 'Expected reviewer collab session success');
 assert.equal(reviewerSession.reviewRoom?.currentRole, 'commenter', 'Expected reviewer role in collab session context');
@@ -139,6 +146,7 @@ await openWebSocket(collabWebSocketUrl(reviewerSession.session), 'reviewer live-
 const comment = await fetchJson(`/documents/${encodeURIComponent(slug)}/ops`, {
   method: 'POST',
   headers: {
+    ...clientHeaders,
     'Content-Type': 'application/json',
     'x-share-token': reviewerToken,
     'X-Agent-Id': 'production-smoke',
@@ -156,6 +164,7 @@ assert.ok(comment.markId, 'Expected comment mark id');
 const suggestion = await fetchJson(`/documents/${encodeURIComponent(slug)}/ops`, {
   method: 'POST',
   headers: {
+    ...clientHeaders,
     'Content-Type': 'application/json',
     'x-share-token': reviewerToken,
     'X-Agent-Id': 'production-smoke',
@@ -172,7 +181,7 @@ assert.equal(suggestion.success, true, 'Expected reviewer suggestion to persist'
 assert.ok(suggestion.markId, 'Expected suggestion mark id');
 
 const reloaded = await fetchJson(`/documents/${encodeURIComponent(slug)}/state`, {
-  headers: { 'x-share-token': ownerToken },
+  headers: { ...clientHeaders, 'x-share-token': ownerToken },
 }, 'reload persisted state');
 const marks = reloaded.marks && typeof reloaded.marks === 'object' ? reloaded.marks : {};
 assert.ok(marks[comment.markId], 'Expected comment mark after reload');
