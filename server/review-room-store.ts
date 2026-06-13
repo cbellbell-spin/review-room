@@ -478,6 +478,21 @@ export async function storeUpsertReviewRoomDocumentMember(input: {
   return row;
 }
 
+async function storeEnsureReviewRoomIdentity(input: {
+  id: string;
+  workspaceId: string;
+  displayName?: string | null;
+}): Promise<void> {
+  const existing = await storeGetReviewRoomIdentity(input.id);
+  if (existing) return;
+  await storeUpsertReviewRoomIdentity({
+    id: input.id,
+    workspaceId: input.workspaceId,
+    kind: 'human',
+    displayName: input.displayName ?? input.id,
+  });
+}
+
 export async function storeCreateReviewRoomDocumentRecord(input: {
   workspaceId?: string;
   title: string;
@@ -493,6 +508,16 @@ export async function storeCreateReviewRoomDocumentRecord(input: {
   const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
   const ownerIdentityId = input.ownerIdentityId || REVIEW_ROOM_LOCAL_HUMAN_ID;
   const createdByIdentityId = input.createdByIdentityId || ownerIdentityId;
+  await storeEnsureReviewRoomIdentity({
+    id: ownerIdentityId,
+    workspaceId,
+  });
+  if (createdByIdentityId !== ownerIdentityId) {
+    await storeEnsureReviewRoomIdentity({
+      id: createdByIdentityId,
+      workspaceId,
+    });
+  }
   await db.execute({
     sql: `INSERT INTO review_room_documents (
       id, workspace_id, title, proof_slug, proof_doc_id, source, owner_identity_id, created_by_identity_id, created_at, updated_at

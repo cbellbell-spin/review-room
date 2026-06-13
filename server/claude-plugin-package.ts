@@ -27,7 +27,7 @@ const EMBEDDED_PLUGIN_ENTRIES: Array<{ name: string; text: string }> = [
   "mcpServers": {
     "review-room": {
       "type": "http",
-      "url": "https://proof-sdk-psi.vercel.app/mcp"
+      "url": "https://review-room.chrisjbell.dev/mcp"
     }
   }
 }

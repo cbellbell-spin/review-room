@@ -74,26 +74,24 @@ Work items:
 - Extend focused tests across owner/editor/commenter/viewer behavior for comments, suggestions, title updates, tasks, baselines, and share/member controls.
 - Add one local browser verification pass for a non-owner role opening the same Review Room document.
 
-## Next Slice: Phase 2 Fly.io Migration Runway
+## Phase 2 Fly.io Migration Closeout
 
 Goal: move Review Room from the Vercel serverless target to a Fly.io target that can run the app, MCP routes, `/ws`, and live-collab runtime in one long-lived Node process.
 
-First deployment scaffold implemented:
+Migration closeout is complete:
 
 - `Dockerfile` builds the Vite app in a Node 20 image with native build tools for `better-sqlite3`, then starts `npm run serve`.
 - `fly.toml` targets a single always-on `sjc` Machine, mounts `/data`, stores SQLite and snapshots on the volume, exposes `/health`, and keeps the public base URL at `https://review-room.chrisjbell.dev`.
 - `.dockerignore` excludes local databases, built assets, snapshots, and bulky workspace folders from the Docker context.
-- `.github/workflows/fly-deploy.yml` deploys `main` with `flyctl deploy --remote-only`.
+- `.github/workflows/fly-deploy.yml` deploys `main` with `flyctl deploy --remote-only`, using an app-scoped one-year Fly deploy token stored as `FLY_API_TOKEN`.
 - Fly live-collab mode is documented as volume-backed SQLite. `TURSO_DATABASE_URL` remains the Vercel hosted/libSQL compatibility switch and should not be set for the live-collab Fly launch.
 - The first Fly app, volume, secret, deploy, health check, and restart-persistence smoke are complete for `review-room` in `sjc`.
 - The custom hostname `review-room.chrisjbell.dev` is pointed at Fly, the Fly certificate is issued, and `/health` is live on the custom domain.
 - Browser smoke opened a custom-domain document in two tabs with no browser warnings/errors; Fly logs showed authenticated live-collab presence for both connections.
-- Fly deploy metadata is wired through Docker build args and `.proof-build-info.json` so `/health` can report a real deployment SHA after the next deploy.
-
-Work items:
-
-- Decide whether to keep the Fly smoke document or clean it up after the live-collab smoke.
-- Decide whether to migrate existing Vercel/Turso documents into the Fly volume before DNS cutover, or treat Fly as a fresh production start.
+- Fly deploy metadata is wired through Docker build args and `.proof-build-info.json` so `/health` reports the deployed SHA.
+- Public agent docs, Cowork plugin config, and plugin download instructions now point at `https://review-room.chrisjbell.dev`.
+- The deployment guide documents production validation, legacy Vercel posture, and rollback steps that preserve the Fly `/data` volume.
+- Fly is treated as a fresh production start unless a future migration/export-import slice explicitly moves existing Vercel/Turso documents into the Fly volume.
 
 ## Following Slices
 

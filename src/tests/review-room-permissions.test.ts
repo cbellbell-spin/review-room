@@ -67,6 +67,28 @@ async function run(): Promise<void> {
     assert(created.document.currentRole === 'owner', 'Expected creator to be owner');
     const slug = created.document.proofSlug;
 
+    const explicitOwnerId = `smoke-owner-${randomUUID()}`;
+    const explicitOwnerCreated = await readJson<{
+      success: boolean;
+      document: { proofSlug: string; currentRole: string };
+    }>(await postJson(base, '/review-room/api/documents', {
+      title: 'Explicit owner identity',
+      markdown: '# Explicit owner identity\n\nThis should not require a pre-seeded identity.',
+    }, {
+      'x-review-room-identity-id': explicitOwnerId,
+    }));
+    assert(explicitOwnerCreated.success === true, 'Expected document creation for a new explicit identity');
+    assert(explicitOwnerCreated.document.currentRole === 'owner', 'Expected explicit identity creator to be owner');
+    const explicitOwnerList = await readJson<{ documents: Array<{ proofSlug?: string; currentRole?: string }> }>(
+      await fetch(`${base}/review-room/api/documents?identityId=${encodeURIComponent(explicitOwnerId)}`, { headers: CLIENT_HEADERS }),
+    );
+    assert(
+      explicitOwnerList.documents.some((document) => (
+        document.proofSlug === explicitOwnerCreated.document.proofSlug && document.currentRole === 'owner'
+      )),
+      'Expected new explicit owner identity to see its created document',
+    );
+
     const outsiderList = await readJson<{ documents: Array<{ proofSlug?: string }> }>(
       await fetch(`${base}/review-room/api/documents?identityId=outside-reviewer`, { headers: CLIENT_HEADERS }),
     );

@@ -2,11 +2,11 @@
 
 ## ChatGPT, Codex, And Claude MCP Setup
 
-Production MCP URL: `https://proof-sdk-psi.vercel.app/mcp`
+Production MCP URL: `https://review-room.chrisjbell.dev/mcp`
 
-Discovery JSON: `https://proof-sdk-psi.vercel.app/.well-known/agent.json`
+Discovery JSON: `https://review-room.chrisjbell.dev/.well-known/agent.json`
 
-Claude/Cowork plugin download: `https://proof-sdk-psi.vercel.app/review-room/claude-plugin.zip`
+Claude/Cowork plugin download: `https://review-room.chrisjbell.dev/review-room/claude-plugin.zip`
 
 ### ChatGPT
 
@@ -20,7 +20,7 @@ Codex supports streamable HTTP MCP servers in `config.toml`:
 
 ```toml
 [mcp_servers.review_room]
-url = "https://proof-sdk-psi.vercel.app/mcp"
+url = "https://review-room.chrisjbell.dev/mcp"
 ```
 
 Start a new Codex thread after updating config, then provide a Review Room document URL or slug plus token.
@@ -91,17 +91,17 @@ No browser automation is required. Use HTTP directly (for example, `curl` or you
 
 If you received a shared link like:
 
-  https://proof-sdk-psi.vercel.app/d/<slug>?token=<token>
+  https://review-room.chrisjbell.dev/d/<slug>?token=<token>
 
 You can discover the API and read the document in one step using **content negotiation** on that same URL.
 
 Fetch JSON (recommended):
 
-  curl -H "Accept: application/json" "https://proof-sdk-psi.vercel.app/d/<slug>?token=<token>"
+  curl -H "Accept: application/json" "https://review-room.chrisjbell.dev/d/<slug>?token=<token>"
 
 Fetch raw markdown:
 
-  curl -H "Accept: text/markdown" "https://proof-sdk-psi.vercel.app/d/<slug>?token=<token>"
+  curl -H "Accept: text/markdown" "https://review-room.chrisjbell.dev/d/<slug>?token=<token>"
 
 The JSON response includes:
 - `markdown` (document content)
@@ -111,13 +111,13 @@ The JSON response includes:
 ### Quick copy/paste flow (token already in the shared URL)
 
 ```bash
-SHARE_URL='https://proof-sdk-psi.vercel.app/d/<slug>?token=<token>'
+SHARE_URL='https://review-room.chrisjbell.dev/d/<slug>?token=<token>'
 TOKEN='<token>'
 SLUG='<slug>'
 
 curl -H "Accept: application/json" "$SHARE_URL"
 curl -H "Accept: text/markdown" "$SHARE_URL"
-curl -H "Authorization: Bearer $TOKEN" -H "X-Agent-Id: your-agent" "https://proof-sdk-psi.vercel.app/documents/$SLUG/state"
+curl -H "Authorization: Bearer $TOKEN" -H "X-Agent-Id: your-agent" "https://review-room.chrisjbell.dev/documents/$SLUG/state"
 ```
 
 ## Auth: Token From URL
@@ -160,21 +160,21 @@ Use:
 
 Add a comment:
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/ops?token=<token>" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/ops?token=<token>" \
     -H "Content-Type: application/json" \
     -H "X-Agent-Id: your-agent" \
     -d '{"type":"comment.add","by":"ai:your-agent","quote":"text to anchor","text":"comment body"}'
 
 Suggest a replace:
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/ops?token=<token>" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/ops?token=<token>" \
     -H "Content-Type: application/json" \
     -H "X-Agent-Id: your-agent" \
     -d '{"type":"suggestion.add","by":"ai:your-agent","kind":"replace","quote":"old text","content":"new text"}'
 
 Suggest an insert after an anchor:
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/ops?token=<token>" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/ops?token=<token>" \
     -H "Content-Type: application/json" \
     -H "X-Agent-Id: your-agent" \
     -d '{"type":"suggestion.add","by":"ai:your-agent","kind":"insert","quote":"Last sentence of the previous section.","content":"\n\n## New section\n\nNew section body."}'
@@ -183,14 +183,14 @@ Suggest an insert after an anchor:
 
 Create and immediately apply a suggestion:
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/ops?token=<token>" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/ops?token=<token>" \
     -H "Content-Type: application/json" \
     -H "X-Agent-Id: your-agent" \
     -d '{"type":"suggestion.add","by":"ai:your-agent","kind":"replace","quote":"old text","content":"new text","status":"accepted"}'
 
 Rewrite the whole document:
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/ops?token=<token>" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/ops?token=<token>" \
     -H "Content-Type: application/json" \
     -H "X-Agent-Id: your-agent" \
     -d '{"type":"rewrite.apply","by":"ai:your-agent","content":"# New markdown..."}'
@@ -211,7 +211,7 @@ The body must include an `operations` array (max 50 ops) and a `by` field for au
 
 Add content at the end of a named section (matched by heading text):
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/edit" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/edit" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer <token>" \
     -H "X-Agent-Id: your-agent" \
@@ -228,7 +228,7 @@ The `section` value is matched against heading text (e.g., `"Brandon"` matches `
 
 Find and replace a specific string in the document:
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/edit" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/edit" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer <token>" \
     -H "X-Agent-Id: your-agent" \
@@ -243,7 +243,7 @@ Find and replace a specific string in the document:
 
 Insert content after a specific anchor string:
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/edit" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/edit" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer <token>" \
     -H "X-Agent-Id: your-agent" \
@@ -260,7 +260,7 @@ Insert content after a specific anchor string:
 
 You can combine operations in a single request (applied in order):
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/edit" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/edit" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer <token>" \
     -H "X-Agent-Id: your-agent" \
@@ -309,7 +309,7 @@ Use:
 
 Example:
 
-  curl -X PUT "https://proof-sdk-psi.vercel.app/documents/<slug>/title" \
+  curl -X PUT "https://review-room.chrisjbell.dev/documents/<slug>/title" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer <token>" \
     -d '{"title":"Updated document title"}'
@@ -327,7 +327,7 @@ Use v2 for top-level block edits with stable block IDs and revision-based optimi
 
 Example:
 
-  curl -H "Authorization: Bearer <token>" "https://proof-sdk-psi.vercel.app/documents/<slug>/snapshot"
+  curl -H "Authorization: Bearer <token>" "https://review-room.chrisjbell.dev/documents/<slug>/snapshot"
 
 The response includes `revision` and an ordered `blocks` array with deterministic refs (`b1`, `b2`, ...).
 
@@ -337,7 +337,7 @@ The response includes `revision` and an ordered `blocks` array with deterministi
 
 Example:
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/edit/v2" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/edit/v2" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer <token>" \
     -H "Idempotency-Key: <uuid>" \
@@ -425,7 +425,7 @@ This is the most reliable way to add a line, row, or section to an existing docu
 
 ### Step 1: Get the snapshot
 
-  curl -H "Authorization: Bearer <token>" "https://proof-sdk-psi.vercel.app/documents/<slug>/snapshot"
+  curl -H "Authorization: Bearer <token>" "https://review-room.chrisjbell.dev/documents/<slug>/snapshot"
 
 This returns clean markdown per block (no internal HTML tags) plus stable `ref` identifiers and a `revision` number.
 ### Step 2: Find the right block
@@ -437,7 +437,7 @@ Look through the `blocks` array for the block you want to edit or insert near. E
 
 ### Step 3: Apply your edit
 
-  curl -X POST "https://proof-sdk-psi.vercel.app/documents/<slug>/edit/v2" \
+  curl -X POST "https://review-room.chrisjbell.dev/documents/<slug>/edit/v2" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer <token>" \
     -H "Idempotency-Key: <uuid>" \

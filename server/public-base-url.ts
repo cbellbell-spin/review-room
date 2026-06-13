@@ -7,7 +7,9 @@ export function trustProxyHeaders(): boolean {
 
 function shouldAdvertiseHttps(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase();
-  return normalized === 'proof-sdk-psi.vercel.app' || normalized.endsWith('.vercel.app');
+  return normalized === 'review-room.chrisjbell.dev'
+    || normalized === 'proof-sdk-psi.vercel.app'
+    || normalized.endsWith('.vercel.app');
 }
 
 function normalizeOrigin(candidate: string): string | null {

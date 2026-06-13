@@ -4,7 +4,7 @@ A Cowork plugin that lets Claude agents read, create, and review shared Review R
 
 ## What it does
 
-The plugin exposes the Review Room MCP (`https://proof-sdk-psi.vercel.app/mcp`) to the agent, giving it these tools:
+The plugin exposes the Review Room MCP (`https://review-room.chrisjbell.dev/mcp`) to the agent, giving it these tools:
 
 - `review_room_get_state` — read a document (markdown, marks, revision, links)
 - `review_room_add_comment` — add an anchored human-review comment
@@ -22,7 +22,7 @@ Two options.
 
 **From the prebuilt zip:**
 
-1. Download `https://proof-sdk-psi.vercel.app/review-room/claude-plugin.zip`.
+1. Download `https://review-room.chrisjbell.dev/review-room/claude-plugin.zip`.
 2. Open Cowork → Plugins → Upload.
 3. Pick the downloaded zip.
 4. The plugin auto-connects to the MCP server on next agent start.

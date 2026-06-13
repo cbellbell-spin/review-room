@@ -89,15 +89,15 @@ async function run(): Promise<void> {
     const forwardedDiscovery = await json<{ mcp_url?: string; docs_url?: string }>(await fetch(`${base}/.well-known/agent.json`, {
       headers: {
         'x-forwarded-proto': 'http',
-        'x-forwarded-host': 'proof-sdk-psi.vercel.app',
+        'x-forwarded-host': 'review-room.chrisjbell.dev',
       },
     }));
     assert(
-      forwardedDiscovery.mcp_url === 'https://proof-sdk-psi.vercel.app/mcp',
+      forwardedDiscovery.mcp_url === 'https://review-room.chrisjbell.dev/mcp',
       `Expected production discovery MCP URL to use https, got ${String(forwardedDiscovery.mcp_url)}`,
     );
     assert(
-      forwardedDiscovery.docs_url === 'https://proof-sdk-psi.vercel.app/agent-docs',
+      forwardedDiscovery.docs_url === 'https://review-room.chrisjbell.dev/agent-docs',
       `Expected production docs URL to use https, got ${String(forwardedDiscovery.docs_url)}`,
     );
 
@@ -105,13 +105,13 @@ async function run(): Promise<void> {
       headers: {
         Accept: 'text/html',
         'x-forwarded-proto': 'http',
-        'x-forwarded-host': 'proof-sdk-psi.vercel.app',
+        'x-forwarded-host': 'review-room.chrisjbell.dev',
       },
     });
     const htmlDocsText = await htmlDocs.text();
     assert(htmlDocs.status === 200 && htmlDocs.headers.get('content-type')?.includes('text/html'), 'Expected HTML agent docs for browser Accept');
     assert(htmlDocsText.includes('Copy MCP URL'), 'Expected HTML docs to include Copy MCP URL button');
-    assert(htmlDocsText.includes('https://proof-sdk-psi.vercel.app/mcp'), 'Expected HTML docs to show HTTPS MCP URL');
+    assert(htmlDocsText.includes('https://review-room.chrisjbell.dev/mcp'), 'Expected HTML docs to show HTTPS MCP URL');
     assert(htmlDocsText.includes('/review-room/claude-plugin.zip'), 'Expected HTML docs to link the Claude plugin download');
 
     const markdownDocs = await fetch(`${base}/agent-docs`, { headers: { Accept: 'text/markdown' } });

@@ -12,10 +12,10 @@ The merged `review-room` skill deliberately omits these fields. This test decide
 
 ## Pre-flight
 
-1. Confirm the host. Default: `https://proof-sdk-psi.vercel.app` (or whatever you point at).
+1. Confirm the host. Default: `https://review-room.chrisjbell.dev` (or whatever you point at).
 2. Get a slug + token. `POST /share/markdown` may or may not return a share token — if it doesn't, you'll need a separate share step. Save them as env vars:
    ```bash
-   export HOST="https://proof-sdk-psi.vercel.app"
+   export HOST="https://review-room.chrisjbell.dev"
    export SLUG="..."
    export TOKEN="..."
    ```

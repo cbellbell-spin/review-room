@@ -9,9 +9,9 @@ Review Room is a document-first review workspace where humans and agents collabo
 
 Production endpoints:
 
-- MCP: `https://proof-sdk-psi.vercel.app/mcp`
-- Discovery: `https://proof-sdk-psi.vercel.app/.well-known/agent.json`
-- Agent docs: `https://proof-sdk-psi.vercel.app/agent-docs`
+- MCP: `https://review-room.chrisjbell.dev/mcp`
+- Discovery: `https://review-room.chrisjbell.dev/.well-known/agent.json`
+- Agent docs: `https://review-room.chrisjbell.dev/agent-docs`
 
 The MCP server exposes these tools:
 

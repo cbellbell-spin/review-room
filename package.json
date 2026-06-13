@@ -27,6 +27,7 @@
     "test:fly-config": "tsx src/tests/fly-config.test.ts",
     "test:review-room-create-flow": "npm run build && tsx src/tests/review-room-create-flow.playwright.ts",
     "test:review-room-accept-race": "npm run build && tsx src/tests/review-room-accept-live-collab-race.playwright.ts",
+    "smoke:review-room-production": "node scripts/review-room-production-smoke.mjs",
     "demo:agent": "npm --workspace proof-example run demo:agent"
   },
   "dependencies": {

@@ -14,6 +14,9 @@ const dockerignore = read('.dockerignore');
 const gitignore = read('.gitignore');
 const workflow = read('.github/workflows/fly-deploy.yml');
 const deploymentNotes = read('docs/review-room-deployment.md');
+const agentDocs = read('docs/agent-docs.md');
+const coworkMcpConfig = read('cowork-plugin/.mcp.json');
+const coworkSkill = read('cowork-plugin/skills/review-room/SKILL.md');
 
 assert(
   dockerfile.includes('FROM node:20-slim')
@@ -92,8 +95,18 @@ assert(
 assert(
   deploymentNotes.includes('Do not set `TURSO_DATABASE_URL` for the live-collab Fly launch')
     && deploymentNotes.includes('live-collab production path uses the Fly volume as the durable SQLite store')
-    && deploymentNotes.includes('/health` returns `collab.enabled: true`'),
+    && deploymentNotes.includes('/health` returns `collab.enabled: true`')
+    && deploymentNotes.includes('npm run smoke:review-room-production')
+    && deploymentNotes.includes('## Rollback'),
   'Expected deployment notes to distinguish Fly live-collab mode from Vercel/Turso hosted mode',
+);
+
+assert(
+  agentDocs.includes('https://review-room.chrisjbell.dev/mcp')
+    && !agentDocs.includes('proof-sdk-psi.vercel.app')
+    && coworkMcpConfig.includes('https://review-room.chrisjbell.dev/mcp')
+    && coworkSkill.includes('https://review-room.chrisjbell.dev/agent-docs'),
+  'Expected public agent docs and Cowork plugin config to advertise the Fly production hostname',
 );
 
 console.log('✓ Fly deployment config pins live-collab volume mode');
