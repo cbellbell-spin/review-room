@@ -852,7 +852,63 @@ async function run(): Promise<void> {
       assertEqual(boldResult.status, 200, `Bold-split authored span with same proof-id should not block accept (got ${boldResult.status})`);
     }
 
-    console.log('✓ authored span fingerprint regressions: inline backtick code and bold-split proof-id');
+    // Regression: a live implementation-plan suggestion had legacy malformed numeric
+    // mark keys, authored spans around an already-updated copy, and repeated old anchor
+    // text. Accept should still resolve through rehydration instead of raw quote matching.
+    {
+      const liveMarkId = 'suggestion-live-github-main-regression';
+      const liveOldQuote = 'GitHub main deploys through the Fly workflow, and /health reports build 3bd223b with live collaboration enabled.';
+      const liveAccepted = 'GitHub `main` deploys through the Fly workflow, and `/health` reports build `d82aed0` with live collaboration enabled.';
+      const liveMarkdown = [
+        '- ',
+        '<span data-proof="authored" data-proof-id="authored:ai:claude:gh-1" data-by="ai:claude">GitHub</span> ',
+        '<span data-proof="authored" data-proof-id="authored:ai:claude:gh-2" data-by="ai:claude">`main`</span> ',
+        '<span data-proof="authored" data-proof-id="authored:ai:claude:gh-3" data-by="ai:claude">deploys through the Fly workflow, and</span> ',
+        '<span data-proof="authored" data-proof-id="authored:ai:claude:gh-4" data-by="ai:claude">`/health`</span> ',
+        '<span data-proof="authored" data-proof-id="authored:ai:claude:gh-5" data-by="ai:claude">reports build</span> ',
+        '<span data-proof="authored" data-proof-id="authored:ai:claude:gh-6" data-by="ai:claude">`d82aed0`</span> ',
+        '<span data-proof="authored" data-proof-id="authored:ai:claude:gh-7" data-by="ai:claude">with live collaboration enabled.</span>\n',
+        `- ${liveAccepted}\n`,
+        `- ${liveOldQuote}\n`,
+        `- ${liveOldQuote}\n`,
+      ].join('');
+      const livePlain = stripAllProofSpanTags(liveMarkdown);
+      const liveAnchors = buildRelativeAnchors(livePlain, liveOldQuote);
+      const malformedLegacyPayload = JSON.stringify({
+        kind: 'replace',
+        quote: liveOldQuote,
+        content: liveAccepted,
+      });
+      const liveSlug = `rehydrate-live-github-main-${Math.random().toString(36).slice(2, 10)}`;
+      db.createDocument(liveSlug, liveMarkdown, canonicalizeStoredMarks({
+        [liveMarkId]: Object.assign({}, malformedLegacyPayload, {
+          kind: 'replace',
+          by: 'ai:claude',
+          createdAt,
+          quote: liveOldQuote,
+          content: liveAccepted,
+          status: 'pending',
+          startRel: liveAnchors.startRel,
+          endRel: liveAnchors.endRel,
+          range: liveAnchors.range,
+        }) as StoredMark,
+      }), 'Live GitHub main regression');
+      const liveResult = await executeDocumentOperationAsync(liveSlug, 'POST', '/marks/accept', {
+        markId: liveMarkId,
+        by: 'human:test',
+      });
+      assertEqual(liveResult.status, 200, `Live GitHub main suggestion should accept despite malformed legacy metadata (got ${liveResult.status})`);
+      const liveDoc = db.getDocumentBySlug(liveSlug);
+      const liveClean = stripAllProofSpanTags(liveDoc?.markdown ?? '');
+      assert(
+        liveClean.includes(liveAccepted),
+        'Expected live GitHub main accept to keep the accepted markdown-formatted sentence',
+      );
+      const liveStoredMarks = parseStoredMarks(liveDoc?.marks);
+      assert(!(liveMarkId in liveStoredMarks), 'Expected finalized live GitHub main suggestion metadata to be removed');
+    }
+
+    console.log('✓ authored span fingerprint regressions: inline backtick code, bold-split proof-id, and live GitHub main accept');
   } finally {
     try {
       unlinkSync(dbPath);

@@ -22,7 +22,9 @@ import {
   REVIEW_ROOM_LOCAL_HUMAN_NAME,
   REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
 } from './review-room-identity.js';
+import { finalizeSuggestionThroughRehydration } from './proof-mark-rehydration.js';
 import { applyProofSuggestionByProofSpanId, stripAllProofSpanTags } from './proof-span-strip.js';
+import type { StoredMark } from '../src/formats/marks.js';
 
 type SqlValue = null | string | number | bigint | ArrayBuffer | boolean | Uint8Array | Date;
 
@@ -30,6 +32,10 @@ export type HostedEngineExecutionResult = {
   status: number;
   body: Record<string, unknown>;
 };
+
+type HostedAcceptedSuggestionApplyResult =
+  | { ok: true; markdown: string; marks?: Record<string, unknown> }
+  | { ok: false; body: Record<string, unknown> };
 
 export type HostedDocumentEventRow = {
   id: number;
@@ -1676,12 +1682,20 @@ async function updateHostedSuggestionStatus(
     return result;
   }
 
-  const applied = applyHostedAcceptedSuggestion(doc.markdown, markId, existingRecord);
+  const structuredAccepted = await finalizeSuggestionThroughRehydration({
+    markdown: doc.markdown,
+    marks: marks as Record<string, StoredMark>,
+    markId,
+    action: 'accept',
+  });
+  const applied: HostedAcceptedSuggestionApplyResult = structuredAccepted.ok
+    ? { ok: true as const, markdown: structuredAccepted.markdown, marks: structuredAccepted.marks as Record<string, unknown> }
+    : applyHostedAcceptedSuggestion(doc.markdown, markId, existingRecord);
   if (!applied.ok) return { status: 409, body: applied.body };
   const updated = await updateHostedDocument({
     slug,
     markdown: applied.markdown,
-    marks: nextMarks,
+    marks: applied.marks ?? nextMarks,
     actor: by,
   });
   if (updated.status < 200 || updated.status >= 300) return updated;
@@ -1697,6 +1711,13 @@ async function updateHostedSuggestionStatus(
     afterRevision: nextDoc?.revision ?? doc.revision + 1,
     eventId: proofEventId,
   });
+  const responseMarks = {
+    ...parseMarks(nextDoc?.marks ?? JSON.stringify(applied.marks ?? nextMarks)),
+    [markId]: {
+      ...existingRecord,
+      status,
+    },
+  };
   return {
     status: 200,
     body: {
@@ -1707,7 +1728,7 @@ async function updateHostedSuggestionStatus(
       updatedAt: nextDoc?.updated_at ?? new Date().toISOString(),
       content: nextDoc?.markdown ?? applied.markdown,
       markdown: nextDoc?.markdown ?? applied.markdown,
-      marks: nextMarks,
+      marks: responseMarks,
     },
   };
 }

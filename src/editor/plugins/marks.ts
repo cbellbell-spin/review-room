@@ -282,11 +282,59 @@ function resolveRangeFromRelativeAnchors(
   return mapTextOffsetsToRange(index, startOffset, endOffset);
 }
 
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function resolveRangeNearTextOffset(
+  doc: ProseMirrorNode,
+  quote: string,
+  preferredOffset: number | null
+): MarkRange | null {
+  if (preferredOffset === null) return null;
+  const index = buildTextIndex(doc);
+  if (!index) return null;
+  const normalizedQuote = normalizeQuote(quote);
+  if (!normalizedQuote) return null;
+
+  const windowSize = Math.max(256, normalizedQuote.length * 3);
+  const pattern = normalizedQuote
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(escapeRegexLiteral)
+    .join('\\s+');
+  if (!pattern) return null;
+
+  const candidates: Array<{ from: number; to: number; distance: number }> = [];
+  const matcher = new RegExp(pattern, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(index.text)) !== null) {
+    const from = match.index;
+    const to = from + match[0].length;
+    const distance = Math.abs(from - preferredOffset);
+    if (distance <= windowSize) {
+      candidates.push({ from, to, distance });
+    }
+    if (match[0].length === 0) matcher.lastIndex += 1;
+  }
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => a.distance - b.distance || a.from - b.from);
+  for (const candidate of candidates) {
+    const range = mapTextOffsetsToRange(index, candidate.from, candidate.to);
+    if (!range) continue;
+    const actualQuote = normalizeQuote(getTextForRange(doc, range));
+    if (actualQuote === normalizedQuote) return range;
+  }
+  return null;
+}
+
 function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkRange | null {
   const normalizedStoredQuote = typeof stored.quote === 'string'
     ? normalizeQuote(stored.quote)
     : '';
   const allowsQuoteLessAnchorFallback = stored.kind === 'authored';
+  const relativeStartOffset = parseRelativeCharOffset(stored.startRel);
 
   const relativeRange = resolveRangeFromRelativeAnchors(doc, stored.startRel, stored.endRel);
   if (relativeRange) {
@@ -300,6 +348,10 @@ function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkR
         return relativeRange;
       }
     }
+  }
+  if (normalizedStoredQuote) {
+    const nearbyRange = resolveRangeNearTextOffset(doc, normalizedStoredQuote, relativeStartOffset);
+    if (nearbyRange) return nearbyRange;
   }
 
   const storedRange = stored.range;
