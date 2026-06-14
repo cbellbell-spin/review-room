@@ -3065,6 +3065,31 @@ function getFragmentPlainTextFromDoc(doc: Y.Doc): string {
   }
 }
 
+function nodeHasSuggestionMark(node: unknown): boolean {
+  if (node instanceof Y.XmlText) {
+    const delta: Array<{ insert?: unknown; attributes?: Record<string, unknown> }> =
+      typeof (node as any).toDelta === 'function' ? (node as any).toDelta() : [];
+    for (const entry of delta) {
+      if (entry?.attributes?.proofSuggestion) return true;
+    }
+    return false;
+  }
+  if (!(node instanceof Y.XmlElement) && !(node instanceof Y.XmlFragment)) return false;
+  const children = (node as any).toArray() as unknown[];
+  for (const child of children) {
+    if (nodeHasSuggestionMark(child)) return true;
+  }
+  return false;
+}
+
+function fragmentHasPendingSuggestionMarks(ydoc: Y.Doc): boolean {
+  try {
+    return nodeHasSuggestionMark(ydoc.getXmlFragment('prosemirror'));
+  } catch {
+    return false;
+  }
+}
+
 function normalizeMarkdownForDriftComparison(markdown: string): string {
   if (!markdown) return '';
   const withoutComments = markdown.replace(/<!--[\s\S]*?-->/g, ' ');
@@ -4870,6 +4895,15 @@ async function refreshMarkdownTextFromFragment(
         };
       }
     }
+    if (fragmentHasPendingSuggestionMarks(ydoc)) {
+      // The fragment contains pending suggestion marks: both delete-marked (original)
+      // and insert-marked (proposed) text coexist, so the derived markdown is
+      // inflated relative to the canonical Y.Text. Writing it back would bloat
+      // Y.Text to 2x+ size and trigger oversized projection repairs that block
+      // the Node.js event loop. Skip the update; canonical Y.Text stays authoritative
+      // until the suggestion is accepted or rejected and the room is invalidated.
+      return { deriveFailed: false, refreshed: false, markdown: currentMarkdown };
+    }
     ydoc.transact(() => {
       applyYTextDiff(ydoc.getText('markdown'), derivedFragmentMarkdown);
     }, sourceActor);
@@ -4968,6 +5002,10 @@ async function repairProjectionFromFragment(
     if (dbMissingLive.byteLength === 0) {
       ydoc = liveDoc;
     }
+  }
+  if (fragmentHasPendingSuggestionMarks(ydoc)) {
+    recordProjectionRepair('skipped', 'pending_suggestion_marks');
+    return 'stop';
   }
   const fragmentPlain = getFragmentPlainTextFromDoc(ydoc);
   const rowPlain = normalizeMarkdownForDriftComparison(row.markdown);
