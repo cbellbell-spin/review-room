@@ -24,6 +24,8 @@ import {
 } from './review-room-identity.js';
 import { finalizeSuggestionThroughRehydration } from './proof-mark-rehydration.js';
 import { applyProofSuggestionByProofSpanId, stripAllProofSpanTags } from './proof-span-strip.js';
+import { invalidateCollabDocument } from './collab.js';
+import { bumpDocumentAccessEpoch } from './db.js';
 import type { StoredMark } from '../src/formats/marks.js';
 
 type SqlValue = null | string | number | bigint | ArrayBuffer | boolean | Uint8Array | Date;
@@ -1678,6 +1680,8 @@ async function updateHostedSuggestionStatus(
         afterRevision: nextDoc?.revision ?? doc.revision + 1,
         eventId: result.body.eventId,
       });
+      bumpDocumentAccessEpoch(slug);
+      invalidateCollabDocument(slug);
     }
     return result;
   }
@@ -1699,6 +1703,8 @@ async function updateHostedSuggestionStatus(
     actor: by,
   });
   if (updated.status < 200 || updated.status >= 300) return updated;
+  bumpDocumentAccessEpoch(slug);
+  invalidateCollabDocument(slug);
   const proofEventId = await addHostedDocumentEvent(slug, 'suggestion.accepted', { markId, status, by }, by);
   const nextDoc = await getHostedDocumentBySlug(slug);
   await recordHostedReviewRoomSuggestionDecisionHistory({
