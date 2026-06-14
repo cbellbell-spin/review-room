@@ -47,7 +47,8 @@ assert(
 assert(
   editorSource.includes("titleSlot.replaceChildren(title);")
     && editorSource.includes("statusSlot.replaceChildren(syncStatusInline);")
-    && editorSource.includes("reviewSlot.replaceChildren(this.createReviewRoomReviewButton());")
+    && editorSource.includes("reviewWrap.append(this.createReviewRoomAuditBannerButton(), this.createReviewRoomReviewButton());")
+    && editorSource.includes("reviewSlot.replaceChildren(reviewWrap);")
     && editorSource.includes("agentSlotContainer.replaceChildren(agentSlot);")
     && editorSource.includes("formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());")
     && editorSource.includes("saveSlot.replaceChildren(this.createReviewRoomSaveControls());")
