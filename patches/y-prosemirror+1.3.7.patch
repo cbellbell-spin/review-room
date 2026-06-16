@@ -1,0 +1,32 @@
+diff --git a/node_modules/y-prosemirror/src/lib.js b/node_modules/y-prosemirror/src/lib.js
+index 3f48497..2ae9fa5 100644
+--- a/node_modules/y-prosemirror/src/lib.js
++++ b/node_modules/y-prosemirror/src/lib.js
+@@ -157,7 +157,14 @@ export const relativePositionToAbsolutePosition = (y, documentType, relPos, mapp
+         if (t instanceof Y.XmlText) {
+           pos += t._length
+         } else {
+-          pos += /** @type {any} */ (mapping.get(t)).nodeSize
++          // If the mapping is incomplete (transient during rapid local edits +
++          // remote _typeChanged), abort instead of assuming nodeSize 0, which
++          // would compute a wrong (too-small) absolute position and jump the
++          // cursor toward the document start. Returning null makes the caller
++          // (restoreRelativeSelection) leave the current selection in place.
++          const mappedNode = mapping.get(t)
++          if (mappedNode == null) return null
++          pos += /** @type {any} */ (mappedNode).nodeSize
+         }
+       }
+       n = /** @type {Y.Item} */ (n.right)
+@@ -181,7 +188,10 @@ export const relativePositionToAbsolutePosition = (y, documentType, relPos, mapp
+           if (contentType instanceof Y.XmlText) {
+             pos += contentType._length
+           } else {
+-            pos += /** @type {any} */ (mapping.get(contentType)).nodeSize
++            // See note above: abort on incomplete mapping rather than guessing 0.
++            const mappedContent = mapping.get(contentType)
++            if (mappedContent == null) return null
++            pos += /** @type {any} */ (mappedContent).nodeSize
+           }
+         }
+         n = n.right

@@ -310,6 +310,11 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       button.setAttribute('aria-selected', String(activeTab === tab.value));
       button.onclick = () => {
         activeTab = tab.value;
+        // An explicit tab click is a deliberate choice; clear any focused mark so
+        // loadPanel()'s focus-based tab forcing doesn't immediately snap the tab
+        // back (e.g. after adding a comment, focusedMarkId pins the Comments tab
+        // and the user can't switch to Suggestions without closing/reopening).
+        focusedMarkId = null;
         void loadPanel();
       };
       return button;

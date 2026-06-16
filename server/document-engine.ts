@@ -1334,8 +1334,16 @@ function readState(slug: string): EngineExecutionResult {
       content: doc.markdown,
       markdown: doc.markdown,
       marks,
-      updatedAt: mutationReady ? doc.updated_at : null,
-      revision: mutationReady ? doc.revision : null,
+      // Always expose the canonical revision/updatedAt so clients can derive a
+      // mutation base even when the projection is "stale" relative to live. With
+      // pending suggestions the projection legitimately differs from live and
+      // never re-materializes, but accept/reject/comment mutations must still be
+      // possible — the server resolves them against the live Yjs base. Without a
+      // base here, getMutationBase() fails client-side and the mutation never
+      // even reaches the server. mutationReady/repairPending below still signal
+      // staleness to callers that care.
+      updatedAt: doc.updated_at,
+      revision: doc.revision,
       readSource,
       projectionFresh,
       repairPending,
@@ -1378,8 +1386,16 @@ async function readStateAsync(slug: string): Promise<EngineExecutionResult> {
       content: doc.markdown,
       markdown: doc.markdown,
       marks,
-      updatedAt: mutationReady ? doc.updated_at : null,
-      revision: mutationReady ? doc.revision : null,
+      // Always expose the canonical revision/updatedAt so clients can derive a
+      // mutation base even when the projection is "stale" relative to live. With
+      // pending suggestions the projection legitimately differs from live and
+      // never re-materializes, but accept/reject/comment mutations must still be
+      // possible — the server resolves them against the live Yjs base. Without a
+      // base here, getMutationBase() fails client-side and the mutation never
+      // even reaches the server. mutationReady/repairPending below still signal
+      // staleness to callers that care.
+      updatedAt: doc.updated_at,
+      revision: doc.revision,
       readSource,
       projectionFresh,
       repairPending,

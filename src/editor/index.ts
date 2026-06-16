@@ -1057,6 +1057,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareOtherViewerCount: number = 0;
   private collabConnectionStatus: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
   private collabIsSynced: boolean = false;
+  private collabWasConnectedSynced: boolean = false;
   private collabUnsyncedChanges: number = 0;
   private collabPendingLocalUpdates: number = 0;
   private collabUnhealthySinceMs: number | null = null;
@@ -1581,7 +1582,18 @@ class ProofEditorImpl implements ProofEditor {
           if (status.connectionStatus === 'disconnected' && collabClient.terminalCloseReason === 'permission-denied') {
             void this.refreshCollabSessionAndReconnect(false);
           }
-          if (status.connectionStatus === 'connected' && status.isSynced) {
+          const isConnectedSynced = status.connectionStatus === 'connected' && status.isSynced;
+          // Only run the heavy one-time setup on the rising edge (transition INTO
+          // connected+synced). Previously it ran on every sync-status emit, but
+          // applyLatestCollabMarksToEditor/kickCollabHydration themselves cause Yjs
+          // writes -> more sync-status emits, so on every keystroke this re-fired
+          // dozens of times and, with two collaborators, the cross-client echo
+          // amplified into thousands of updates that froze/crashed the tab. Remote
+          // marks are applied through the onMarks handler (the correct trigger), not
+          // through sync-status ticks.
+          const justBecameConnectedSynced = isConnectedSynced && !this.collabWasConnectedSynced;
+          this.collabWasConnectedSynced = isConnectedSynced;
+          if (isConnectedSynced) {
             if (this.pendingCollabRebindOnSync) {
               const shouldResetDoc = this.pendingCollabRebindResetDoc;
               this.pendingCollabRebindOnSync = false;
@@ -1592,14 +1604,16 @@ class ProofEditorImpl implements ProofEditor {
                 this.connectCollabService();
               }
             }
-            this.ensureCollabCursorsInstalled();
-            this.applyPendingCollabTemplate();
-            this.kickCollabHydration();
-            this.applyLatestCollabMarksToEditor();
-            setTimeout(() => this.applyLatestCollabMarksToEditor(), 150);
-            this.installShareAgentPresenceObservers();
-            this.clearErrorBanner();
-            this.resetShareInitRetryState();
+            if (justBecameConnectedSynced) {
+              this.ensureCollabCursorsInstalled();
+              this.applyPendingCollabTemplate();
+              this.kickCollabHydration();
+              this.applyLatestCollabMarksToEditor();
+              setTimeout(() => this.applyLatestCollabMarksToEditor(), 150);
+              this.installShareAgentPresenceObservers();
+              this.clearErrorBanner();
+              this.resetShareInitRetryState();
+            }
             if (status.unsyncedChanges === 0) {
               this.flushPendingProjectionMarkdown();
               this.flushPendingCollabMarksMetadata();
@@ -2576,9 +2590,20 @@ class ProofEditorImpl implements ProofEditor {
       && this.collabConnectionStatus === 'connected'
       && this.collabIsSynced
       && !awaitingTemplateSeed;
-    const hydrated = !baseAllowLocalEdits ? true : this.isCollabHydratedForEditing();
+    // Once initial hydration has completed, the editor is authoritative for local
+    // edits and y-prosemirror's ySync plugin handles bidirectional sync. We must
+    // NOT force-rerender from the Yjs fragment after that point: a local edit makes
+    // editorText transiently differ from fragmentText (the edit hasn't flushed to
+    // the fragment yet), which isCollabHydratedForEditing() would read as "not
+    // hydrated" and revert via _forceRerender — wiping the keystroke. This is the
+    // "type one char and it disappears" bug in suggesting mode, where the marks
+    // -> syncStatus cascade runs the gate synchronously before the flush.
+    const hydrated = !baseAllowLocalEdits
+      ? true
+      : (this.hasCompletedInitialCollabHydration || this.isCollabHydratedForEditing());
     if (baseAllowLocalEdits && !hydrated) {
       // Prevent "type into blank doc" races that can overwrite remote Yjs state.
+      // Only runs during initial hydration; never after the doc is loaded.
       this.kickCollabHydration();
     }
     const allowLocalEdits = this.reviewRoomRestSaveMode || (baseAllowLocalEdits && hydrated);
@@ -4982,6 +5007,63 @@ class ProofEditorImpl implements ProofEditor {
     await openReviewPanelUi(this.buildReviewPanelHost(), options);
   }
 
+  /**
+   * Fetch the document for the Review pane, overlaying live editor content onto
+   * the server projection. The server projection's mark metadata can carry
+   * fragmented `content` (e.g. when rapid/concurrent typing split an insertion
+   * into chunks), which makes the Review pane show garbled text like "hpf" for
+   * "hopefully" even when the body renders correctly. The live editor holds the
+   * authoritative covered text per mark (the `quote` of each mark = the actual
+   * document text in its range), so we overlay that onto matching suggestion
+   * marks for display while keeping the server's authoritative status/fields.
+   */
+  private async fetchReviewDocumentWithLiveContent(): Promise<{ markdown?: string | null; marks?: Record<string, unknown> } | null> {
+    const serverDoc = await shareClient.fetchDocument();
+    if (!serverDoc || !this.isShareMode || !this.editor) return serverDoc;
+
+    let liveMarks: Record<string, StoredMark> = {};
+    try {
+      this.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        liveMarks = getMarkMetadataWithQuotes(view.state);
+      });
+    } catch {
+      return serverDoc;
+    }
+    if (Object.keys(liveMarks).length === 0) return serverDoc;
+
+    const serverMarks = (serverDoc.marks && typeof serverDoc.marks === 'object' && !Array.isArray(serverDoc.marks))
+      ? serverDoc.marks as Record<string, unknown>
+      : {};
+    const mergedMarks: Record<string, unknown> = { ...serverMarks };
+    for (const [id, live] of Object.entries(liveMarks)) {
+      const liveRec = live as Record<string, unknown>;
+      const kind = liveRec.kind;
+      if (kind !== 'insert' && kind !== 'replace' && kind !== 'delete') continue;
+      // The mark's quote is the actual text covered by its range in the live doc.
+      const liveText = typeof liveRec.quote === 'string' && liveRec.quote.length > 0
+        ? liveRec.quote
+        : (typeof liveRec.content === 'string' ? liveRec.content : '');
+      if (!liveText) continue;
+      // Overlay live range/anchor too: the Review pane groups contiguous inserts
+      // using these positions, and stale/missing range metadata on the server
+      // marks makes one insertion render as multiple chunks. The live doc has the
+      // accurate positions.
+      const liveOverlay: Record<string, unknown> = { content: liveText };
+      if (liveRec.range && typeof liveRec.range === 'object') liveOverlay.range = liveRec.range;
+      if (liveRec.startRel !== undefined) liveOverlay.startRel = liveRec.startRel;
+      if (liveRec.endRel !== undefined) liveOverlay.endRel = liveRec.endRel;
+      if (typeof liveRec.quote === 'string') liveOverlay.quote = liveRec.quote;
+      const existing = mergedMarks[id];
+      if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+        mergedMarks[id] = { ...(existing as Record<string, unknown>), ...liveOverlay };
+      } else {
+        mergedMarks[id] = { ...liveRec, ...liveOverlay };
+      }
+    }
+    return { ...serverDoc, marks: mergedMarks };
+  }
+
   private buildReviewPanelHost(): ReviewPanelHost {
     return {
       getSelectedText: () => this.getReviewRoomSelectedText(),
@@ -5000,7 +5082,7 @@ class ProofEditorImpl implements ProofEditor {
       },
       refreshDocumentFromServer: () => this.refreshReviewRoomDocumentFromServer(),
       focusMark: (markId) => this.focusReviewRoomMark(markId),
-      fetchDocument: () => shareClient.fetchDocument(),
+      fetchDocument: () => this.fetchReviewDocumentWithLiveContent(),
       fetchHistory: async (limit) => {
         const result = await shareClient.fetchReviewRoomHistory({ limit });
         return result && !('error' in result) && result.success ? result.events : [];
@@ -5897,6 +5979,14 @@ class ProofEditorImpl implements ProofEditor {
 
   private applyLatestCollabMarksToEditor(): void {
     if (!this.isShareMode || !this.collabEnabled || !this.editor) return;
+    // Re-entrancy guard. applyExternalMarks dispatches a transaction, which can
+    // produce a Yjs update -> appendDurableUpdate -> emitSyncStatus -> the
+    // onSyncStatus handler, which calls this method again. Without this guard
+    // that becomes unbounded synchronous recursion (RangeError: Maximum call
+    // stack size exceeded) the moment there are marks to apply — e.g. typing a
+    // single character in suggesting mode. The in-progress application already
+    // reflects the latest marks, so re-entrant calls are redundant.
+    if (this.applyingCollabRemote) return;
     if (Object.keys(this.lastReceivedServerMarks).length === 0) return;
     if (this.isEditorDocStructurallyEmpty()) return;
 

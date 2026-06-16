@@ -1129,7 +1129,14 @@ async function enforceMutationPrecondition(
   const projectionStale = !isCanonicalReadMutationReady(canonicalDoc)
     || canonicalDoc.projection_fresh === false
     || canonicalDoc.repair_pending === true;
-  if (requiresProjectedMarkState(opType) && projectionStale && !hasProjectedMarkFallback(payload, mutationBase)) {
+  // A mark mutation (accept/reject/comment ops) can proceed against the live Yjs
+  // base when that base actually contains the target mark, even if the canonical
+  // projection is stale. This is the normal case for pending suggestions: the
+  // projection can't materialize while suggestion marks are pending, so it is
+  // permanently "stale" relative to live — but the live base has the mark, so the
+  // mutation is well-defined. Without this, accept/reject is impossible.
+  const markFallbackAvailable = hasProjectedMarkFallback(payload, mutationBase);
+  if (requiresProjectedMarkState(opType) && projectionStale && !markFallbackAvailable) {
     if (replay) releaseIdempotentMutationResult(replay, mutationRoute, slug, 'PROJECTION_STALE');
     sendMutationResponse(res, 409, {
       success: false,
@@ -1169,7 +1176,10 @@ async function enforceMutationPrecondition(
   return {
     doc: buildMutationContextDocument(canonicalDoc, mutationBase),
     mutationBase,
-    enforceProjectionReadiness: requiresProjectedMarkState(opType) && projectionStale,
+    // When a live mark-fallback base is available, operate on it instead of
+    // forcing a fresh projection (which never materializes while suggestions are
+    // pending). Only enforce projection readiness when there is no usable fallback.
+    enforceProjectionReadiness: requiresProjectedMarkState(opType) && projectionStale && !markFallbackAvailable,
     precondition: opPrecondition.mode === 'token'
       ? { mode: 'token', baseToken: opPrecondition.baseToken }
       : opPrecondition.mode === 'revision'

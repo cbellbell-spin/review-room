@@ -8987,7 +8987,13 @@ function applyMarksMapDiff(map: Y.Map<unknown>, next: Record<string, unknown>): 
     if (!nextKeys.has(key)) map.delete(key);
   }
   for (const [key, value] of Object.entries(next)) {
-    map.set(key, value as unknown);
+    // Idempotent write: Y.Map.set always creates a new struct and emits an update
+    // even for identical values, so re-setting every key rewrites the whole marks
+    // map each persist/repair pass and feeds a write-amplification loop. Only write
+    // keys that genuinely changed. See canonical-document.applyMarksMapDiff.
+    if (stableStringify(map.get(key)) !== stableStringify(value)) {
+      map.set(key, value as unknown);
+    }
   }
 }
 

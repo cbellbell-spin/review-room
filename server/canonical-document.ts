@@ -468,7 +468,16 @@ function applyMarksMapDiff(map: Y.Map<unknown>, next: Record<string, unknown>): 
     if (!nextKeys.has(key)) map.delete(key);
   }
   for (const [key, value] of Object.entries(next)) {
-    map.set(key, value);
+    // Only write keys whose value actually changed. Y.Map.set always creates a
+    // new struct (tombstone + insert) and emits an update even when the value is
+    // identical, so an unconditional re-set of every key rewrites the whole marks
+    // map on each persist/repair pass. With two live participants (editor +
+    // owner_bot) re-deriving marks, that produced an unbounded write-amplification
+    // loop (growing updates, tombstone accumulation). The idempotent guard keeps
+    // settled docs from churning.
+    if (stableStringify(map.get(key)) !== stableStringify(value)) {
+      map.set(key, value);
+    }
   }
 }
 

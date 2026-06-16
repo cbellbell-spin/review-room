@@ -140,6 +140,26 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
+// Positional/anchor fields are derived per-client from the (already-synced)
+// document, so two collaborators routinely compute slightly different values for
+// the same logical mark. If these drive the marks-map write decision, the two
+// clients ping-pong forever: each rewrites every mark to "correct" the other's
+// anchors, which echoes back. The document is authoritative for positions; these
+// are only re-anchoring hints, so anchor-only differences must NOT trigger a write.
+const VOLATILE_MARK_ANCHOR_FIELDS = new Set(['range', 'quote', 'startRel', 'endRel']);
+function stripVolatileMarkAnchors(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (VOLATILE_MARK_ANCHOR_FIELDS.has(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+function markValueEqualIgnoringAnchors(a: unknown, b: unknown): boolean {
+  return deepEqual(stripVolatileMarkAnchors(a), stripVolatileMarkAnchors(b));
+}
+
 function applyYTextDiff(target: Y.Text, nextValue: string): void {
   const currentValue = target.toString();
   if (currentValue === nextValue) return;
@@ -818,7 +838,7 @@ export class CollabClient {
     const nextKeys = Object.keys(mergedMarks);
     const sameKeyCount = currentKeys.length === nextKeys.length;
     const sameKeys = sameKeyCount && currentKeys.every((key) => Object.prototype.hasOwnProperty.call(mergedMarks, key));
-    const marksChanged = !sameKeys || nextKeys.some((key) => !deepEqual(currentMarksSnapshot[key], mergedMarks[key]));
+    const marksChanged = !sameKeys || nextKeys.some((key) => !markValueEqualIgnoringAnchors(currentMarksSnapshot[key], mergedMarks[key]));
     if (!marksChanged) return;
 
     this.applyingLocalMarks = true;
@@ -829,7 +849,7 @@ export class CollabClient {
           if (!nextMarkKeys.has(key)) this.marksMap?.delete(key);
         });
         for (const [key, value] of Object.entries(mergedMarks)) {
-          if (!deepEqual(currentMarksSnapshot[key], value)) {
+          if (!markValueEqualIgnoringAnchors(currentMarksSnapshot[key], value)) {
             this.marksMap?.set(key, value);
           }
         }
