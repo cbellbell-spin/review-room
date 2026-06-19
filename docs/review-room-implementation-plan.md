@@ -32,6 +32,18 @@ Phase 1.5 is complete enough to close as the product-layer foundation:
 
 Remaining cockpit polish, timezone/status-prose conventions, richer severity/category metadata, and deeper changes-since-baseline review views should move to later cockpit/product-depth work. They should not block Phase 2.
 
+Collaboration reliability and clarity reached a stable checkpoint on June 19, 2026:
+
+- The two-browser contract now covers concurrent direct edits, comments/replies, suggestions from either editor, self/cross-user accept and reject, hard reconnects, and exact content convergence without duplicate text or resurrected marks.
+- Editing remains locked until y-prosemirror is structurally bound to the active Y.Doc and both halves of a real metadata-only Yjs transport probe are acknowledged by the server. Connected/synced events alone do not authorize editing.
+- Suggestion decisions are scoped to the target mark; empty canonical mark maps remain authoritative after reconnect; ambiguous short fragments are not hydrated onto guessed text.
+- Review Room open context carries stored display names and actor-label mappings while persisted marks keep UUID-backed actor IDs. Existing UUID-only owners fall back to “Document owner,” and identities have a rename API.
+- Suggestions use deterministic, accessible per-actor colors in both the editor and Review cards while operation meaning remains visible through line style.
+- Recovery telemetry records probe, provider generation, access epoch, recovery outcome, unhealthy duration, unsynced count, edit-gate state, and request correlation without document text or tokens. Prolonged recovery shows an editing-paused message; exhausted recovery offers Retry and Copy diagnostics.
+- Docker builds preserve Git metadata when an explicit build arg is absent, so `/health` can report the deployed commit instead of `uncommitted`.
+
+The architectural invariants and regression contract live in `docs/review-room-suggestion-convergence-plan.md` and must be read before changing collaboration, reconnect, hydration, or mark logic.
+
 ## Product Direction
 
 Review Room should own the page chrome. Standalone shared-document controls remain useful for direct document links, but they should use Review Room branding and stay out of the way when a document is opened from Review Room.
@@ -67,12 +79,16 @@ Owner-facing collaborator UI slice implemented:
 - Header wiring coverage pins the typed member client, Share menu entry, Collaborators modal, and role-gated cockpit affordances.
 - Local browser smoke verified the owner flow: Share menu -> Manage collaborators -> add commenter -> copyable collaborator link.
 
-Work items:
+Completed in the June 19 identity/clarity slice:
 
-- Carry current Review Room identity into dashboard/editor UI state explicitly, not only through tokens and local defaults.
-- Finish hiding or disabling remaining document actions the current role cannot use: title editing, comment/reply/resolve, suggestion accept/reject, and sharing/member controls outside the modal.
-- Extend focused tests across owner/editor/commenter/viewer behavior for comments, suggestions, title updates, tasks, baselines, and share/member controls.
-- Add one local browser verification pass for a non-owner role opening the same Review Room document.
+- Current Review Room identity is explicit in editor/open-context state, with human-readable names separated from stable actor IDs.
+- Owner/editor/commenter/viewer behavior is covered across title updates, comments, suggestions, tasks, baselines, member management, and role-scoped open links.
+- Independent-browser coverage verifies owner/editor identity, presence, suggestion colors, and the complete suggestion decision matrix.
+
+Remaining permissions work:
+
+- Replace browser-local seeded identities with session-backed accounts and authenticated profile management.
+- Re-check every affordance against capabilities as new controls are added; permission behavior should stay centralized rather than inferred from display state.
 
 ## Phase 2 Fly.io Migration Closeout
 
@@ -94,6 +110,15 @@ Migration closeout is complete:
 - Fly is treated as a fresh production start unless a future migration/export-import slice explicitly moves existing Vercel/Turso documents into the Fly volume.
 
 ## Following Slices
+
+### Recommended Next Slice: Session-Backed Identity
+
+- Add real authenticated human sessions while preserving existing Review Room identity IDs and document membership.
+- Make display-name editing a first-class profile action rather than an API-only path.
+- Define account recovery, invitation acceptance, and browser/device continuity before adding broader workspace collaboration.
+- Keep document authority, mark identity, and live-collab transport unchanged.
+
+This is the preferred deeper feature slice. Small UI polish can continue opportunistically, but another reconnect/Yjs refactor is not justified while the convergence contract is stable.
 
 ### Workspace And Permissions
 
