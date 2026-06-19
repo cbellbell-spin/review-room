@@ -16,10 +16,12 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
 const root = process.cwd();
 const indexHtml = readFileSync(path.join(root, 'src/index.html'), 'utf8');
 const editorSource = readFileSync(path.join(root, 'src/editor/index.ts'), 'utf8');
+const serverIndexSource = readFileSync(path.join(root, 'server/index.ts'), 'utf8');
 const reviewPanelSource = readFileSync(path.join(root, 'src/review-room/review-panel.ts'), 'utf8');
 const reviewItemsSource = readFileSync(path.join(root, 'src/review-room/review-items.ts'), 'utf8');
 const reviewTokensSource = readFileSync(path.join(root, 'src/review-room/tokens.ts'), 'utf8');
 const shareClientSource = readFileSync(path.join(root, 'src/bridge/share-client.ts'), 'utf8');
+const collabClientSource = readFileSync(path.join(root, 'src/bridge/collab-client.ts'), 'utf8');
 const suggestionsSource = readFileSync(path.join(root, 'src/editor/plugins/suggestions.ts'), 'utf8');
 const markPopoverSource = readFileSync(path.join(root, 'src/editor/plugins/mark-popover.ts'), 'utf8');
 const selectionBarSource = readFileSync(path.join(root, 'src/editor/plugins/mark-selection-bar.ts'), 'utf8');
@@ -63,6 +65,7 @@ assert(
     && reviewPanelSource.includes('Review selected text')
     && editorSource.includes('this.addReviewRoomSelectionComment(selection, text)')
     && reviewPanelSource.includes('host.addSelectionComment(activeSelection, textarea.value)')
+    && reviewPanelSource.includes('const persisted = await host.persistReviewMarks();')
     && reviewPanelSource.includes("top:calc(var(--review-room-bar-height, 64px) + 8px);right:8px;bottom:8px;")
     && reviewPanelSource.includes('width:min(440px, calc(100dvw - 16px));max-width:calc(100vw - 16px);')
     && reviewPanelSource.includes('flex:1 1 auto;min-width:0;')
@@ -92,7 +95,8 @@ assert(
     && reviewPanelSource.includes('Show details')
     && reviewPanelSource.includes('changeKindLabel(rowView.changeKind)')
     && markPopoverSource.includes('proof?.isReviewRoomRuntime?.()')
-    && markPopoverSource.includes('proof.openReviewRoomReviewSidebar({ focusMarkId: markId })'),
+    && markPopoverSource.includes('void proof.openReviewRoomReviewSidebar({')
+    && markPopoverSource.includes('focusMarkId: markId'),
   'Expected Review Room comment threads and accepted suggestion history to open inside the Review sidebar',
 );
 assert(
@@ -121,6 +125,8 @@ assert(
     && editorSource.includes('shareClient.updateReviewRoomTaskStatus(taskId, status)')
     && editorSource.includes('filterOpenReviewAuditEvents(history.events)')
     && editorSource.includes('1 direct change to review')
+    && markPopoverSource.includes("mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace'")
+    && markPopoverSource.includes("initialTab: mark.kind === 'comment' ? 'comments' : 'suggestions'")
     && reviewPanelSource.includes('renderTasks(tasks)')
     && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'completed')")
     && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'dismissed')")
@@ -133,6 +139,12 @@ assert(
     && reviewPanelSource.includes('Changes since baseline')
     && reviewItemsSource.includes('Created baseline'),
   'Expected share client and sidebar host to expose typed Review Room history, task, and baseline loading/actions',
+);
+assert(
+  markPopoverSource.includes('void proof.openReviewRoomReviewSidebar({ useSelection: true, initialTab: \'comments\' });')
+    && markPopoverSource.includes('TextSelection.create(view.state.doc, from, to)')
+    && selectionBarSource.includes('openReviewRoomMarkInSidebar(mark.id, \'suggestions\')'),
+  'Expected Review Room selection comments and selection-created suggestions to route through the Review sidebar instead of the SDK popover',
 );
 assert(
   shareClientSource.includes('ReviewRoomDocumentMember')
@@ -201,6 +213,10 @@ assert(
   'Expected hosted Review Room mode to allow local edits for manual save',
 );
 assert(
+  editorSource.includes('&& !this.pendingCollabRebindOnSync\n      && !this.isCollabRemoteSettling()\n      && !awaitingTemplateSeed'),
+  'Expected live collab editing to stay gated until deferred rebind/reset and remote update settling have completed',
+);
+assert(
   editorSource.includes('const localMetadata = getMarkMetadataWithQuotes(view.state);')
     && editorSource.includes('mergePendingServerMarks(\n      localMetadata,\n      this.lastReceivedServerMarks,'),
   'Expected Review Room mark sync to push quote/range-enriched metadata instead of raw plugin metadata',
@@ -208,6 +224,66 @@ assert(
 assert(
   editorSource.includes('if (this.isShareMode && !this.reviewRoomRestSaveMode) {\n      this.flushShareMarks();\n    }'),
   'Expected Review Room manual-save mode to avoid marks-only REST pushes before suggested text is saved',
+);
+assert(
+  editorSource.includes('const reviewRoomIdentityId = typeof context?.reviewRoom?.identityId === \'string\'')
+    && editorSource.includes('Review Room member identity is missing')
+    && editorSource.includes('this.shareViewerName = reviewRoomIdentityId ?? existingViewerName')
+    && editorSource.includes('setCurrentActorValue(reviewRoomIdentityId ? `human:${reviewRoomIdentityId}`')
+    && editorSource.includes('!existingViewerName && !reviewRoomIdentityId'),
+  'Expected Review Room member identity to drive the current actor instead of the global viewer-name prompt',
+);
+assert(
+  editorSource.includes("copy.textContent = 'Copy link';")
+    && editorSource.includes("member.openPath && member.openPath.includes('token=')")
+    && editorSource.includes('this.absoluteReviewRoomOpenUrl(member.openPath)'),
+  'Expected existing Review Room member rows to expose copyable tokenized collaborator links',
+);
+assert(
+  editorSource.includes("} else {\n        addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));\n      }"),
+  'Expected Review Room to expose only member-specific collaborator links instead of copying the current member token',
+);
+assert(
+  !editorSource.includes('const ok = await shareClient.pushUpdate(snapshot.markdown, snapshot.marks, getCurrentActor());'),
+  'Expected live-collab review persistence to avoid full-document REST snapshots before suggestion decisions',
+);
+assert(
+  editorSource.includes('private scheduleLatestCollabMarksToEditor(): void')
+    && editorSource.includes('activelyTyping = view.hasFocus() && (Date.now() - this.lastLocalTypingAt) < 600;'),
+  'Expected remote mark-anchor application to wait until active local typing settles',
+);
+assert(
+  suggestionsSource.includes("newTr.setMeta('suggestions-wrapped', true)")
+    && suggestionsSource.includes('if (authoredType) tr.removeMark(from, to, authoredType);')
+    && readFileSync(path.join(root, 'src/editor/plugins/authored-tracker.ts'), 'utf8').includes("tr.getMeta('suggestions-wrapped')"),
+  'Expected suggested typing to exclude direct-authorship marks',
+);
+assert(
+  editorSource.includes('private getReviewRoomSuggestionFinalizeBlockReason(): string | null')
+    && editorSource.includes("this.collabConnectionStatus !== 'connected'")
+    && editorSource.includes('this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0')
+    && editorSource.includes('getSuggestionFinalizeBlockReason: () => this.getReviewRoomSuggestionFinalizeBlockReason()')
+    && reviewPanelSource.includes('const waitForSuggestionFinalizeReady = async ()')
+    && reviewPanelSource.includes('await waitForSuggestionFinalizeReady()'),
+  'Expected Review Room accept/reject to be blocked while live collaboration is unhealthy or unsynced',
+);
+assert(
+  collabClientSource.includes('function isPermissionDeniedClose(event: unknown): boolean')
+    && collabClientSource.includes('code === 4401')
+    && collabClientSource.includes("this.terminalCloseReason = 'permission-denied';")
+    && editorSource.includes('collabClient.lastAuthenticationFailureReason')
+    && editorSource.includes('this.refreshCollabSessionAndReconnect(this.shouldPreservePendingLocalCollabState())'),
+  'Expected expired collab session tokens to trigger a state-preserving session refresh/reconnect',
+);
+assert(
+  !editorSource.includes('if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) return;\n    if (this.hasRecentLocalEditorInput()) return;')
+    && editorSource.includes('if (this.hasRecentLocalEditorInput()) return;\n    this.collabRemoteSettlingUntilMs = Date.now() + COLLAB_REMOTE_EDIT_SETTLE_MS;'),
+  'Expected remote collab updates to gate local edits even while sync counters are active',
+);
+assert(
+  serverIndexSource.includes("import { metricsApiRoutes } from './metrics.js';")
+    && serverIndexSource.includes("app.use('/api/metrics', metricsApiRoutes);"),
+  'Expected client metrics routes to be mounted under /api/metrics',
 );
 assert(
   editorSource.includes('private pendingCollabMarksMetadata: Record<string, StoredMark> | null = null;')
@@ -223,7 +299,8 @@ assert(
     && suggestionsSource.includes('const insertSuggestionId = generateMarkId();')
     && suggestionsSource.includes("kind: 'delete',")
     && suggestionsSource.includes('newTr.insertText(insertedText, safeTo);')
-    && suggestionsSource.includes("suggestionType.create({ id: insertSuggestionId, kind: 'insert', by: actor })")
+    && suggestionsSource.includes('markInsertedSuggestionRange(')
+    && suggestionsSource.includes("{ id: insertSuggestionId, kind: 'insert', by: actor }")
     && suggestionsSource.includes("buildSuggestionMetadata('insert', actor, insertedText, createdAt)"),
   'Expected typed replacement suggestions to render as visible red delete plus green insert text',
 );
@@ -318,6 +395,42 @@ assert(
 assert(
   replacementSegments.some((segment) => segment.text === 'Hello' && segment.kind === 'insert'),
   'Expected typed replacement text to become a visible insert suggestion',
+);
+
+const oldSuggestionMark = suggestionsSchema.marks.proofSuggestion.create({
+  id: 'old-suggestion',
+  kind: 'insert',
+  by: 'human:CJ-1',
+});
+const inheritedSuggestionState = EditorState.create({
+  schema: suggestionsSchema,
+  doc: suggestionsSchema.node('doc', null, [
+    suggestionsSchema.node('paragraph', null, [
+      suggestionsSchema.text('Start '),
+      suggestionsSchema.text('old suggestion', [oldSuggestionMark]),
+      suggestionsSchema.text('.'),
+    ]),
+  ]),
+});
+const inheritedSuggestionTr = inheritedSuggestionState.tr.insertText('2nd editor ', 11);
+const wrappedInheritedSuggestionTr = wrapTransactionForSuggestions(inheritedSuggestionTr, inheritedSuggestionState, true);
+const insertedSuggestionMarks: Array<{ text: string; ids: string[] }> = [];
+wrappedInheritedSuggestionTr.doc.descendants((node) => {
+  if (!node.isText || !node.text?.includes('2nd editor')) return true;
+  insertedSuggestionMarks.push({
+    text: node.text,
+    ids: node.marks
+      .filter((mark) => mark.type.name === 'proofSuggestion')
+      .map((mark) => String(mark.attrs.id)),
+  });
+  return true;
+});
+
+assertEqual(insertedSuggestionMarks.length, 1, 'Expected inserted editor text to remain one text segment');
+assertEqual(insertedSuggestionMarks[0]?.ids.length, 1, 'Expected inserted editor text to have exactly one suggestion mark');
+assert(
+  insertedSuggestionMarks[0]?.ids[0] !== 'old-suggestion',
+  'Expected newly typed suggestion text not to inherit the adjacent older suggestion id',
 );
 
 console.log('✓ Review Room unified header wiring');

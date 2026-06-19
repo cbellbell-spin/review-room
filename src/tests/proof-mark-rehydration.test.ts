@@ -25,6 +25,17 @@ function parseStoredMarks(raw: unknown): Record<string, StoredMark> {
   }
 }
 
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = haystack.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
+
 function buildRelativeAnchors(baseMarkdown: string, quote: string): { startRel: string; endRel: string; range: { from: number; to: number } } {
   const start = baseMarkdown.indexOf(quote);
   if (start < 0) {
@@ -462,6 +473,168 @@ async function run(): Promise<void> {
       'Expected authoritative fallback accept to preserve unrelated comment metadata even when row marks were stale',
     );
 
+    const typedInsertFallbackSlug = `rehydrate-typed-insert-unique-${Math.random().toString(36).slice(2, 10)}`;
+    const typedInsertId = 'typed-insert-no-anchor';
+    const typedInsertContent = 'So far we found 1 bug';
+    const typedInsertMarkdown = `# Typed insert fallback\n\nTHIS WILL be a big test of coding agents\n\n${typedInsertContent}`;
+    db.createDocument(
+      typedInsertFallbackSlug,
+      typedInsertMarkdown,
+      canonicalizeStoredMarks({
+        [typedInsertId]: {
+          kind: 'insert',
+          by: 'human:test',
+          createdAt,
+          content: typedInsertContent,
+          status: 'pending',
+        } satisfies StoredMark,
+      }),
+      'Unique typed insert accept',
+    );
+    const typedInsertFallbackResult = await executeDocumentOperationAsync(typedInsertFallbackSlug, 'POST', '/marks/accept', {
+      markId: typedInsertId,
+      by: 'human:test',
+    });
+    assertEqual(
+      typedInsertFallbackResult.status,
+      200,
+      `Expected unique authoritative typed insert accept to succeed, got ${typedInsertFallbackResult.status}: ${JSON.stringify(typedInsertFallbackResult.body)}`,
+    );
+    const typedInsertFallbackDoc = db.getDocumentBySlug(typedInsertFallbackSlug);
+    assert(
+      countOccurrences(typedInsertFallbackDoc?.markdown ?? '', typedInsertContent) === 1,
+      `Expected unique typed insert accept to keep body text exactly once, got ${JSON.stringify(typedInsertFallbackDoc?.markdown)}`,
+    );
+    const typedInsertFallbackMarks = parseStoredMarks(typedInsertFallbackDoc?.marks);
+    assert(
+      !(typedInsertId in typedInsertFallbackMarks),
+      'Expected unique typed insert accept to remove pending insert metadata',
+    );
+
+    const splitAuthoredInsertSlug = `rehydrate-split-authored-insert-${Math.random().toString(36).slice(2, 10)}`;
+    const splitAuthoredInsertId = 'm1781796718124_3';
+    const splitAuthoredInsertText = 'first we draft some text';
+    db.createDocument(
+      splitAuthoredInsertSlug,
+      [
+        `<span data-proof="suggestion" data-id="${splitAuthoredInsertId}" data-by="human:browser-repro" data-kind="insert">`,
+        '<span data-proof="authored" data-by="human:browser-repro">f</span>',
+        '<span data-proof="authored" data-by="human:browser-repro">irst we draft some text</span>',
+        '</span>',
+      ].join(''),
+      canonicalizeStoredMarks({
+        [splitAuthoredInsertId]: {
+          kind: 'insert',
+          by: 'human:browser-repro',
+          createdAt,
+          content: splitAuthoredInsertText,
+          quote: splitAuthoredInsertText,
+          status: 'pending',
+          // Deliberately stale: this reproduces the hosted yjs_fallback shape
+          // where the text is authoritative but the stored PM anchors no longer hydrate.
+          startRel: 'char:500',
+          endRel: 'char:525',
+          range: { from: 500, to: 525 },
+        } satisfies StoredMark,
+      }),
+      'Split authored spans around a visible pending insert',
+    );
+    const splitAuthoredInsertResult = await executeDocumentOperationAsync(
+      splitAuthoredInsertSlug,
+      'POST',
+      '/marks/accept',
+      { markId: splitAuthoredInsertId, by: 'human:browser-repro' },
+    );
+    assertEqual(
+      splitAuthoredInsertResult.status,
+      200,
+      `Expected split-authored visible insert accept to succeed, got ${splitAuthoredInsertResult.status}: ${JSON.stringify(splitAuthoredInsertResult.body)}`,
+    );
+    const splitAuthoredInsertDoc = db.getDocumentBySlug(splitAuthoredInsertSlug);
+    assertEqual(
+      countOccurrences(stripAllProofSpanTags(splitAuthoredInsertDoc?.markdown ?? ''), splitAuthoredInsertText),
+      1,
+      'Expected split-authored visible insert to remain exactly once after accept',
+    );
+    assert(
+      !(splitAuthoredInsertId in parseStoredMarks(splitAuthoredInsertDoc?.marks)),
+      'Expected split-authored pending insert metadata to be finalized',
+    );
+    assert(
+      !(splitAuthoredInsertDoc?.markdown ?? '').includes(`data-id="${splitAuthoredInsertId}"`),
+      'Expected split-authored pending insert wrapper to be removed from canonical markdown',
+    );
+
+    const ambiguousInsertSlug = `rehydrate-ambiguous-visible-insert-${Math.random().toString(36).slice(2, 10)}`;
+    const ambiguousInsertId = 'ambiguous-visible-insert';
+    const ambiguousInsertText = 'repeat me';
+    db.createDocument(
+      ambiguousInsertSlug,
+      `${ambiguousInsertText}\n\n${ambiguousInsertText}`,
+      canonicalizeStoredMarks({
+        [ambiguousInsertId]: {
+          kind: 'insert',
+          by: 'human:test',
+          createdAt,
+          content: ambiguousInsertText,
+          quote: ambiguousInsertText,
+          status: 'pending',
+          startRel: 'char:500',
+          endRel: 'char:509',
+          range: { from: 500, to: 509 },
+        } satisfies StoredMark,
+      }),
+      'Ambiguous visible insert must not guess',
+    );
+    const ambiguousInsertResult = await executeDocumentOperationAsync(ambiguousInsertSlug, 'POST', '/marks/accept', {
+      markId: ambiguousInsertId,
+      by: 'human:test',
+    });
+    assertEqual(
+      ambiguousInsertResult.status,
+      409,
+      `Expected repeated visible insert with stale anchors to remain a conflict, got ${ambiguousInsertResult.status}`,
+    );
+    assert(
+      parseStoredMarks(db.getDocumentBySlug(ambiguousInsertSlug)?.marks)[ambiguousInsertId]?.status === 'pending',
+      'Expected ambiguous visible insert to remain pending for reconciliation',
+    );
+
+    const typedInsertBoundarySlug = `rehydrate-typed-insert-boundary-${Math.random().toString(36).slice(2, 10)}`;
+    const typedInsertBoundaryId = 'typed-insert-boundary';
+    db.createDocument(
+      typedInsertBoundarySlug,
+      'I am really worried how deep the bug isyou and me both\n',
+      canonicalizeStoredMarks({
+        [typedInsertBoundaryId]: {
+          kind: 'insert',
+          by: 'human:test',
+          createdAt,
+          content: ' you and me both',
+          quote: 'you and me both',
+          status: 'pending',
+          range: { from: 40, to: 55 },
+          startRel: 'char:39',
+          endRel: 'char:54',
+        } satisfies StoredMark,
+      }),
+      'Typed insert boundary accept',
+    );
+    const typedInsertBoundaryResult = await executeDocumentOperationAsync(typedInsertBoundarySlug, 'POST', '/marks/accept', {
+      markId: typedInsertBoundaryId,
+      by: 'human:test',
+    });
+    assertEqual(
+      typedInsertBoundaryResult.status,
+      200,
+      `Expected typed insert boundary accept to succeed, got ${typedInsertBoundaryResult.status}: ${JSON.stringify(typedInsertBoundaryResult.body)}`,
+    );
+    const typedInsertBoundaryDoc = db.getDocumentBySlug(typedInsertBoundarySlug);
+    assert(
+      stripAllProofSpanTags(typedInsertBoundaryDoc?.markdown ?? '').includes('bug is you and me both'),
+      `Expected typed insert boundary accept to restore a word boundary, got ${JSON.stringify(typedInsertBoundaryDoc?.markdown)}`,
+    );
+
     const splitRejectFixture = buildSplitFixture('reject');
     const splitRejectSlug = `rehydrate-split-reject-${Math.random().toString(36).slice(2, 10)}`;
     db.createDocument(splitRejectSlug, splitRejectFixture.markdown, splitRejectFixture.marks, 'Split suggestion reject');
@@ -636,6 +809,111 @@ async function run(): Promise<void> {
     assert(
       Object.values(missingAuthoredMarks).some((mark) => mark.kind === 'authored'),
       'Expected accept to backfill authored metadata from serialized markdown during structured rehydration',
+    );
+
+    const virtualAuthoredSlug = `rehydrate-virtual-authored-${Math.random().toString(36).slice(2, 10)}`;
+    const virtualAuthoredSuggestionId = 'virtual-authored-suggestion';
+    const virtualAuthoredText = 'We love to test. yes we do';
+    const virtualAuthoredSuggestionQuote = '. oh, boy we love to test';
+    const virtualAuthoredReplacement = '. oh, boy we accepted this test';
+    const virtualAuthoredBase = `${virtualAuthoredText} ${virtualAuthoredSuggestionQuote}`;
+    const virtualAuthoredAnchors = buildRelativeAnchors(virtualAuthoredBase, virtualAuthoredSuggestionQuote);
+    db.createDocument(
+      virtualAuthoredSlug,
+      [
+        `<SPAN data-proof="authored" data-by="human:CJ-1">${virtualAuthoredText}</SPAN> `,
+        `<span data-proof="suggestion" data-id="${virtualAuthoredSuggestionId}" data-by="human:CJ-1" data-kind="replace">${virtualAuthoredSuggestionQuote}</span>`,
+      ].join(''),
+      canonicalizeStoredMarks({
+        [virtualAuthoredSuggestionId]: {
+          kind: 'replace',
+          by: 'human:CJ-1',
+          createdAt,
+          quote: virtualAuthoredSuggestionQuote,
+          content: virtualAuthoredReplacement,
+          status: 'pending',
+          startRel: virtualAuthoredAnchors.startRel,
+          endRel: virtualAuthoredAnchors.endRel,
+          range: virtualAuthoredAnchors.range,
+        } satisfies StoredMark,
+      }),
+      'Ignore virtual authored requirements during suggestion finalization',
+    );
+
+    const virtualAuthoredAccept = await executeDocumentOperationAsync(virtualAuthoredSlug, 'POST', '/marks/accept', {
+      markId: virtualAuthoredSuggestionId,
+      by: 'human:test',
+    });
+    assertEqual(
+      virtualAuthoredAccept.status,
+      200,
+      `Expected accept to ignore missing serialized-authored requirements when target suggestion hydrates, got ${virtualAuthoredAccept.status}`,
+    );
+    const virtualAuthoredDoc = db.getDocumentBySlug(virtualAuthoredSlug);
+    const virtualAuthoredClean = stripAllProofSpanTags(virtualAuthoredDoc?.markdown ?? '');
+    assert(
+      virtualAuthoredClean.includes(`${virtualAuthoredText} ${virtualAuthoredReplacement}`),
+      'Expected accept to apply replacement even when authored provenance is only a virtual serialized requirement',
+    );
+
+    const unrelatedMissingSlug = `rehydrate-unrelated-missing-${Math.random().toString(36).slice(2, 10)}`;
+    const unrelatedTargetId = 'unrelated-missing-target';
+    const unrelatedMissingId = 'm1781625396938_6';
+    const unrelatedQuote = 'Target text to accept.';
+    const unrelatedReplacement = 'Accepted target text.';
+    const unrelatedBase = `${unrelatedQuote} Stable body text.`;
+    const unrelatedTargetAnchors = buildRelativeAnchors(unrelatedBase, unrelatedQuote);
+    db.createDocument(
+      unrelatedMissingSlug,
+      [
+        `<span data-proof="suggestion" data-id="${unrelatedTargetId}" data-by="human:CJB" data-kind="replace">${unrelatedQuote}</span> `,
+        'Stable body text.',
+      ].join(''),
+      canonicalizeStoredMarks({
+        [unrelatedTargetId]: {
+          kind: 'replace',
+          by: 'human:CJB',
+          createdAt,
+          quote: unrelatedQuote,
+          content: unrelatedReplacement,
+          status: 'pending',
+          startRel: unrelatedTargetAnchors.startRel,
+          endRel: unrelatedTargetAnchors.endRel,
+          range: unrelatedTargetAnchors.range,
+        } satisfies StoredMark,
+        [unrelatedMissingId]: {
+          kind: 'insert',
+          by: 'human:CJB',
+          createdAt,
+          quote: 'wou the plot be',
+          content: 'wou the plot be',
+          status: 'pending',
+          startRel: 'char:500',
+          endRel: 'char:515',
+          range: { from: 500, to: 515 },
+        } satisfies StoredMark,
+      }),
+      'Ignore unrelated missing pending mark during suggestion finalization',
+    );
+
+    const unrelatedMissingAccept = await executeDocumentOperationAsync(unrelatedMissingSlug, 'POST', '/marks/accept', {
+      markId: unrelatedTargetId,
+      by: 'human:test',
+    });
+    assertEqual(
+      unrelatedMissingAccept.status,
+      200,
+      `Expected accept to ignore unrelated missing pending mark, got ${unrelatedMissingAccept.status}`,
+    );
+    const unrelatedMissingDoc = db.getDocumentBySlug(unrelatedMissingSlug);
+    assert(
+      stripAllProofSpanTags(unrelatedMissingDoc?.markdown ?? '').includes(`${unrelatedReplacement} Stable body text.`),
+      'Expected unrelated-missing regression accept to apply the target replacement',
+    );
+    const unrelatedMissingMarks = parseStoredMarks(unrelatedMissingDoc?.marks);
+    assert(
+      unrelatedMissingId in unrelatedMissingMarks,
+      'Expected unrelated missing pending mark metadata to be preserved for later resolution',
     );
 
     const authoredBeforeText = 'Lead authored text.';

@@ -109,6 +109,18 @@ function isRangeValid(view: EditorView, range: MarkRange | null): range is MarkR
   return range.from >= 0 && range.to > range.from && range.to <= view.state.doc.content.size;
 }
 
+function getProofEditorApi(): Window['proof'] | null {
+  if (typeof window === 'undefined') return null;
+  return window.proof ?? null;
+}
+
+function openReviewRoomMarkInSidebar(markId: string, initialTab: 'comments' | 'suggestions'): boolean {
+  const proof = getProofEditorApi();
+  if (!proof?.isReviewRoomRuntime?.() || !proof.openReviewRoomReviewSidebar) return false;
+  void proof.openReviewRoomReviewSidebar({ focusMarkId: markId, initialTab });
+  return true;
+}
+
 class MarkSelectionBarController {
   private view: EditorView;
   private bar: HTMLDivElement;
@@ -336,7 +348,8 @@ class MarkSelectionBarController {
       const replacement = window.prompt('Suggest replacement', original);
       if (replacement === null || replacement === original) return;
       const quote = quoteForRange(this.view, range);
-      suggestReplace(this.view, quote, getCurrentActor(), replacement, range);
+      const mark = suggestReplace(this.view, quote, getCurrentActor(), replacement, range);
+      if (mark) openReviewRoomMarkInSidebar(mark.id, 'suggestions');
     });
 
     this.bar.appendChild(commentButton);

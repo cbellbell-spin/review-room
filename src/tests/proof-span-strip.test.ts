@@ -3,6 +3,7 @@ import {
   stripAllProofSpanTags,
   stripAllProofSpanTagsWithReplacements,
   stripProofSpanTags,
+  unwrapProofSpanById,
 } from '../../server/proof-span-strip.ts';
 
 function assert(condition: boolean, message: string): void {
@@ -82,6 +83,22 @@ function run(): void {
     splitBase,
     'Before Alpha Beta Gamma Delta Epsilon Zeta Eta After',
     'Expected replacement-aware stripping to rebuild split suggestion spans once per logical mark',
+  );
+
+  const nestedSuggestion = [
+    '<span data-proof="suggestion" data-id="s-nested" data-kind="insert">',
+    '<span data-proof="authored" data-proof-id="a1" data-by="human:test">nested text</span>',
+    '</span>',
+  ].join('');
+  assertEqual(
+    unwrapProofSpanById(nestedSuggestion, 's-nested'),
+    '<span data-proof="authored" data-proof-id="a1" data-by="human:test">nested text</span>',
+    'Expected targeted unwrap to preserve nested authored markup exactly',
+  );
+  assertEqual(
+    unwrapProofSpanById(nestedSuggestion, 'missing'),
+    null,
+    'Expected targeted unwrap to leave unrelated spans untouched',
   );
 
   console.log('✓ proof span stripping preserves non-authored marks');

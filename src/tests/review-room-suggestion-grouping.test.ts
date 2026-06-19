@@ -99,6 +99,35 @@ const separatedGroups = getReviewRoomSuggestionGroups({
 
 assert.equal(separatedGroups.length, 2, 'non-adjacent insert suggestions should stay separate');
 
+const temporallySeparatedGroups = getReviewRoomSuggestionGroups({
+  markdown: [
+    '<span data-proof="suggestion" data-id="old" data-kind="insert">now suggestion with a comment</span>',
+    '<span data-proof="suggestion" data-id="new" data-kind="insert"> 2nd editor suggestion.</span>',
+  ].join(''),
+  marks: {
+    old: {
+      kind: 'insert',
+      by: 'human:CJ-1',
+      content: 'now suggestion with a comment',
+      status: 'pending',
+      createdAt: '2026-06-16T20:00:00.000Z',
+    },
+    new: {
+      kind: 'insert',
+      by: 'human:CJ-1',
+      content: ' 2nd editor suggestion.',
+      status: 'pending',
+      createdAt: '2026-06-16T20:01:00.000Z',
+    },
+  },
+});
+
+assert.equal(temporallySeparatedGroups.length, 2, 'separate insert bursts from the same human should not merge just because they are adjacent');
+assert.deepEqual(
+  temporallySeparatedGroups.map((group) => group.content),
+  ['now suggestion with a comment', ' 2nd editor suggestion.'],
+);
+
 const paragraphBreakGroups = getReviewRoomSuggestionGroups({
   markdown: 'First paragraph suggestion.\n\nSecond paragraph suggestion.',
   marks: {
@@ -108,6 +137,40 @@ const paragraphBreakGroups = getReviewRoomSuggestionGroups({
 });
 
 assert.equal(paragraphBreakGroups.length, 2, 'insert suggestions across paragraph breaks should stay separate');
+
+const screenshotMarkdown = 'I am really worried how deep the bug is you and me both\n\nso far this looks ok.';
+const screenshotVisibleText = screenshotMarkdown.replace(/\n{2,}/g, '\n');
+function anchoredInsert(content: string, text: string, occurrence = 0) {
+  let from = -1;
+  let searchFrom = 0;
+  for (let index = 0; index <= occurrence; index += 1) {
+    from = screenshotVisibleText.indexOf(text, searchFrom);
+    searchFrom = from + text.length;
+  }
+  assert(from >= 0, `Expected test text to exist: ${text}`);
+  return {
+    kind: 'insert' as const,
+    by: 'human:CJ-1',
+    content,
+    status: 'pending' as const,
+    startRel: `char:${from}`,
+    endRel: `char:${from + text.length}`,
+  };
+}
+const screenshotGroups = getReviewRoomSuggestionGroups({
+  markdown: screenshotMarkdown,
+  marks: {
+    a: anchoredInsert('you', 'you'),
+    b: anchoredInsert('and', 'and'),
+    c: anchoredInsert('me', 'me'),
+    d: anchoredInsert('both', 'both'),
+    e: anchoredInsert('so far this looks ok.', 'so far this looks ok.'),
+  },
+});
+
+assert.equal(screenshotGroups.length, 2, 'paragraph-breaking insert chunks should not render as one mashed suggestion');
+assert.equal(screenshotGroups[0]?.content, 'you and me both');
+assert.equal(screenshotGroups[1]?.content, 'so far this looks ok.');
 
 const mixedKindGroups = getReviewRoomSuggestionGroups({
   markdown: '',

@@ -604,6 +604,65 @@ test('reject tombstones stale server suggestions before dispatch-time marks merg
   assert(!(markId in (pluginState?.metadata ?? {})), 'Dispatch-time marks merge should not resurrect rejected metadata');
 });
 
+test('metadata snapshots preserve stored suggestion actor over stale anchor attrs', () => {
+  const markId = 'm-preserve-suggestion-actor';
+  const suggestionMark = marksSchema.marks.proofSuggestion.create({
+    id: markId,
+    kind: 'insert',
+    by: 'human:CJB',
+  });
+
+  const initialDoc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Hello '),
+      marksSchema.text('2nd editor suggestion', [suggestionMark]),
+    ]),
+  ]);
+
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        if (meta?.type === 'SET_ACTIVE') {
+          return { ...value, activeMarkId: meta.markId ?? null };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: initialDoc,
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'insert',
+        by: 'human:CJ-1',
+        content: '2nd editor suggestion',
+        status: 'pending',
+        createdAt: '2026-06-16T21:00:00.000Z',
+      },
+    },
+  }));
+
+  const snapshot = getMarkMetadataWithQuotes(state);
+  assertEqual(
+    snapshot[markId]?.by,
+    'human:CJ-1',
+    'Snapshot should not rewrite a known suggestion actor from stale document mark attrs',
+  );
+});
+
 test('applyRemoteMarks ignores mismatched relative anchors and falls back to quote', () => {
   const markId = 'm-remote-relative-mismatch';
   const doc = marksSchema.node('doc', null, [
@@ -1306,6 +1365,45 @@ test('applyRemoteMarks rejects quote-less relative anchors', () => {
   assert(!marksAfter.some(mark => mark.id === markId), 'Quote-less relative anchors should not create remote marks');
 });
 
+test('applyRemoteMarks defers ambiguous one-character suggestion hydration', () => {
+  const markId = 'm-remote-partial-suggestion';
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, marksSchema.text('existing suggestion text')),
+    marksSchema.node('paragraph', null, marksSchema.text('s')),
+  ]);
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        return meta?.type === 'SET_METADATA' ? { ...value, metadata: meta.metadata } : value;
+      },
+    },
+  });
+  let state = EditorState.create({ schema: marksSchema, doc, plugins: [marksStatePlugin] });
+  const view = {
+    get state() { return state; },
+    dispatch(tr: any) { state = state.apply(tr); },
+  } as any;
+
+  applyRemoteMarks(view, {
+    [markId]: {
+      kind: 'insert',
+      by: 'human:remote',
+      createdAt: new Date('2026-06-18T00:00:00.000Z').toISOString(),
+      content: 's',
+      quote: 's',
+      status: 'pending',
+      startRel: 'char:9',
+      endRel: 'char:10',
+      range: { from: 10, to: 11 },
+    },
+  });
+
+  assert(!getMarks(state).some(mark => mark.id === markId), 'Ambiguous partial suggestion must not hydrate onto an earlier match');
+});
+
 test('applyRemoteMarks rejects quote-less stored ranges', () => {
   const markId = 'm-remote-range-no-quote';
   const doc = marksSchema.node('doc', null, [
@@ -1952,6 +2050,41 @@ test('mergePendingServerMarks keeps critical local fields when server metadata i
   assertEqual(merged.s1.createdAt, '2026-02-22T17:19:06.487Z', 'Suggestion createdAt should remain stable');
   assertEqual(merged.c1.text, 'Thread body', 'Comment text should not be dropped by partial server payload');
   assertEqual(Boolean(merged.c1.resolved), true, 'Server-provided resolved flag should still apply');
+});
+
+test('mergePendingServerMarks keeps live suggestion content over stale server fragments', () => {
+  const localMetadata = {
+    s1: {
+      kind: 'insert' as const,
+      by: 'human:editor',
+      createdAt: '2026-06-17T21:46:13.800Z',
+      content: ' you and me both',
+      quote: ' you and me both',
+      status: 'pending' as const,
+      range: { from: 40, to: 56 },
+      startRel: 'char:39',
+      endRel: 'char:55',
+    },
+  };
+
+  const serverMetadata = {
+    s1: {
+      kind: 'insert' as const,
+      by: 'human:editor',
+      createdAt: '2026-06-17T21:46:13.800Z',
+      content: ' ',
+      status: 'pending' as const,
+      range: { from: 40, to: 41 },
+      startRel: 'char:39',
+      endRel: 'char:40',
+    },
+  };
+
+  const merged = mergePendingServerMarks(localMetadata, serverMetadata);
+  assertEqual(merged.s1.content, ' you and me both', 'Live suggestion content should win over stale server fragments');
+  assertEqual(merged.s1.quote, ' you and me both', 'Live suggestion quote should be preserved for canonical review display');
+  assertEqual(merged.s1.range?.to, 56, 'Live suggestion range should win over stale server range');
+  assertEqual(merged.s1.status, 'pending', 'Pending server status should still be preserved');
 });
 
 test('canonicalizeStoredMarks collapses equivalent authored duplicates to one canonical id', () => {
@@ -3462,6 +3595,107 @@ test('accept preserves leading whitespace for insert suggestions', () => {
     'Hello [ACCEPT_TEST]',
     `Leading whitespace should be preserved after accept (actual: "${docText}")`
   );
+});
+
+test('accept keeps visible insert text when stored suggestion content is a stale fragment', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'insert' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          content: { default: null },
+          createdAt: { default: null },
+          updatedAt: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+      proofAuthored: {
+        attrs: {
+          by: { default: 'unknown' },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const markId = 'm-insert-stale-fragment';
+  const visibleSuggestion = 'So far we found 1 bug';
+  const suggestionMark = schema.marks.proofSuggestion.create({
+    id: markId,
+    kind: 'insert',
+    by: 'human:test',
+  });
+  const initialDoc = schema.node('doc', null, [
+    schema.node('paragraph', null, [
+      schema.text(visibleSuggestion, [suggestionMark]),
+    ]),
+  ]);
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        if (meta?.type === 'SET_ACTIVE') {
+          return { ...value, activeMarkId: meta.markId ?? null };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: initialDoc,
+    plugins: [marksStatePlugin],
+  });
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'insert' as const,
+        by: 'human:test',
+        createdAt: new Date('2026-06-16T00:00:00.000Z').toISOString(),
+        content: 'bug',
+        status: 'pending' as const,
+      },
+    },
+  }));
+
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(view, markId);
+  assert(accepted, 'Accept should succeed');
+
+  const docText = state.doc.textBetween(0, state.doc.content.size, '\n', '\n');
+  assertEqual(docText, visibleSuggestion, 'Accept should preserve the full visible insert text, not stale stored content');
+  let hasSuggestion = false;
+  state.doc.descendants((node) => {
+    if (!node.isText) return true;
+    hasSuggestion = hasSuggestion || node.marks.some((mark) => mark.type.name === 'proofSuggestion');
+    return true;
+  });
+  assert(!hasSuggestion, 'Suggestion mark should be removed after accept');
 });
 
 test('accept preserves heading style for non-structural full-block replacements', () => {

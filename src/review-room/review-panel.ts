@@ -62,6 +62,7 @@ export type ReviewPanelHost = {
   canCreateBaseline(): boolean;
   canUpdateTasks(): boolean;
   isRealtimeAvailable(): boolean;
+  getSuggestionFinalizeBlockReason?(): string | null;
   onToggle(expanded: boolean): void;
 };
 
@@ -196,6 +197,17 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     const retry = smallButton('Retry');
     retry.onclick = () => { void loadPanel(); };
     renderState('Review items could not load', message, 'error', retry);
+  };
+
+  const waitForSuggestionFinalizeReady = async (): Promise<string | null> => {
+    let blockReason = host.getSuggestionFinalizeBlockReason?.() ?? null;
+    if (!blockReason) return null;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      blockReason = host.getSuggestionFinalizeBlockReason?.() ?? null;
+      if (!blockReason) return null;
+    }
+    return blockReason;
   };
 
   const smallButton = (label: string, variant: 'primary' | 'secondary' | 'danger' = 'secondary'): HTMLButtonElement => {
@@ -852,7 +864,24 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       const runAction = async (action: 'accept' | 'reject') => {
         accept.disabled = true;
         reject.disabled = true;
+        const blockReason = await waitForSuggestionFinalizeReady();
+        if (blockReason) {
+          renderError(blockReason);
+          return;
+        }
+        if (action === 'accept') {
+          const saved = await host.persistReviewMarks();
+          if (!saved) {
+            renderError('Could not save before accepting this suggestion.');
+            return;
+          }
+        }
         for (const suggestionId of suggestion.ids) {
+          const mutationBlockReason = await waitForSuggestionFinalizeReady();
+          if (mutationBlockReason) {
+            renderError(mutationBlockReason);
+            return;
+          }
           const succeeded = action === 'accept'
             ? await host.acceptSuggestion(suggestionId)
             : await host.rejectSuggestion(suggestionId);

@@ -64,9 +64,56 @@ async function run(): Promise<void> {
     await expect(page.locator('details.secondary-details')).not.toHaveAttribute('open', '');
     await waitForNoHorizontalOverflow(page);
 
+    const createResponsePromise = page.waitForResponse((response) => (
+      response.url() === `${baseUrl}/review-room/api/documents`
+      && response.request().method() === 'POST'
+    ));
     await page.getByRole('button', { name: 'Create new document' }).click();
+    const createResponse = await createResponsePromise;
+    const createRequestHeaders = createResponse.request().headers();
+    const browserIdentityHeader = createRequestHeaders['x-review-room-identity-id'];
+    assert(
+      typeof browserIdentityHeader === 'string' && browserIdentityHeader.startsWith('browser-'),
+      `Expected dashboard create request to include a browser Review Room identity, got ${browserIdentityHeader || '<missing>'}`,
+    );
     await page.waitForURL(/\/d\/[^?]+\?rr=1&token=/);
     await page.locator('.ProseMirror').waitFor({ state: 'visible', timeout: 15_000 });
+    const openContextResult = await page.evaluate(async ({ identityId }) => {
+      const url = new URL(window.location.href);
+      const slug = decodeURIComponent(url.pathname.replace(/^\/d\//, '').replace(/\/$/, ''));
+      const documentsResponse = await fetch('/review-room/api/documents', {
+        headers: { 'x-review-room-identity-id': identityId },
+      });
+      const documentsPayload = await documentsResponse.json() as {
+        documents?: Array<{ proofSlug?: string; openPath?: string }>;
+      };
+      const document = (documentsPayload.documents || []).find((entry) => entry.proofSlug === slug);
+      const token = document?.openPath
+        ? new URL(document.openPath, window.location.origin).searchParams.get('token') || ''
+        : '';
+      const response = await fetch(`/api/documents/${encodeURIComponent(slug)}/open-context`, {
+        headers: {
+          'x-share-token': token,
+          'X-Proof-Client-Version': '0.31.0',
+          'X-Proof-Client-Build': 'tests',
+          'X-Proof-Client-Protocol': '3',
+        },
+      });
+      const openContext = await response.json() as { reviewRoom?: { identityId?: string; currentRole?: string } };
+      return {
+        slug,
+        tokenPresent: Boolean(token),
+        documents: documentsPayload.documents || [],
+        openContext,
+      };
+    }, {
+      identityId: browserIdentityHeader,
+    });
+    assert(
+      openContextResult.openContext.reviewRoom?.identityId === browserIdentityHeader,
+      `Expected dashboard-created document to resolve to the browser Review Room identity, got ${openContextResult.openContext.reviewRoom?.identityId || '<missing>'}. Debug: ${JSON.stringify(openContextResult)}`,
+    );
+    assert(openContextResult.openContext.reviewRoom?.currentRole === 'owner', 'Expected dashboard-created document token to resolve to owner role');
     const anonymousPrompt = page.getByRole('button', { name: 'Continue anonymously' });
     if (await anonymousPrompt.isVisible().catch(() => false)) {
       await anonymousPrompt.click();

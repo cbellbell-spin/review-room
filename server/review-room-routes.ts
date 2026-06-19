@@ -201,6 +201,7 @@ function serializeDocument(
 function serializeDocumentMember(
   member: ReviewRoomDocumentMemberRow,
   identity: Awaited<ReturnType<typeof storeGetReviewRoomIdentity>> | null,
+  includeRoleToken: boolean = false,
   includeAccessToken: boolean = false,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
@@ -212,7 +213,7 @@ function serializeDocumentMember(
     shareRole: reviewRoomRoleToShareRole(member.role),
     createdAt: member.created_at,
     updatedAt: member.updated_at,
-    openPath: appendTokenToPath(buildReviewRoomOpenPath(member.proof_slug), includeAccessToken ? member.proof_access_token ?? null : null),
+    openPath: appendTokenToPath(buildReviewRoomOpenPath(member.proof_slug), includeRoleToken ? member.proof_access_token ?? null : null),
   };
   if (includeAccessToken) payload.accessToken = member.proof_access_token ?? null;
   return payload;
@@ -699,6 +700,35 @@ function renderReviewRoomHome(): string {
     const registerForm = document.getElementById('register-form');
     const errorEl = document.getElementById('form-error');
     const registerErrorEl = document.getElementById('register-error');
+    const identityStorageKey = 'proof.reviewRoom.identityId.v1';
+
+    function createBrowserIdentityId() {
+      const randomPart = window.crypto && typeof window.crypto.randomUUID === 'function'
+        ? window.crypto.randomUUID()
+        : String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+      return 'browser-' + randomPart;
+    }
+
+    function getBrowserIdentityId() {
+      try {
+        const existing = window.localStorage.getItem(identityStorageKey);
+        if (existing && existing.trim()) return existing.trim();
+        const created = createBrowserIdentityId();
+        window.localStorage.setItem(identityStorageKey, created);
+        return created;
+      } catch {
+        if (!window.__proofReviewRoomIdentityId) {
+          window.__proofReviewRoomIdentityId = createBrowserIdentityId();
+        }
+        return window.__proofReviewRoomIdentityId;
+      }
+    }
+
+    function reviewRoomHeaders(extra) {
+      return Object.assign({
+        'x-review-room-identity-id': getBrowserIdentityId(),
+      }, extra || {});
+    }
 
     function formatDate(value) {
       try { return new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }); }
@@ -736,8 +766,8 @@ function renderReviewRoomHome(): string {
 
     async function load() {
       const [docsResponse, identityResponse] = await Promise.all([
-        fetch('/review-room/api/documents'),
-        fetch('/review-room/api/identity'),
+        fetch('/review-room/api/documents', { headers: reviewRoomHeaders() }),
+        fetch('/review-room/api/identity', { headers: reviewRoomHeaders() }),
       ]);
       const docsPayload = await docsResponse.json();
       const identityPayload = await identityResponse.json();
@@ -751,7 +781,7 @@ function renderReviewRoomHome(): string {
       newDocumentButton.textContent = 'Creating...';
       const response = await fetch('/review-room/api/documents', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: reviewRoomHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ title: 'Untitled document', markdown: '' }),
       });
       const payload = await response.json();
@@ -786,7 +816,7 @@ function renderReviewRoomHome(): string {
         const title = file.name.replace(/\\.(markdown|md|txt)$/i, '').trim() || 'Imported document';
         const response = await fetch('/review-room/api/documents', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: reviewRoomHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ title, markdown }),
         });
         const payload = await response.json();
@@ -811,7 +841,7 @@ function renderReviewRoomHome(): string {
       const token = document.getElementById('proof-token').value.trim();
       const response = await fetch('/review-room/api/documents/register', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: reviewRoomHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ proofSlug, token }),
       });
       const payload = await response.json();
@@ -1177,11 +1207,12 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/members', async (req
       .filter((identity): identity is NonNullable<typeof identity> => Boolean(identity))
       .map((identity) => [identity.id, identity]),
   );
+  const canManageMembers = access.member?.role === 'owner';
   res.json({
     success: true,
     document: serializeDocument(access.document, access.member),
     currentMember: access.member ? serializeDocumentMember(access.member, identities.get(access.member.identity_id) ?? null) : null,
-    members: members.map((member) => serializeDocumentMember(member, identities.get(member.identity_id) ?? null)),
+    members: members.map((member) => serializeDocumentMember(member, identities.get(member.identity_id) ?? null, canManageMembers)),
   });
 });
 
@@ -1238,7 +1269,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/members', async (re
   res.status(before ? 200 : 201).json({
     success: true,
     document: serializeDocument(access.document, access.member),
-    member: serializeDocumentMember(member, identity, true),
+    member: serializeDocumentMember(member, identity, true, true),
   });
 });
 
@@ -1261,9 +1292,10 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
       workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
       identityId,
     });
+    const reviewRoomAccessToken = hosted.member?.proof_access_token ?? hosted.editorAccess.secret;
     const openPath = appendTokenToPath(
       buildReviewRoomOpenPath(hosted.proofDoc.slug),
-      hosted.member?.proof_access_token ?? hosted.editorAccess.secret,
+      reviewRoomAccessToken,
     );
     res.status(201).json({
       success: true,
@@ -1272,7 +1304,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
       proof: {
         slug: hosted.proofDoc.slug,
         docId: hosted.proofDoc.doc_id,
-        accessToken: hosted.editorAccess.secret,
+        accessToken: reviewRoomAccessToken,
         ownerSecret,
         statePath: `/documents/${encodeURIComponent(hosted.proofDoc.slug)}/state`,
       },
@@ -1308,7 +1340,8 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
     metadata: { source: 'created' },
   });
   const member = await storeGetReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
-  const openPath = appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), member?.proof_access_token ?? access.secret);
+  const reviewRoomAccessToken = member?.proof_access_token ?? access.secret;
+  const openPath = appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), reviewRoomAccessToken);
 
   res.status(201).json({
     success: true,
@@ -1317,7 +1350,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
     proof: {
       slug: proofDoc.slug,
       docId: proofDoc.doc_id,
-      accessToken: access.secret,
+      accessToken: reviewRoomAccessToken,
       ownerSecret,
       statePath: `/documents/${encodeURIComponent(proofDoc.slug)}/state`,
     },

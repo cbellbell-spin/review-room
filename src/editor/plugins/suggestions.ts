@@ -10,7 +10,7 @@ import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } 
 import type { MarkType, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 
 import { marksPluginKey, getMarkMetadata, buildSuggestionMetadata, getMarks } from './marks';
-import { generateMarkId, type InsertData, type MarkRange } from '../../formats/marks';
+import { generateMarkId, type InsertData, type Mark, type MarkRange } from '../../formats/marks';
 import { getCurrentActor } from '../actor';
 
 // Suggestion state
@@ -32,10 +32,26 @@ type SliceNode = {
   content?: SliceNode[];
 };
 
-const COALESCE_WINDOW_MS = 750;
 type InsertCoalesceState = { id: string; from: number; to: number; by: string; updatedAt: number };
+type InsertCoalesceCandidate = { id: string; range: MarkRange; direction: 'append' | 'prepend' };
 
 const lastInsertByActor = new Map<string, InsertCoalesceState>();
+
+function markInsertedSuggestionRange(
+  tr: Transaction,
+  from: number,
+  to: number,
+  suggestionType: MarkType,
+  attrs: { id: string; kind: SuggestionKind; by: string },
+): void {
+  // Text typed at the edge of an existing suggestion can inherit that adjacent
+  // proofSuggestion mark. Scrub inherited suggestion marks first so the new
+  // text belongs to exactly the intended suggestion.
+  tr.removeMark(from, to, suggestionType);
+  const authoredType = tr.doc.type.schema.marks.proofAuthored;
+  if (authoredType) tr.removeMark(from, to, authoredType);
+  tr.addMark(from, to, suggestionType.create(attrs));
+}
 
 function normalizeSuggestionKind(kind: unknown): SuggestionKind {
   if (kind === 'insert' || kind === 'delete' || kind === 'replace') return kind;
@@ -46,41 +62,50 @@ function isWhitespaceOnly(text: string): boolean {
   return /^[\s\u00A0]+$/.test(text);
 }
 
+export function getCoalescableInsertCandidateFromMarks(
+  marks: Mark[],
+  cached: Pick<InsertCoalesceState, 'id'> | null | undefined,
+  pos: number,
+  by: string,
+): InsertCoalesceCandidate | null {
+  if (!cached) return null;
+  const isPendingInsertByActor = (mark: Mark) => {
+    if (mark.kind !== 'insert' || mark.by !== by || !mark.range) return false;
+    const data = mark.data as InsertData | undefined;
+    return !data?.status || data.status === 'pending';
+  };
+  const adjacentCandidate = (mark: Mark): InsertCoalesceCandidate | null => {
+    if (!isPendingInsertByActor(mark) || !mark.range) return null;
+    if (mark.range.to === pos) return { id: mark.id, range: mark.range, direction: 'append' as const };
+    if (mark.range.from === pos) return { id: mark.id, range: mark.range, direction: 'prepend' as const };
+    return null;
+  };
+
+  const match = marks.find(mark => mark.id === cached.id && isPendingInsertByActor(mark));
+  if (!match || !match.range) {
+    // Under live collab latency, remote mark reapplication can briefly rebuild
+    // the mark set around the cursor while the user's typing window is still
+    // active. Fall back to the adjacent same-actor pending insert instead of
+    // splitting every keystroke into its own suggestion.
+    const fallback = marks
+      .map(adjacentCandidate)
+      .find((candidate): candidate is { id: string; range: MarkRange; direction: 'append' | 'prepend' } => Boolean(candidate));
+    if (fallback) return fallback;
+    return null;
+  }
+
+  return adjacentCandidate(match);
+}
+
 function getCoalescableInsertCandidate(
   state: EditorState,
   pos: number,
   by: string,
-  now: number
-): { id: string; range: MarkRange; direction: 'append' | 'prepend' } | null {
+): InsertCoalesceCandidate | null {
   const cached = lastInsertByActor.get(by);
   if (!cached) return null;
-  if (now - cached.updatedAt > COALESCE_WINDOW_MS) {
-    lastInsertByActor.delete(by);
-    return null;
-  }
 
-  const marks = getMarks(state);
-  const match = marks.find(mark => mark.id === cached.id && mark.kind === 'insert' && mark.by === by);
-  if (!match || !match.range) {
-    lastInsertByActor.delete(by);
-    return null;
-  }
-
-  const data = match.data as InsertData | undefined;
-  if (data?.status && data.status !== 'pending') {
-    lastInsertByActor.delete(by);
-    return null;
-  }
-
-  if (match.range.to === pos) {
-    return { id: match.id, range: match.range, direction: 'append' };
-  }
-
-  if (match.range.from === pos) {
-    return { id: match.id, range: match.range, direction: 'prepend' };
-  }
-
-  return null;
+  return getCoalescableInsertCandidateFromMarks(getMarks(state), cached, pos, by);
 }
 
 function collectSliceText(nodes?: SliceNode[]): { text: string; hasNonText: boolean } {
@@ -232,7 +257,7 @@ export function wrapTransactionForSuggestions(
       else if (insertedText && !deletedText) {
         const now = Date.now();
         const whitespaceOnly = isWhitespaceOnly(insertedText);
-        const candidate = getCoalescableInsertCandidate(state, safeFrom, actor, now);
+        const candidate = getCoalescableInsertCandidate(state, safeFrom, actor);
 
         if (candidate && whitespaceOnly) {
           // Whitespace with active candidate: extend the mark to include it.
@@ -244,10 +269,12 @@ export function wrapTransactionForSuggestions(
             : `${insertedText}${existingContent}`;
 
           newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
+          markInsertedSuggestionRange(
+            newTr,
             safeFrom,
             safeFrom + insertedText.length,
-            suggestionType.create({ id: candidate.id, kind: 'insert', by: actor })
+            suggestionType,
+            { id: candidate.id, kind: 'insert', by: actor },
           );
           writeOffset += insertedText.length;
 
@@ -262,8 +289,8 @@ export function wrapTransactionForSuggestions(
 
           lastInsertByActor.set(actor, {
             id: candidate.id,
-            from: candidate.range.from,
-            to: candidate.range.to + insertedText.length,
+            from: candidate.direction === 'prepend' ? candidate.range.from - insertedText.length : candidate.range.from,
+            to: candidate.direction === 'prepend' ? candidate.range.to : candidate.range.to + insertedText.length,
             by: actor,
             updatedAt: now,
           });
@@ -276,10 +303,12 @@ export function wrapTransactionForSuggestions(
             : `${insertedText}${existingContent}`;
 
           newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
+          markInsertedSuggestionRange(
+            newTr,
             safeFrom,
             safeFrom + insertedText.length,
-            suggestionType.create({ id: candidate.id, kind: 'insert', by: actor })
+            suggestionType,
+            { id: candidate.id, kind: 'insert', by: actor },
           );
           writeOffset += insertedText.length;
 
@@ -298,8 +327,8 @@ export function wrapTransactionForSuggestions(
 
           lastInsertByActor.set(actor, {
             id: candidate.id,
-            from: candidate.range.from,
-            to: candidate.range.to + insertedText.length,
+            from: candidate.direction === 'prepend' ? candidate.range.from - insertedText.length : candidate.range.from,
+            to: candidate.direction === 'prepend' ? candidate.range.to : candidate.range.to + insertedText.length,
             by: actor,
             updatedAt: now,
           });
@@ -309,10 +338,12 @@ export function wrapTransactionForSuggestions(
           const createdAt = new Date().toISOString();
 
           newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
+          markInsertedSuggestionRange(
+            newTr,
             safeFrom,
             safeFrom + insertedText.length,
-            suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
+            suggestionType,
+            { id: suggestionId, kind: 'insert', by: actor },
           );
           writeOffset += insertedText.length;
 
@@ -335,10 +366,12 @@ export function wrapTransactionForSuggestions(
           const createdAt = new Date().toISOString();
 
           newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
+          markInsertedSuggestionRange(
+            newTr,
             safeFrom,
             safeFrom + insertedText.length,
-            suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
+            suggestionType,
+            { id: suggestionId, kind: 'insert', by: actor },
           );
           writeOffset += insertedText.length;
 
@@ -370,10 +403,12 @@ export function wrapTransactionForSuggestions(
           const suggestionId = generateMarkId();
           const createdAt = new Date().toISOString();
           newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
+          markInsertedSuggestionRange(
+            newTr,
             safeFrom,
             safeFrom + insertedText.length,
-            suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
+            suggestionType,
+            { id: suggestionId, kind: 'insert', by: actor },
           );
           writeOffset += insertedText.length;
 
@@ -388,10 +423,12 @@ export function wrapTransactionForSuggestions(
           const createdAt = new Date().toISOString();
 
           newTr.replaceWith(safeFrom, safeTo, state.schema.text(insertedText));
-          newTr.addMark(
+          markInsertedSuggestionRange(
+            newTr,
             safeFrom,
             safeFrom + insertedText.length,
-            suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
+            suggestionType,
+            { id: suggestionId, kind: 'insert', by: actor },
           );
           writeOffset += insertedText.length - deletedText.length;
 
@@ -414,10 +451,12 @@ export function wrapTransactionForSuggestions(
             by: actor,
           }));
           newTr.insertText(insertedText, safeTo);
-          newTr.addMark(
+          markInsertedSuggestionRange(
+            newTr,
             safeTo,
             safeTo + insertedText.length,
-            suggestionType.create({ id: insertSuggestionId, kind: 'insert', by: actor })
+            suggestionType,
+            { id: insertSuggestionId, kind: 'insert', by: actor },
           );
           writeOffset += insertedText.length;
 

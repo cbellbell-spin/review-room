@@ -13,11 +13,10 @@ primary_region = "sjc"   # closest to the prior Vercel sfo1; change if app name 
   PROOF_TRUST_PROXY_HEADERS = "true"
   PROOF_PUBLIC_BASE_URL = "https://review-room.chrisjbell.dev"
   PROOF_COLLAB_V2 = "1"
-  # Temporary quarantine: these docs entered a Yjs write-amplification loop
-  # (non-convergent full-state re-encodes) that pegged the CPU and flapped the
-  # health check. Live collab is blocked for them; static/projection reads still
-  # work. Remove once the convergence bug is fixed. Content backed up locally.
-  PROOF_COLLAB_HOT_SLUG_DENYLIST = "79ch6unw,y1v0g018"
+  # (Quarantine for 79ch6unw / y1v0g018 lifted 2026-06-15 after the write-amp loop
+  # root causes were fixed and their bloated Yjs state was cleared/re-seeded from
+  # canonical markdown. Re-add PROOF_COLLAB_HOT_SLUG_DENYLIST="slug,slug" here if a
+  # doc ever needs to be taken out of live collab again.)
   # Proof engine + Yjs live-collab state (better-sqlite3). Durable on the volume.
   DATABASE_PATH = "/data/proof-share.db"
   # Share snapshot images. Durable on the volume (or set SNAPSHOT_S3_* secrets instead).

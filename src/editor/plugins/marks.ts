@@ -14,6 +14,7 @@ import { Fragment } from '@milkdown/kit/prose/model';
 import type { Node as ProseMirrorNode, MarkType } from '@milkdown/kit/prose/model';
 import { ySyncPluginKey } from 'y-prosemirror';
 import { buildTextIndex, getTextForRange, mapTextOffsetsToRange, resolveQuoteRange } from '../utils/text-range';
+import { canonicalizeAnchorTargetText } from '../../shared/anchor-target-text';
 import { SHARE_CONTENT_FILTER_ALLOW_META } from './share-content-filter';
 
 import {
@@ -286,6 +287,94 @@ function escapeRegexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+type StoredAnchorTarget = {
+  anchor: string;
+  mode?: string;
+  occurrence?: number;
+  contextBefore?: string;
+  contextAfter?: string;
+};
+
+function isStoredAnchorTarget(value: unknown): value is StoredAnchorTarget {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const anchor = (value as { anchor?: unknown }).anchor;
+  return typeof anchor === 'string' && anchor.trim().length > 0;
+}
+
+function normalizedText(value: string | undefined): string {
+  return normalizeQuote(value ?? '');
+}
+
+function matchesTargetContext(
+  indexText: string,
+  candidate: { from: number; to: number },
+  target: StoredAnchorTarget
+): boolean {
+  const contextBefore = normalizedText(target.contextBefore);
+  if (contextBefore) {
+    const before = normalizedText(indexText.slice(0, candidate.from));
+    if (!before.endsWith(contextBefore)) return false;
+  }
+
+  const contextAfter = normalizedText(target.contextAfter);
+  if (contextAfter) {
+    const after = normalizedText(indexText.slice(candidate.to));
+    if (!after.startsWith(contextAfter)) return false;
+  }
+
+  return true;
+}
+
+function pickTargetCandidate<T>(candidates: T[], occurrence: number | undefined): T | null {
+  if (candidates.length === 0) return null;
+  if (Number.isInteger(occurrence) && occurrence !== undefined && occurrence >= 0) {
+    return candidates[occurrence] ?? null;
+  }
+  if (candidates.length === 1) return candidates[0];
+  return null;
+}
+
+function resolveRangeFromTarget(doc: ProseMirrorNode, rawTarget: unknown): MarkRange | null {
+  if (!isStoredAnchorTarget(rawTarget)) return null;
+
+  const target = canonicalizeAnchorTargetText(rawTarget);
+  const normalizedAnchor = normalizedText(target.anchor);
+  if (!normalizedAnchor) return null;
+
+  const index = buildTextIndex(doc);
+  if (!index) return null;
+
+  const pattern = normalizedAnchor
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(escapeRegexLiteral)
+    .join('\\s+');
+  if (!pattern) return null;
+
+  const candidates: Array<{ from: number; to: number; range: MarkRange }> = [];
+  const matcher = new RegExp(pattern, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(index.text)) !== null) {
+    const from = match.index;
+    const to = from + match[0].length;
+    const range = mapTextOffsetsToRange(index, from, to);
+    if (range) {
+      const actualQuote = normalizedText(getTextForRange(doc, range));
+      if (actualQuote === normalizedAnchor) {
+        candidates.push({ from, to, range });
+      }
+    }
+    if (match[0].length === 0) matcher.lastIndex += 1;
+  }
+
+  const contextualCandidates = candidates.filter(candidate => matchesTargetContext(index.text, candidate, target));
+  const contextualPick = pickTargetCandidate(contextualCandidates, target.occurrence);
+  if (contextualPick) return contextualPick.range;
+
+  const fallbackPick = pickTargetCandidate(candidates, target.occurrence);
+  return fallbackPick?.range ?? null;
+}
+
 function resolveRangeNearTextOffset(
   doc: ProseMirrorNode,
   quote: string,
@@ -336,6 +425,9 @@ function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkR
   const allowsQuoteLessAnchorFallback = stored.kind === 'authored';
   const relativeStartOffset = parseRelativeCharOffset(stored.startRel);
 
+  const targetRange = resolveRangeFromTarget(doc, (stored as { target?: unknown }).target);
+  if (targetRange) return targetRange;
+
   const relativeRange = resolveRangeFromRelativeAnchors(doc, stored.startRel, stored.endRel);
   if (relativeRange) {
     if (!normalizedStoredQuote) {
@@ -380,6 +472,20 @@ function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkR
 
   if (!normalizedStoredQuote) return null;
   return resolveRangeFromQuote(doc, normalizedStoredQuote);
+}
+
+function shouldDeferPartialSuggestionHydration(doc: ProseMirrorNode, stored: StoredMark): boolean {
+  if (stored.kind !== 'insert' && stored.kind !== 'delete' && stored.kind !== 'replace') return false;
+  if (isStoredAnchorTarget((stored as { target?: unknown }).target)) return false;
+  const anchorText = typeof stored.quote === 'string' && stored.quote.trim()
+    ? stored.quote
+    : (stored.kind === 'insert' && typeof stored.content === 'string' ? stored.content : '');
+  // During per-keystroke collaboration the first remote payload may be only
+  // one ambiguous character. Hydrating that by quote can attach the remote id
+  // to an unrelated earlier occurrence; wait for a meaningful anchor instead.
+  const normalizedAnchorText = normalizeQuote(anchorText);
+  if (normalizedAnchorText.length >= 8) return false;
+  return resolveRangeFromQuote(doc, normalizedAnchorText) === null;
 }
 
 function addRelativeAnchorsToMetadata(
@@ -992,6 +1098,33 @@ function removeSuggestionAnchors(
   return tr;
 }
 
+function removeProofAnchors(
+  tr: Transaction,
+  ids: Set<string>
+): Transaction {
+  if (ids.size === 0) return tr;
+
+  tr.doc.descendants((node, pos) => {
+    if (!node.isText || node.marks.length === 0) return true;
+    const from = pos;
+    const to = pos + node.nodeSize;
+    for (const nodeMark of node.marks) {
+      const id = nodeMark.attrs?.id as string | null;
+      if (!id || !ids.has(id)) continue;
+      if (
+        nodeMark.type.name !== MARK_TYPE_NAMES.suggestion
+        && nodeMark.type.name !== MARK_TYPE_NAMES.comment
+        && nodeMark.type.name !== MARK_TYPE_NAMES.flagged
+        && nodeMark.type.name !== MARK_TYPE_NAMES.approved
+      ) continue;
+      tr = tr.removeMark(from, to, nodeMark);
+    }
+    return true;
+  });
+
+  return tr;
+}
+
 function applyShareContentMutationAllowance(
   tr: Transaction,
   meta?: OrchestratedMarkMeta
@@ -1037,7 +1170,8 @@ function buildCommentData(id: string, meta: StoredMark | undefined): CommentData
 function buildSuggestionData(
   kind: MarkKind,
   meta: StoredMark | undefined,
-  quote: string
+  quote: string,
+  visibleText?: string
 ): InsertData | DeleteData | ReplaceData {
   const status = meta?.status ?? 'pending';
   const orchestrationMeta = extractOrchestrationMeta(meta);
@@ -1045,7 +1179,7 @@ function buildSuggestionData(
   if (kind === 'insert') {
     return {
       ...orchestrationMeta,
-      content: meta?.content ?? quote,
+      content: visibleText ?? (quote || meta?.content || ''),
       status,
     } as InsertData;
   }
@@ -1194,7 +1328,7 @@ function buildAnchorMarks(
     if (anchor.kind === 'comment') {
       data = buildCommentData(anchor.id, pluginMeta);
     } else if (anchor.kind === 'insert' || anchor.kind === 'delete' || anchor.kind === 'replace') {
-      data = buildSuggestionData(anchor.kind, meta as StoredMark | undefined, quote);
+      data = buildSuggestionData(anchor.kind, meta as StoredMark | undefined, quote, text);
     } else if (anchor.kind === 'flagged') {
       data = pluginMeta?.note ? { note: pluginMeta.note } : undefined;
     }
@@ -1231,7 +1365,7 @@ function buildAnchorMarks(
     if (stored.kind === 'comment') {
       data = buildCommentData(id, stored);
     } else if (stored.kind === 'insert' || stored.kind === 'delete' || stored.kind === 'replace') {
-      data = buildSuggestionData(stored.kind, stored, quote);
+      data = buildSuggestionData(stored.kind, stored, quote, text);
     } else if (stored.kind === 'flagged') {
       data = stored.note ? { note: stored.note } : undefined;
     }
@@ -1394,7 +1528,7 @@ function normalizeMetadata(
       next[id] = { ...next[id], kind: info.kind };
       changed = true;
     }
-    if (next[id].by !== info.by) {
+    if (next[id].by !== info.by && (!next[id].by || next[id].by === 'unknown')) {
       next[id] = { ...next[id], by: info.by };
       changed = true;
     }
@@ -1538,6 +1672,9 @@ function buildMetadataSnapshot(
   for (const mark of marks) {
     if (!includeAuthored && mark.kind === 'authored') continue;
     const stored = buildMetadataFromMark(mark);
+    if (metadata[mark.id]?.by) {
+      stored.by = metadata[mark.id].by;
+    }
     if (options?.includeQuotes && mark.quote) stored.quote = mark.quote;
     addRelativeAnchorsToMetadata(state.doc, mark, stored);
     metadata[mark.id] = mergeStoredMarkWithFallback(metadata[mark.id], stored);
@@ -1672,7 +1809,19 @@ export function mergePendingServerMarks(
       if (kind === 'comment' && isResolvedTombstone && merged[id]?.resolved === true) {
         merged[id] = mergeStoredMarkWithFallback(merged[id], { ...serverMark, resolved: true });
       } else if (!isDeletedTombstone) {
-        merged[id] = mergeStoredMarkWithFallback(merged[id], serverMark);
+        const localMark = merged[id];
+        if (
+          (kind === 'insert' || kind === 'delete' || kind === 'replace')
+          && localMark
+          && localMark.kind === kind
+        ) {
+          merged[id] = {
+            ...mergeStoredMarkWithFallback(serverMark, localMark),
+            status: serverMark.status ?? localMark.status ?? 'pending',
+          };
+        } else {
+          merged[id] = mergeStoredMarkWithFallback(localMark, serverMark);
+        }
       }
       continue;
     }
@@ -1717,7 +1866,7 @@ export function setMarkMetadata(view: EditorView, metadata: Record<string, Store
 export function applyRemoteMarks(
   view: EditorView,
   metadata: Record<string, StoredMark>,
-  options?: { hydrateAnchors?: boolean }
+  options?: { hydrateAnchors?: boolean; authoritative?: boolean }
 ): void {
   const canonicalMetadata = canonicalizeStoredMarks(metadata);
   const hydrateAnchors = options?.hydrateAnchors !== false;
@@ -1736,7 +1885,9 @@ export function applyRemoteMarks(
   // but preserve the local resolved state to prevent stale server data from
   // flipping resolved comments back to unresolved.
   // For tombstoned suggestion marks, skip entirely (accepted/rejected locally).
-  const merged = canonicalizeStoredMarks({ ...getMarkMetadata(view.state) });
+  const merged = options?.authoritative
+    ? canonicalizeStoredMarks({ ...canonicalMetadata })
+    : canonicalizeStoredMarks({ ...getMarkMetadata(view.state) });
   const filteredEntries: [string, StoredMark][] = [];
   for (const [id, stored] of allEntries) {
     const status = stored?.status;
@@ -1769,11 +1920,21 @@ export function applyRemoteMarks(
   }
 
   tr = removeSuggestionAnchors(tr, finalizedSuggestionIds);
+  if (options?.authoritative) {
+    const authoritativeIds = new Set(Object.keys(canonicalMetadata));
+    const staleAnchorIds = new Set(
+      [...existingIds.entries()]
+        .filter(([id, info]) => info.kind !== 'authored' && !authoritativeIds.has(id))
+        .map(([id]) => id),
+    );
+    tr = removeProofAnchors(tr, staleAnchorIds);
+  }
 
   if (hydrateAnchors) {
     for (const [id, stored] of filteredEntries) {
       if (existingIds.has(id)) continue; // Already has an anchor
       if (!stored.kind) continue;
+      if (shouldDeferPartialSuggestionHydration(tr.doc, stored)) continue;
       const isAuthored = stored.kind === 'authored';
       if (isAuthored && authoredHydrationFailures >= AUTHORED_ANCHOR_HYDRATION_FAILURE_BUDGET_PER_PASS) {
         authoredHydrationSuppressed += 1;
@@ -2755,6 +2916,24 @@ function applyMarkdownInsert(
   return { ok: true, tr, appliedRange };
 }
 
+function chooseInsertAcceptContent(visibleText: string, storedContent: string | undefined, parser?: MarkdownParser): string {
+  const stored = typeof storedContent === 'string' ? storedContent : '';
+  if (!stored) return visibleText;
+  if (!visibleText) return stored;
+  if (stored === visibleText) return stored;
+  const storedTrimmed = stored.trim();
+  const visibleTrimmed = visibleText.trim();
+  if (
+    visibleTrimmed.length > storedTrimmed.length
+    && storedTrimmed.length > 0
+    && visibleTrimmed.includes(storedTrimmed)
+    && !isStructuralMarkdown(stored, parser)
+  ) {
+    return visibleText;
+  }
+  return stored;
+}
+
 export function accept(view: EditorView, markId: string, parser?: MarkdownParser): boolean {
   const effectiveParser = resolveMarkdownParser(parser);
   const marks = getMarks(view.state);
@@ -2774,7 +2953,8 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
       for (const range of ranges) {
         tr = tr.removeMark(range.from, range.to, markType);
         const data = mark.data as InsertData | undefined;
-        const content = data?.content ?? getTextForRange(view.state.doc, range);
+        const visibleText = getTextForRange(view.state.doc, range);
+        const content = chooseInsertAcceptContent(visibleText, data?.content, effectiveParser);
         const result = applyMarkdownInsert(view, tr, range, content, mark.by, effectiveParser);
         if (!result.ok) return false;
         tr = result.tr;
@@ -3098,6 +3278,25 @@ const STYLES = {
   delete: 'background-color: rgba(239, 68, 68, 0.2); text-decoration: line-through; color: #666;',
 };
 
+const ACTOR_INSERT_TONES = [
+  { accent: '#2563EB', bg: 'rgba(37, 99, 235, 0.18)' },
+  { accent: '#059669', bg: 'rgba(5, 150, 105, 0.20)' },
+  { accent: '#D97706', bg: 'rgba(217, 119, 6, 0.18)' },
+  { accent: '#7C3AED', bg: 'rgba(124, 58, 237, 0.17)' },
+  { accent: '#DB2777', bg: 'rgba(219, 39, 119, 0.17)' },
+  { accent: '#0891B2', bg: 'rgba(8, 145, 178, 0.18)' },
+  { accent: '#BE123C', bg: 'rgba(190, 18, 60, 0.16)' },
+  { accent: '#4F46E5', bg: 'rgba(79, 70, 229, 0.17)' },
+];
+
+function getActorInsertStyle(actor: string): string {
+  const normalizedActor = actor.trim();
+  if (!normalizedActor || normalizedActor === 'unknown') return STYLES.insert;
+  const hash = Number.parseInt(hashStringFNV1a(normalizedActor), 16);
+  const tone = ACTOR_INSERT_TONES[hash % ACTOR_INSERT_TONES.length] ?? ACTOR_INSERT_TONES[0];
+  return `background-color: ${tone.bg}; border-bottom: 2px solid ${tone.accent}; box-shadow: inset 3px 0 0 ${tone.accent};`;
+}
+
 function normalizeComposeAnchorRange(range: MarkRange | null, doc: ProseMirrorNode): MarkRange | null {
   if (!range) return null;
   const minPos = 0;
@@ -3178,7 +3377,7 @@ function createDecorations(
       case 'insert': {
         const data = mark.data as InsertData;
         if (data?.status === 'pending') {
-          style = STYLES.insert;
+          style = getActorInsertStyle(mark.by);
           cssClass = 'mark-insert';
         }
         break;
@@ -3220,6 +3419,7 @@ function createDecorations(
             style,
             'data-mark-id': mark.id,
             'data-mark-kind': mark.kind,
+            'data-mark-by': mark.by,
           })
         );
       }
@@ -3232,9 +3432,10 @@ function createDecorations(
             () => {
               const span = document.createElement('span');
               span.className = ['mark-replace-insert', 'mark-insert', glowClass].filter(Boolean).join(' ');
-              span.style.cssText = STYLES.insert;
+              span.style.cssText = getActorInsertStyle(mark.by);
               span.setAttribute('data-mark-id', mark.id);
               span.setAttribute('data-mark-kind', 'replace');
+              span.setAttribute('data-mark-by', mark.by);
               span.textContent = replacementContent ?? '';
               return span;
             },

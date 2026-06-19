@@ -222,6 +222,8 @@ export interface AccessLinkResponse {
 
 export interface ShareMarkMutationResponse {
   success: boolean;
+  content?: string;
+  markdown?: string;
   marks?: Record<string, unknown>;
 }
 
@@ -519,6 +521,8 @@ export class ShareClient {
   private parseShareMarkMutationResponse(payload: Record<string, unknown> | null): ShareMarkMutationResponse {
     return {
       success: payload?.success === true,
+      content: typeof payload?.content === 'string' ? payload.content : undefined,
+      markdown: typeof payload?.markdown === 'string' ? payload.markdown : undefined,
       marks: (payload?.marks && typeof payload.marks === 'object' && !Array.isArray(payload.marks))
         ? payload.marks as Record<string, unknown>
         : undefined,
@@ -553,7 +557,7 @@ export class ShareClient {
     if (!marks) return null;
 
     if (!(markId in marks)) {
-      return { success: true, marks };
+      return { success: true, markdown: context.doc.markdown, marks };
     }
 
     const entry = marks[markId];
@@ -562,7 +566,7 @@ export class ShareClient {
       ? (entry as { status: string }).status.trim().toLowerCase()
       : '';
     if (status === finalStatus) {
-      return { success: true, marks };
+      return { success: true, markdown: context.doc.markdown, marks };
     }
     return null;
   }
@@ -580,7 +584,11 @@ export class ShareClient {
           'Content-Type': 'application/json',
           ...this.getShareAuthHeaders(args.options?.token),
         },
-        body: JSON.stringify({ markId: args.markId, by: args.by, ...base }),
+        body: JSON.stringify({
+          markId: args.markId,
+          by: args.by,
+          ...base,
+        }),
       });
       if (!response.ok) return this.parseRequestError(response);
       const payload = await response.json().catch(() => null) as Record<string, unknown> | null;

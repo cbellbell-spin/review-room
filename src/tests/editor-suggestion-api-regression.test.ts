@@ -58,15 +58,21 @@ function run(): void {
 
   const acceptRouteBlock = sliceBetween(
     agentRoutesSource,
-    "agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {",
-    "\nagentRoutes.post('/:slug/marks/reject',",
+    'async function handleAcceptSuggestionRoute(req: Request, res: Response): Promise<void> {',
+    "\nagentRoutes.post('/:slug/marks/accept'",
   );
   assert(
     acceptRouteBlock.includes('const collabStatus = await notifyCollabMutation(')
       && acceptRouteBlock.includes('verify: true')
       && acceptRouteBlock.includes("source: 'marks.accept'")
-      && acceptRouteBlock.includes("code: 'COLLAB_SYNC_FAILED'"),
-    'Expected /marks/accept to await verified collab convergence before returning success',
+      && acceptRouteBlock.includes("status: collabStatus.confirmed ? 'confirmed' : 'pending'")
+      && !acceptRouteBlock.includes("code: 'COLLAB_SYNC_FAILED'"),
+    'Expected /marks/accept to return canonical success while surfacing pending collab convergence',
+  );
+  assert(
+    agentRoutesSource.includes("agentRoutes.post('/:slug/marks/accept', handleAcceptSuggestionRoute);")
+      && agentRoutesSource.includes("agentRoutes.post('/marks/accept', handleAcceptSuggestionRoute);"),
+    'Expected /marks/accept to support both direct and mounted slug route shapes',
   );
 
   console.log('✓ suggestion API actions route through share-aware accept/reject persistence');

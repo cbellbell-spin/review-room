@@ -12,6 +12,7 @@ import { discoveryRoutes } from './discovery-routes.js';
 import { shareWebRoutes } from './share-web-routes.js';
 import { reviewRoomRoutes } from './review-room-routes.js';
 import { reviewRoomMcpRoutes } from './review-room-mcp-routes.js';
+import { metricsApiRoutes } from './metrics.js';
 import {
   capabilitiesPayload,
   enforceApiClientCompatibility,
@@ -102,6 +103,7 @@ export function createReviewRoomExpressApp(): express.Express {
   app.use(discoveryRoutes);
   app.use(reviewRoomRoutes);
   app.use(reviewRoomMcpRoutes);
+  app.use('/api/metrics', metricsApiRoutes);
   app.use('/api', enforceApiClientCompatibility, apiRoutes);
   app.use('/api/agent', agentRoutes);
   app.use(apiRoutes);

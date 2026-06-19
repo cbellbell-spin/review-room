@@ -285,6 +285,20 @@ function buildMissingRequiredMarkIds(requiredIds: string[], hydratedIds: string[
   return requiredIds.filter((id) => !hydrated.has(id));
 }
 
+function isSerializedAuthoredRequirementId(id: string): boolean {
+  return id.startsWith('serialized-authored:');
+}
+
+function missingRequiredIdBlocksSuggestionFinalize(
+  id: string,
+  targetMarkId: string,
+  marks: Record<string, StoredMark>,
+): boolean {
+  if (id === targetMarkId) return true;
+  if (isSerializedAuthoredRequirementId(id)) return false;
+  return !(id in marks);
+}
+
 async function buildRehydratedState(markdown: string, marks: Record<string, StoredMark>): Promise<{
   strippedMarkdown: string;
   state: EditorState;
@@ -436,13 +450,15 @@ export async function finalizeSuggestionThroughRehydration(args: {
       rehydrated.missingRequiredIds,
     );
   }
-  if (rehydrated.missingRequiredIds.length > 0) {
+  const blockingMissingRequiredIds = rehydrated.missingRequiredIds
+    .filter((id) => missingRequiredIdBlocksSuggestionFinalize(id, args.markId, canonicalMarks));
+  if (blockingMissingRequiredIds.length > 0) {
     return missingMarkFailure(
       'REQUIRED_MARKS_MISSING',
       'One or more stored Proof marks could not be rehydrated safely',
       rehydrated.strippedMarkdown,
       rehydrated.hydratedIds,
-      rehydrated.missingRequiredIds,
+      blockingMissingRequiredIds,
     );
   }
 
@@ -460,8 +476,17 @@ export async function finalizeSuggestionThroughRehydration(args: {
   }
 
   const finalized = await finalizeRehydratedState(rehydrated.strippedMarkdown, rehydrated.view.state);
+  const preservedUnhydratedMarks = Object.fromEntries(
+    rehydrated.missingRequiredIds
+      .filter((id) => id !== args.markId && !isSerializedAuthoredRequirementId(id))
+      .filter((id) => id in canonicalMarks)
+      .map((id) => [id, canonicalMarks[id]]),
+  );
   return {
     ...finalized,
-    marks: removeFinalizedSuggestionMetadata(finalized.marks),
+    marks: removeFinalizedSuggestionMetadata({
+      ...preservedUnhydratedMarks,
+      ...finalized.marks,
+    }),
   };
 }

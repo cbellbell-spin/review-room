@@ -18,6 +18,7 @@ type SyncStatusHandler = (status: CollabSyncStatus) => void;
 export type CollabTerminalCloseReason = 'unshared' | 'permission-denied' | null;
 type MarksHandler = (marks: Record<string, unknown>) => void;
 type DocumentUpdatedHandler = () => void;
+type RemoteUpdateHandler = () => void;
 
 type CollabLocalUser = { name: string; color: string };
 
@@ -190,6 +191,22 @@ function applyYTextDiff(target: Y.Text, nextValue: string): void {
   }
 }
 
+function updateContainsRemoteClient(update: Uint8Array, localClientId: number): boolean {
+  try {
+    const decoded = Y.decodeUpdate(update);
+    return decoded.structs.some((struct) => struct.client !== localClientId);
+  } catch {
+    return true;
+  }
+}
+
+function isPermissionDeniedClose(event: unknown): boolean {
+  const record = event && typeof event === 'object' ? event as Record<string, unknown> : {};
+  const code = typeof record.code === 'number' ? record.code : null;
+  const reason = typeof record.reason === 'string' ? record.reason : '';
+  return code === 4401 || /unauthori[sz]ed|invalid|expired|permission/i.test(reason);
+}
+
 export class CollabClient {
   private ydoc: Y.Doc | null = null;
   private provider: HocuspocusProvider | null = null;
@@ -200,6 +217,7 @@ export class CollabClient {
   private presenceHandler: PresenceHandler | null = null;
   private syncStatusHandler: SyncStatusHandler | null = null;
   private documentUpdatedHandler: DocumentUpdatedHandler | null = null;
+  private remoteUpdateHandler: RemoteUpdateHandler | null = null;
   private applyingLocalMarks = false;
   private hasSynced = false;
   private lastDisconnectAt: number | null = null;
@@ -226,7 +244,60 @@ export class CollabClient {
   }
 
   isConnected(): boolean {
-    return this.provider?.isConnected === true;
+    return this.provider?.isConnected === true && this.provider?.status === 'connected';
+  }
+
+  async verifyTransportRoundTrip(expectedYDoc: Y.Doc, timeoutMs = 5_000): Promise<boolean> {
+    const provider = this.provider;
+    if (
+      !provider
+      || this.ydoc !== expectedYDoc
+      || provider.document !== expectedYDoc
+      || provider.isConnected !== true
+      || provider.status !== 'connected'
+    ) {
+      return false;
+    }
+
+    // A connected/synced event can be stale around rapid provider replacement.
+    // Send a metadata-only Yjs update and require its normal acknowledgement
+    // before the editor is allowed to publish into this Y.Doc. Delete it only
+    // after the set is acknowledged, then require the cleanup acknowledgement.
+    // Two real updates avoid Yjs coalescing a zero-net transaction away.
+    const probeMap = expectedYDoc.getMap<number>('transportReadiness');
+    const probeKey = `${expectedYDoc.clientID}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const waitForAcknowledgement = async (): Promise<boolean> => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (
+          this.provider !== provider
+          || this.ydoc !== expectedYDoc
+          || provider.document !== expectedYDoc
+        ) {
+          return false;
+        }
+        if (
+          provider.isConnected === true
+          && provider.status === 'connected'
+          && provider.synced === true
+          && provider.unsyncedChanges === 0
+        ) {
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return false;
+    };
+
+    expectedYDoc.transact(() => {
+      probeMap.set(probeKey, Date.now());
+    }, 'transport-readiness-probe');
+    if (!await waitForAcknowledgement()) return false;
+
+    expectedYDoc.transact(() => {
+      probeMap.delete(probeKey);
+    }, 'transport-readiness-probe');
+    return waitForAcknowledgement();
   }
 
   onMarks(handler: MarksHandler): void {
@@ -247,6 +318,10 @@ export class CollabClient {
 
   onDocumentUpdated(handler: DocumentUpdatedHandler): void {
     this.documentUpdatedHandler = handler;
+  }
+
+  onRemoteUpdate(handler: RemoteUpdateHandler): void {
+    this.remoteUpdateHandler = handler;
   }
 
   private emitSyncStatus(): void {
@@ -404,6 +479,7 @@ export class CollabClient {
   private shouldPersistDurableUpdate(origin: unknown): boolean {
     if (origin === 'durable-replay') return false;
     if (origin === 'local-projection-sync') return false;
+    if (origin === 'transport-readiness-probe') return false;
     if (origin && origin === this.provider) return false;
     if (typeof origin === 'string' && origin.startsWith('remote')) return false;
     return true;
@@ -613,6 +689,9 @@ export class CollabClient {
     });
 
     ydoc.on('update', (update, origin) => {
+      if (updateContainsRemoteClient(update, ydoc.clientID)) {
+        this.remoteUpdateHandler?.();
+      }
       if (!this.shouldPersistDurableUpdate(origin)) return;
       this.appendDurableUpdate(update);
     });
@@ -677,6 +756,7 @@ export class CollabClient {
 
     provider.on('authenticationFailed', (event: { reason?: string }) => {
       const reason = typeof event?.reason === 'string' ? event.reason : 'permission-denied';
+      this.terminalCloseReason = 'permission-denied';
       this.lastAuthenticationFailureReason = reason;
       this.connectionStatus = 'disconnected';
       this.hasSynced = false;
@@ -694,7 +774,16 @@ export class CollabClient {
       this.emitSyncStatus();
     });
 
-    provider.on('close', () => {
+    provider.on('close', (event: unknown) => {
+      if (isPermissionDeniedClose(event)) {
+        this.terminalCloseReason = 'permission-denied';
+        this.lastAuthenticationFailureReason = typeof (event as { reason?: unknown })?.reason === 'string'
+          ? (event as { reason: string }).reason
+          : 'permission-denied';
+        this.connectionStatus = 'disconnected';
+        this.hasSynced = false;
+        this.lastDisconnectAt = Date.now();
+      }
       this.emitSyncStatus();
     });
 

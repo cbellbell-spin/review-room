@@ -59,6 +59,7 @@ async function run(): Promise<void> {
     const created = await readJson<{
       success: boolean;
       document: { id: string; proofSlug: string; currentRole: string };
+      proof: { accessToken: string };
     }>(await postJson(base, '/review-room/api/documents', {
       title: 'Permissions runway',
       markdown: '# Permissions runway\n\nFirst Phase 2 slice.',
@@ -66,6 +67,14 @@ async function run(): Promise<void> {
     assert(created.success === true, 'Expected document creation success');
     assert(created.document.currentRole === 'owner', 'Expected creator to be owner');
     const slug = created.document.proofSlug;
+    const ownerOpenContext = await readJson<{
+      success: boolean;
+      reviewRoom?: { identityId?: string; currentRole?: string };
+    }>(await fetch(`${base}/api/documents/${slug}/open-context`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': created.proof.accessToken },
+    }));
+    assert(ownerOpenContext.reviewRoom?.identityId === 'local-human', 'Expected create response token to resolve to the owner Review Room identity');
+    assert(ownerOpenContext.reviewRoom?.currentRole === 'owner', 'Expected create response token to resolve to owner role');
 
     const explicitOwnerId = `smoke-owner-${randomUUID()}`;
     const explicitOwnerCreated = await readJson<{
@@ -114,6 +123,14 @@ async function run(): Promise<void> {
     assert(editorMember.member.shareRole === 'editor', 'Expected editor share role');
     assert(editorMember.member.openPath.includes(`token=${encodeURIComponent(editorMember.member.accessToken)}`), 'Expected member open path to include role token');
     const editorToken = editorMember.member.accessToken;
+    const editorOpenContext = await readJson<{
+      success: boolean;
+      reviewRoom?: { identityId?: string; currentRole?: string };
+    }>(await fetch(`${base}/api/documents/${slug}/open-context`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': editorToken },
+    }));
+    assert(editorOpenContext.reviewRoom?.identityId === 'editor-alice', 'Expected editor token to resolve to the editor Review Room identity');
+    assert(editorOpenContext.reviewRoom?.currentRole === 'editor', 'Expected editor token to resolve to editor role');
 
     const editorList = await readJson<{ documents: Array<{ proofSlug?: string; currentRole?: string; capabilities?: { canEdit?: boolean } }> }>(
       await fetch(`${base}/review-room/api/documents?identityId=editor-alice`, { headers: CLIENT_HEADERS }),
@@ -172,7 +189,7 @@ async function run(): Promise<void> {
     });
     assert(viewerBaselineCreate.status === 403, `Expected viewer baseline create status 403, got ${viewerBaselineCreate.status}`);
 
-    const members = await readJson<{ success: boolean; members: Array<{ identityId: string; role: string; accessToken?: string }> }>(
+    const members = await readJson<{ success: boolean; members: Array<{ identityId: string; role: string; accessToken?: string; openPath?: string }> }>(
       await fetch(`${base}/review-room/api/documents/${slug}/members`, { headers: CLIENT_HEADERS }),
     );
     assert(members.success === true, 'Expected owner to list members');
@@ -181,7 +198,8 @@ async function run(): Promise<void> {
       'Expected member list to include downgraded collaborator',
     );
     assert(members.members.every((member) => member.accessToken === undefined), 'Expected member list not to expose access tokens');
-    assert(members.members.every((member) => !String((member as { openPath?: string }).openPath ?? '').includes('token=')), 'Expected member list open paths not to expose role tokens');
+    const listedEditor = members.members.find((member) => member.identityId === 'editor-alice');
+    assert(listedEditor?.openPath?.includes('token='), 'Expected owner member list to expose tokenized collaborator open paths');
 
     console.log('✓ Review Room Phase 2 permissions runway');
   } finally {

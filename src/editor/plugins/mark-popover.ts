@@ -1,5 +1,5 @@
 import { $prose } from '@milkdown/kit/utils';
-import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
+import { Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
 
 import {
@@ -775,10 +775,17 @@ class MarkPopoverController {
     if (!mark) return;
 
     const proof = getProofEditorApi();
-    if (mark.kind === 'comment' && proof?.isReviewRoomRuntime?.() && proof.openReviewRoomReviewSidebar) {
+    if (
+      proof?.isReviewRoomRuntime?.()
+      && proof.openReviewRoomReviewSidebar
+      && (mark.kind === 'comment' || mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+    ) {
       this.close();
       setActiveMark(this.view, markId);
-      void proof.openReviewRoomReviewSidebar({ focusMarkId: markId });
+      void proof.openReviewRoomReviewSidebar({
+        focusMarkId: markId,
+        initialTab: mark.kind === 'comment' ? 'comments' : 'suggestions',
+      });
       return;
     }
 
@@ -1982,6 +1989,21 @@ export function openCommentComposer(view: EditorView, range: MarkRange, by: stri
   if (!canCommentInRuntime()) return;
   const controller = controllers.get(view);
   if (!controller) return;
+  const proof = getProofEditorApi();
+  if (proof?.isReviewRoomRuntime?.() && proof.openReviewRoomReviewSidebar) {
+    const docSize = view.state.doc.content.size;
+    const from = Math.max(1, Math.min(range.from, docSize));
+    const to = Math.max(from, Math.min(range.to, docSize));
+    if (to <= from) return;
+    try {
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)).scrollIntoView());
+    } catch {
+      // If the selection cannot be restored, let the sidebar use the current one.
+    }
+    controller.close();
+    void proof.openReviewRoomReviewSidebar({ useSelection: true, initialTab: 'comments' });
+    return;
+  }
   controller.openComposer(range, by);
 }
 

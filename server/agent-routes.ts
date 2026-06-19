@@ -227,6 +227,60 @@ function getSlug(req: Request): string | null {
   const raw = req.params.slug;
   if (typeof raw === 'string' && raw.trim()) return raw;
   if (Array.isArray(raw) && typeof raw[0] === 'string' && raw[0].trim()) return raw[0];
+  const fromPath = extractSlugFromMountedAgentPath(req);
+  if (fromPath) return fromPath;
+  return null;
+}
+
+function isPlausibleSlug(value: string | undefined): value is string {
+  return typeof value === 'string'
+    && /^[A-Za-z0-9_-]{3,128}$/.test(value)
+    && !new Set(['api', 'agent', 'documents', 'd', 'marks', 'state', 'snapshot', 'bridge']).has(value);
+}
+
+function pathSegments(value: unknown): string[] {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  const pathname = (() => {
+    try {
+      return new URL(value, 'http://proof.local').pathname;
+    } catch {
+      return value.split('?')[0] ?? value;
+    }
+  })();
+  return pathname
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    });
+}
+
+function extractSlugFromMountedAgentPath(req: Request): string | null {
+  const sources = [req.path, req.url, req.originalUrl, req.baseUrl];
+  for (const source of sources) {
+    const segments = pathSegments(source);
+    if (segments.length === 0) continue;
+
+    for (const marker of ['agent', 'documents', 'd']) {
+      const markerIndex = segments.indexOf(marker);
+      const candidate = markerIndex >= 0 ? segments[markerIndex + 1] : undefined;
+      if (isPlausibleSlug(candidate)) return candidate;
+    }
+
+    const first = segments[0];
+    const second = segments[1];
+    if (
+      isPlausibleSlug(first)
+      && (second === 'marks' || second === 'state' || second === 'snapshot' || second === 'events' || second === 'presence')
+    ) {
+      return first;
+    }
+  }
   return null;
 }
 
@@ -4038,7 +4092,7 @@ agentRoutes.post('/:slug/marks/suggest-delete', async (req: Request, res: Respon
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });
 
-agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
+async function handleAcceptSuggestionRoute(req: Request, res: Response): Promise<void> {
   const mutationRoute = 'POST /marks/accept';
   const slug = getSlug(req);
   if (!slug) {
@@ -4098,36 +4152,19 @@ agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
         },
       };
     }
-    if (!collabStatus.confirmed) {
-      const failureBody = {
-        success: false,
-        code: 'COLLAB_SYNC_FAILED',
-        error: 'Suggestion acceptance did not converge to live collaboration state',
-        reason: collabStatus.reason ?? 'sync_timeout',
-        retryWithState: `/api/agent/${slug}/state`,
-        collab: {
-          status: 'pending',
-          reason: collabStatus.reason ?? 'sync_timeout',
-          markdownConfirmed: collabStatus.markdownConfirmed ?? null,
-          fragmentConfirmed: collabStatus.fragmentConfirmed ?? null,
-          canonicalConfirmed: collabStatus.canonicalConfirmed ?? null,
-        },
-      } satisfies Record<string, unknown>;
-      storeIdempotentMutationResult(replay, mutationRoute, slug, 409, failureBody);
-      sendMutationResponse(
-        res,
-        409,
-        failureBody,
-        { route: mutationRoute, slug, retryWithState: `/api/agent/${slug}/state` },
-      );
-      return;
-    }
+    // The canonical mutation above is authoritative. A slow or reconnecting live
+    // collab room should not turn a completed accept into a user-visible 409;
+    // surface the pending collab state in the success body and let clients
+    // refresh from canonical content while the socket catches up.
   }
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
-});
+}
 
-agentRoutes.post('/:slug/marks/reject', async (req: Request, res: Response) => {
+agentRoutes.post('/:slug/marks/accept', handleAcceptSuggestionRoute);
+agentRoutes.post('/marks/accept', handleAcceptSuggestionRoute);
+
+async function handleRejectSuggestionRoute(req: Request, res: Response): Promise<void> {
   const mutationRoute = 'POST /marks/reject';
   const slug = getSlug(req);
   if (!slug) {
@@ -4164,7 +4201,10 @@ agentRoutes.post('/:slug/marks/reject', async (req: Request, res: Response) => {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.reject' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
-});
+}
+
+agentRoutes.post('/:slug/marks/reject', handleRejectSuggestionRoute);
+agentRoutes.post('/marks/reject', handleRejectSuggestionRoute);
 
 agentRoutes.post('/:slug/marks/reply', async (req: Request, res: Response) => {
   const mutationRoute = 'POST /marks/reply';

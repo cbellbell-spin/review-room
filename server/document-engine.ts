@@ -4,6 +4,8 @@ import {
   bumpDocumentAccessEpoch,
   deleteMarkTombstone,
   getDocumentBySlug,
+  getMarkTombstone,
+  listMarkTombstonesForDocument,
   removeResurrectedMarksFromPayload,
   rebuildDocumentBlocks,
   shouldRejectMarkMutationByResolvedRevision,
@@ -49,7 +51,7 @@ import {
   finalizeSuggestionThroughRehydration,
   type ProofMarkRehydrationFailure,
 } from './proof-mark-rehydration.js';
-import { stripAllProofSpanTags } from './proof-span-strip.js';
+import { stripAllProofSpanTags, unwrapProofSpanById } from './proof-span-strip.js';
 import {
   recordEditAnchorAmbiguous,
   recordEditAnchorNotFound,
@@ -216,6 +218,29 @@ function isProjectionRepairPending(doc: MutationReadyDocument): boolean {
     : false;
 }
 
+function preferLatestFinalizedDecisionRow(
+  slug: string,
+  doc: MutationReadyDocument,
+): MutationReadyDocument {
+  const row = getDocumentBySlug(slug);
+  if (!row || (doc.markdown === row.markdown && doc.marks === row.marks)) return doc;
+  const latestDecisionIsDurable = listMarkTombstonesForDocument(slug).some((tombstone) =>
+    (tombstone.status === 'accepted' || tombstone.status === 'rejected')
+    && tombstone.resolved_revision === row.revision);
+  if (!latestDecisionIsDurable) return doc;
+  return {
+    ...doc,
+    ...row,
+    plain_text: stripAllProofSpanTags(row.markdown),
+    projection_fresh: false,
+    mutation_ready: true,
+    repair_pending: true,
+    read_source: 'canonical_row',
+    read_fallback_reason: 'finalized_decision_ahead_of_live',
+    yjs_source: 'yjs_source' in doc ? doc.yjs_source : null,
+  } as MutationReadyDocument;
+}
+
 async function getCanonicalReadableDocumentAsync(
   slug: string,
   docOverride?: MutationReadyDocument,
@@ -224,9 +249,10 @@ async function getCanonicalReadableDocumentAsync(
     ?? await getAuthoritativeCanonicalReadableDocument(slug, 'state')
     ?? getDocumentBySlug(slug);
   if (!doc) return null;
-  if (!isMutationReadyRead(doc)) return doc;
+  const preferredDoc = preferLatestFinalizedDecisionRow(slug, doc);
+  if (!isMutationReadyRead(preferredDoc)) return preferredDoc;
   const authoritativeDoc = await getAuthoritativeCanonicalReadableDocument(slug, 'state');
-  return authoritativeDoc ?? doc;
+  return preferLatestFinalizedDecisionRow(slug, authoritativeDoc ?? preferredDoc);
 }
 
 function getMutationReadyDocument(
@@ -981,6 +1007,127 @@ function canRejectSuggestionWithoutHydration(markdown: string, mark: StoredMark)
   return true;
 }
 
+function readHtmlAttr(attrs: string, name: string): string | null {
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+  const match = attrs.match(pattern);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+function findSuggestionSpanById(markdown: string, markId: string): { inner: string } | null {
+  const spanPattern = /<span\b([^>]*)>([\s\S]*?)<\/span>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = spanPattern.exec(markdown)) !== null) {
+    const attrs = match[1] ?? '';
+    if (readHtmlAttr(attrs, 'data-proof') !== 'suggestion') continue;
+    if (readHtmlAttr(attrs, 'data-id') !== markId) continue;
+    return { inner: match[2] ?? '' };
+  }
+  return null;
+}
+
+function acceptedInsertedSuggestionText(mark: StoredMark): string {
+  const stored = typeof mark.content === 'string' ? mark.content : '';
+  if (stored.trim()) return stored;
+  return typeof mark.quote === 'string' ? mark.quote : '';
+}
+
+function lastVisibleCharBeforeMarkdownOffset(markdown: string, offset: number): string {
+  const before = markdown.slice(0, Math.max(0, Math.min(offset, markdown.length)));
+  return stripEphemeralCollabSpans(stripAllProofSpanTags(before)).slice(-1);
+}
+
+function unwrapAcceptedInsertSuggestionSpan(markdown: string, markId: string, mark: StoredMark): string | null {
+  const acceptedText = acceptedInsertedSuggestionText(mark);
+  let matched = false;
+  const isWordChar = (value: string | undefined): boolean => Boolean(value && /[A-Za-z0-9]/.test(value));
+  const nextMarkdown = markdown.replace(/<span\b([^>]*)>([\s\S]*?)<\/span>/gi, (full, attrs: string, inner: string, offset: number) => {
+    if (readHtmlAttr(attrs, 'data-proof') !== 'suggestion') return full;
+    if (readHtmlAttr(attrs, 'data-id') !== markId) return full;
+    matched = true;
+    const previousChar = lastVisibleCharBeforeMarkdownOffset(markdown, offset);
+    if (acceptedText.trim() && acceptedText.trim() === String(inner ?? '').trim()) {
+      const needsBoundarySpace = !/^\s/.test(acceptedText) && isWordChar(previousChar) && isWordChar(acceptedText[0]);
+      return needsBoundarySpace ? ` ${acceptedText}` : acceptedText;
+    }
+    const innerText = String(inner ?? '');
+    const needsBoundarySpace = !/^\s/.test(innerText) && isWordChar(previousChar) && isWordChar(innerText[0]);
+    return needsBoundarySpace ? ` ${innerText}` : innerText;
+  });
+  if (matched) return nextMarkdown;
+  const plainAcceptedText = acceptedText.trim();
+  if (!plainAcceptedText) return null;
+  const index = markdown.indexOf(plainAcceptedText);
+  if (index <= 0) return null;
+  const previousChar = markdown[index - 1];
+  if (!isWordChar(previousChar) || !isWordChar(plainAcceptedText[0])) return null;
+  return `${markdown.slice(0, index)} ${markdown.slice(index)}`;
+}
+
+function canAcceptInsertedSuggestionWithoutHydration(markdown: string, markId: string, mark: StoredMark): boolean {
+  if (mark.kind !== 'insert') return false;
+  if (isRecord(mark.target)) return false;
+  const targetSpan = findSuggestionSpanById(markdown, markId);
+  const acceptedText = acceptedInsertedSuggestionText(mark);
+  if (targetSpan && targetSpan.inner.trim() === acceptedText.trim()) return true;
+
+  // Live Yjs projections can carry the visible inserted text and mark metadata
+  // without serializing a data-proof="suggestion" span. In that state the
+  // ProseMirror rehydration anchors may be stale even though the authoritative
+  // document unambiguously contains the insertion. Accepting an insert only
+  // finalizes metadata; it must never insert the visible text a second time.
+  const visibleMarkdown = stripEphemeralCollabSpans(stripAllProofSpanTags(markdown));
+  if (!acceptedText || !visibleMarkdown.includes(acceptedText)) return false;
+
+  const start = parseRelativeCharOffset(mark.startRel);
+  const end = parseRelativeCharOffset(mark.endRel);
+  if (
+    start !== null
+    && end !== null
+    && start >= 0
+    && end >= start
+    && visibleMarkdown.slice(start, end) === acceptedText
+  ) {
+    return true;
+  }
+
+  // If the stored anchors drifted, require a unique exact server-side match.
+  // Repeated text remains a conflict because choosing one occurrence would be
+  // an unsafe guess.
+  return visibleMarkdown.indexOf(acceptedText) === visibleMarkdown.lastIndexOf(acceptedText);
+}
+
+function stabilizeAcceptedInsertWordBoundary(markdown: string, mark: StoredMark): string {
+  if (mark.kind !== 'insert') return markdown;
+  const content = typeof mark.content === 'string' ? mark.content : '';
+  if (!content.trim()) return markdown;
+  const start = parseRelativeCharOffset(mark.startRel);
+  if (start === null || start <= 0) return markdown;
+  const insertedText = content.trimStart();
+  const isWordChar = (value: string | undefined): boolean => Boolean(value && /[A-Za-z0-9]/.test(value));
+
+  if (
+    start < markdown.length
+    && !/<[^>]+>/.test(markdown.slice(0, start))
+    && markdown.slice(start).startsWith(insertedText)
+    && isWordChar(markdown[start - 1])
+    && isWordChar(markdown[start])
+  ) {
+    return `${markdown.slice(0, start)} ${markdown.slice(start)}`;
+  }
+
+  const spanPattern = /<span\b[^>]*>([\s\S]*?)<\/span>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = spanPattern.exec(markdown)) !== null) {
+    if (Math.abs(match.index - start) > 8) continue;
+    const innerText = stripAllProofSpanTags(match[1] ?? '');
+    if (!innerText.startsWith(insertedText)) continue;
+    const beforeSpan = stripAllProofSpanTags(markdown.slice(0, match.index)).slice(-1);
+    if (!isWordChar(beforeSpan) || !isWordChar(innerText[0])) return markdown;
+    return `${markdown.slice(0, match.index)} ${markdown.slice(match.index)}`;
+  }
+  return markdown;
+}
+
 export function __canRejectSuggestionWithoutHydrationForTests(markdown: string, mark: StoredMark): boolean {
   return canRejectSuggestionWithoutHydration(markdown, mark);
 }
@@ -1322,7 +1469,9 @@ function readState(slug: string): EngineExecutionResult {
   const readSource = 'read_source' in doc ? doc.read_source : 'projection';
   const projectionFresh = 'projection_fresh' in doc ? doc.projection_fresh : true;
   const repairPending = 'repair_pending' in doc ? doc.repair_pending : !projectionFresh;
-  const marks = parseMarks(doc.marks);
+  const parsedMarks = parseMarks(doc.marks);
+  const scrubbed = removeResurrectedMarksFromPayload(slug, parsedMarks as unknown as Record<string, unknown>);
+  const marks = scrubbed.marks as Record<string, StoredMark>;
   return {
     status: 200,
     body: {
@@ -1374,7 +1523,9 @@ async function readStateAsync(slug: string): Promise<EngineExecutionResult> {
   const readSource = 'read_source' in doc ? doc.read_source : 'projection';
   const projectionFresh = 'projection_fresh' in doc ? doc.projection_fresh : true;
   const repairPending = 'repair_pending' in doc ? doc.repair_pending : !projectionFresh;
-  const marks = parseMarks(doc.marks);
+  const parsedMarks = parseMarks(doc.marks);
+  const scrubbed = removeResurrectedMarksFromPayload(slug, parsedMarks as unknown as Record<string, unknown>);
+  const marks = scrubbed.marks as Record<string, StoredMark>;
   return {
     status: 200,
     body: {
@@ -1943,6 +2094,20 @@ function updateSuggestionStatus(
   const marks = parseMarks(doc.marks);
   const existing = marks[markId];
   if (!existing) {
+    const tombstone = getMarkTombstone(slug, markId);
+    if (tombstone?.status === status) {
+      return {
+        status: 200,
+        body: {
+          success: true,
+          shareState: doc.share_state,
+          updatedAt: doc.updated_at,
+          content: doc.markdown,
+          markdown: doc.markdown,
+          marks,
+        },
+      };
+    }
     const revisionHint = typeof body.baseRevision === 'number'
       ? body.baseRevision
       : (typeof body.revision === 'number' ? body.revision : null);
@@ -2464,6 +2629,85 @@ async function updateSuggestionStatusAsync(
     };
   }
 
+  const acceptInsertedSuggestionWithoutHydration = async (): Promise<EngineExecutionResult | null> => {
+    if (
+      status !== 'accepted'
+      || !canAcceptInsertedSuggestionWithoutHydration(doc.markdown, markId, existing)
+    ) {
+      return null;
+    }
+
+    const nextMarkdown = unwrapAcceptedInsertSuggestionSpan(doc.markdown, markId, existing) ?? doc.markdown;
+    const nextMarks = { ...marks };
+    delete nextMarks[markId];
+    const mutation = await mutateCanonicalDocument({
+      slug,
+      nextMarkdown,
+      nextMarks: nextMarks as unknown as Record<string, unknown>,
+      source: `engine:${status}:${actor}:insert-fallback`,
+      baseRevision: doc.revision,
+      strictLiveDoc: true,
+      guardPathologicalGrowth: true,
+    });
+    if (!mutation.ok) {
+      return {
+        status: mutation.status,
+        body: {
+          success: false,
+          code: mutation.code,
+          error: mutation.error,
+          ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}),
+        },
+      };
+    }
+
+    const eventId = addDocumentEvent(
+      slug,
+      `suggestion.${status}`,
+      { markId, status, by: actor },
+      actor,
+      mutationContextIdempotencyKey(context),
+      mutationContextIdempotencyRoute(context),
+    );
+    upsertMarkTombstone(slug, markId, status, mutation.document.revision);
+    await recordReviewRoomSuggestionDecisionHistory({
+      slug,
+      markId,
+      status,
+      actor,
+      mark: existing,
+      beforeRevision: doc.revision,
+      afterRevision: mutation.document.revision,
+      eventId,
+    });
+    const updatedMarks = parseMarks(mutation.document.marks);
+    const responseMarks: Record<string, StoredMark> = {
+      ...updatedMarks,
+      [markId]: {
+        ...existing,
+        ...(updatedMarks[markId] ?? {}),
+        status,
+      },
+    };
+    if ((mutation.document.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
+      bumpDocumentAccessEpoch(slug);
+    }
+    invalidateCollabDocument(slug);
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        eventId,
+        shareState: mutation.document.share_state,
+        updatedAt: mutation.document.updated_at,
+        content: mutation.document.markdown,
+        markdown: mutation.document.markdown,
+        marks: responseMarks,
+      },
+    };
+  };
+
   const structuredResult = await finalizeSuggestionThroughRehydration({
     markdown: doc.markdown,
     marks: marksForRehydration,
@@ -2471,6 +2715,9 @@ async function updateSuggestionStatusAsync(
     action: status === 'accepted' ? 'accept' : 'reject',
   });
   if (!structuredResult.ok) {
+    const visibleInsertAccepted = await acceptInsertedSuggestionWithoutHydration();
+    if (visibleInsertAccepted) return visibleInsertAccepted;
+
     const onlyTargetMarkMissing = structuredResult.missingRequiredMarkIds.length > 0
       && structuredResult.missingRequiredMarkIds.every((missingMarkId) => missingMarkId === markId);
     if (
@@ -2550,9 +2797,16 @@ async function updateSuggestionStatusAsync(
     return toStructuredMutationFailureResult(structuredResult, 'Suggestion anchor quote not found in document');
   }
 
+  const finalizedStructuredMarkdown = status === 'accepted' && existing.kind === 'insert'
+    ? (unwrapProofSpanById(structuredResult.markdown, markId) ?? structuredResult.markdown)
+    : structuredResult.markdown;
+  const nextStructuredMarkdown = status === 'accepted'
+    ? stabilizeAcceptedInsertWordBoundary(finalizedStructuredMarkdown, existing)
+    : finalizedStructuredMarkdown;
+
   const mutation = await mutateCanonicalDocument({
     slug,
-    nextMarkdown: structuredResult.markdown,
+    nextMarkdown: nextStructuredMarkdown,
     nextMarks: structuredResult.marks as unknown as Record<string, unknown>,
     source: `engine:${status}:${actor}`,
     ...buildCanonicalMutationBaseArgs(doc, context),

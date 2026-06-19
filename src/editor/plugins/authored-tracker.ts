@@ -100,7 +100,11 @@ export const authoredTrackerPlugin = $prose(() => {
       }
 
       const docChanged = transactions.some(tr => tr.docChanged);
-      const skipAuthored = transactions.some(tr => tr.getMeta('ai-authored') || tr.getMeta('document-load'));
+      const skipAuthored = transactions.some(tr =>
+        tr.getMeta('ai-authored')
+        || tr.getMeta('document-load')
+        || tr.getMeta('suggestions-wrapped')
+      );
 
       if (!docChanged || skipAuthored) {
         pendingHumanRanges = [];

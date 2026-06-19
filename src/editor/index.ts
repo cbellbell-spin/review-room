@@ -236,6 +236,7 @@ import { WebHaptics } from 'web-haptics';
 import '../agent/external-agent-bridge';
 
 const LEGACY_REST_FALLBACK = false;
+const COLLAB_REMOTE_EDIT_SETTLE_MS = 2000;
 
 // Global proof interface for the web editor runtime
 declare global {
@@ -1058,6 +1059,9 @@ class ProofEditorImpl implements ProofEditor {
   private collabConnectionStatus: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
   private collabIsSynced: boolean = false;
   private collabWasConnectedSynced: boolean = false;
+  private collabEditorBindingReady: boolean = false;
+  private collabEditorBindingSeq: number = 0;
+  private collabTransportRecoveryAttempts: number = 0;
   private collabUnsyncedChanges: number = 0;
   private collabPendingLocalUpdates: number = 0;
   private collabUnhealthySinceMs: number | null = null;
@@ -1067,6 +1071,8 @@ class ProofEditorImpl implements ProofEditor {
   // This prevents transient empty-doc renders while reconnecting to a fresh Yjs room.
   private pendingCollabRebindOnSync: boolean = false;
   private pendingCollabRebindResetDoc: boolean = false;
+  private collabRemoteSettlingUntilMs: number = 0;
+  private collabRemoteSettleTimer: ReturnType<typeof setTimeout> | null = null;
   private collabHydrationAttemptSeq: number = 0;
   private collabHydrationRunning: boolean = false;
   private hasCompletedInitialCollabHydration: boolean = false;
@@ -1074,8 +1080,15 @@ class ProofEditorImpl implements ProofEditor {
   private lastContentChangeSource: 'local' | 'remote' | 'system' | null = null;
   private pendingProjectionPublish: boolean = false;
   private pendingCollabMarksMetadata: Record<string, StoredMark> | null = null;
+  private collabMarksApplyTimer: ReturnType<typeof setTimeout> | null = null;
   private initialMarksSynced: boolean = false;
   private lastReceivedServerMarks: Record<string, StoredMark> = {};
+  private reviewRoomFinalizedSuggestionIds: Set<string> = new Set();
+  private reviewRoomPendingCanonicalDecisionDocument: {
+    markdown: string;
+    marks: Record<string, unknown>;
+  } | null = null;
+  private reviewRoomDecisionMutationInFlight: boolean = false;
   private collabTemplateSeedClaimId: string | null = null;
   private collabTemplateClaimCheckTimer: ReturnType<typeof setTimeout> | null = null;
   private collabTemplateRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1113,6 +1126,8 @@ class ProofEditorImpl implements ProofEditor {
   private shareStatusHideTimer: ReturnType<typeof setTimeout> | null = null;
   private reviewRoomAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
   private reviewRoomLastSavedSnapshotKey: string | null = null;
+  private reviewRoomLastPersistedReviewSnapshotKey: string | null = null;
+  private reviewRoomLastPersistedReviewAtMs: number = 0;
   private reviewRoomHasUnsavedChanges: boolean = false;
   private reviewRoomSaveInFlight: boolean = false;
   private reviewRoomSaveQueued: boolean = false;
@@ -1433,15 +1448,21 @@ class ProofEditorImpl implements ProofEditor {
       const reviewRoomRole = this.parseReviewRoomRole(context?.reviewRoom?.currentRole);
       this.reviewRoomCurrentRole = reviewRoomRole;
       this.reviewRoomCanManageMembers = reviewRoomRole === 'owner';
+      const reviewRoomIdentityId = typeof context?.reviewRoom?.identityId === 'string' && context.reviewRoom.identityId.trim()
+        ? context.reviewRoom.identityId.trim()
+        : null;
+      if (this.isReviewRoomRuntime() && canActInDocument && !reviewRoomIdentityId) {
+        throw new Error('Review Room member identity is missing. Open the document from a tokenized collaborator link before editing or reviewing.');
+      }
       const existingViewerName = getViewerName();
-      this.shareViewerName = existingViewerName ?? this.shareViewerName ?? this.deriveDefaultShareViewerName();
-      setCurrentActorValue(`human:${this.shareViewerName || 'Anonymous'}`);
+      this.shareViewerName = reviewRoomIdentityId ?? existingViewerName ?? this.shareViewerName ?? this.deriveDefaultShareViewerName();
+      setCurrentActorValue(reviewRoomIdentityId ? `human:${reviewRoomIdentityId}` : `human:${this.shareViewerName || 'Anonymous'}`);
       shareClient.setViewerName(this.shareViewerName || 'Anonymous');
       collabClient.setLocalUser(
         { name: this.shareViewerName || 'Anonymous' },
         shareClient.getSlug() ?? undefined
       );
-      if (wantsNamePrompt && canActInDocument && !existingViewerName) {
+      if (wantsNamePrompt && canActInDocument && !existingViewerName && !reviewRoomIdentityId) {
         void promptForName()
           .then((name) => {
             const resolvedName = typeof name === 'string' && name.trim().length > 0
@@ -1563,7 +1584,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = { ...mergedIncomingMarks };
           this.initialMarksSynced = true;
           if (Object.keys(mergedIncomingMarks).length > 0 && !this.isEditorDocStructurallyEmpty()) {
-            this.applyLatestCollabMarksToEditor();
+            this.scheduleLatestCollabMarksToEditor();
           }
         });
         collabClient.onPresence((count) => {
@@ -1579,8 +1600,14 @@ class ProofEditorImpl implements ProofEditor {
           this.collabUnsyncedChanges = status.unsyncedChanges;
           this.collabPendingLocalUpdates = status.pendingLocalUpdates;
           this.updateShareEditGate();
-          if (status.connectionStatus === 'disconnected' && collabClient.terminalCloseReason === 'permission-denied') {
-            void this.refreshCollabSessionAndReconnect(false);
+          if (
+            status.connectionStatus === 'disconnected'
+            && (
+              collabClient.terminalCloseReason === 'permission-denied'
+              || Boolean(collabClient.lastAuthenticationFailureReason)
+            )
+          ) {
+            void this.refreshCollabSessionAndReconnect(this.shouldPreservePendingLocalCollabState());
           }
           const isConnectedSynced = status.connectionStatus === 'connected' && status.isSynced;
           // Only run the heavy one-time setup on the rising edge (transition INTO
@@ -1610,6 +1637,24 @@ class ProofEditorImpl implements ProofEditor {
               this.kickCollabHydration();
               this.applyLatestCollabMarksToEditor();
               setTimeout(() => this.applyLatestCollabMarksToEditor(), 150);
+              if (this.reviewRoomPendingCanonicalDecisionDocument) {
+                setTimeout(() => {
+                  const pendingDecision = this.reviewRoomPendingCanonicalDecisionDocument;
+                  if (!pendingDecision) return;
+                  const decisionMarks = { ...(pendingDecision.marks as Record<string, StoredMark>) };
+                  for (const finalizedId of this.reviewRoomFinalizedSuggestionIds) {
+                    delete decisionMarks[finalizedId];
+                  }
+                  this.lastReceivedServerMarks = { ...decisionMarks };
+                  this.initialMarksSynced = true;
+                  this.loadDocument(embedMarks(pendingDecision.markdown, decisionMarks), {
+                    allowShareContentMutation: true,
+                  });
+                  this.applyExternalMarks(decisionMarks, { authoritative: true });
+                  this.reviewRoomPendingCanonicalDecisionDocument = null;
+                  this.captureReviewRoomPersistedReviewSnapshot();
+                }, 0);
+              }
               this.installShareAgentPresenceObservers();
               this.clearErrorBanner();
               this.resetShareInitRetryState();
@@ -1626,6 +1671,9 @@ class ProofEditorImpl implements ProofEditor {
           if (this.collabUnsyncedChanges > 0) return;
           if (this.collabConnectionStatus === 'connected' && this.collabIsSynced) return;
           void this.refreshCollabSessionAfterDocumentUpdated();
+        });
+        collabClient.onRemoteUpdate(() => {
+          this.deferLocalEditsForRemoteCollabUpdate();
         });
         this.resetPendingCollabTemplateState(false);
         this.pendingCollabTemplateMarkdown = this.shouldAllowCollabTemplateSeed(collabSession.session)
@@ -2013,6 +2061,31 @@ class ProofEditorImpl implements ProofEditor {
     return editorText === fragmentText;
   }
 
+  private isEditorBoundToActiveCollabDoc(): boolean {
+    if (!this.editor) return false;
+    const activeYDoc = collabClient.getYDoc();
+    if (!activeYDoc) return false;
+
+    let isBound = false;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      try {
+        const ystate = (ySyncPluginKey.getState(view.state) as any) ?? null;
+        const binding = ystate?.binding;
+        isBound = Boolean(
+          ystate?.doc === activeYDoc
+          && ystate?.type?.doc === activeYDoc
+          && binding?.doc === activeYDoc
+          && binding?.type?.doc === activeYDoc
+          && binding?.prosemirrorView === view,
+        );
+      } catch {
+        isBound = false;
+      }
+    });
+    return isBound;
+  }
+
   private kickCollabHydration(): void {
     if (!this.isShareMode || !this.collabEnabled) return;
     if (!this.editor) return;
@@ -2103,6 +2176,9 @@ class ProofEditorImpl implements ProofEditor {
 
   private connectCollabService(resetEditorDoc = false): void {
     if (!this.editor) return;
+    const bindingSeq = ++this.collabEditorBindingSeq;
+    this.collabEditorBindingReady = false;
+    this.updateShareEditGate();
     this.editor.action((ctx) => {
       const collabService = ctx.get(collabServiceCtx);
       const ydoc = collabClient.getYDoc();
@@ -2143,6 +2219,60 @@ class ProofEditorImpl implements ProofEditor {
       collabService.bindDoc(ydoc);
       collabService.connect();
       this.installCollabCursorsWhenReady(view, ctx, collabService);
+      let transportProbeInFlight = false;
+      const finishBindingReady = () => {
+        if (bindingSeq !== this.collabEditorBindingSeq) return;
+        if (ydoc !== collabClient.getYDoc()) return;
+        this.collabTransportRecoveryAttempts = 0;
+        this.collabEditorBindingReady = true;
+        if (resetEditorDoc) {
+          // Clearing before bind is not sufficient: the retiring y-sync binding
+          // can repaint stale anchors while it is being disconnected. Once the
+          // replacement binding is structurally active, apply the new room's
+          // mark map authoritatively so absent finalized marks stay absent.
+          this.suppressMarksSync = true;
+          try {
+            this.applyExternalMarks(this.lastReceivedServerMarks, { authoritative: true });
+          } finally {
+            this.suppressMarksSync = false;
+          }
+        }
+        this.updateShareEditGate();
+      };
+      const markBindingReady = (attempt: number) => {
+        if (bindingSeq !== this.collabEditorBindingSeq) return;
+        if (ydoc !== collabClient.getYDoc()) return;
+        if (
+          this.collabConnectionStatus === 'connected'
+          && this.collabIsSynced
+          && this.isEditorBoundToActiveCollabDoc()
+        ) {
+          if (transportProbeInFlight) return;
+          transportProbeInFlight = true;
+          void collabClient.verifyTransportRoundTrip(ydoc).then((ready) => {
+            transportProbeInFlight = false;
+            if (bindingSeq !== this.collabEditorBindingSeq) return;
+            if (ydoc !== collabClient.getYDoc()) return;
+            if (ready && this.isEditorBoundToActiveCollabDoc()) {
+              finishBindingReady();
+              return;
+            }
+            if (this.collabTransportRecoveryAttempts < 3) {
+              this.collabTransportRecoveryAttempts += 1;
+              setTimeout(() => {
+                if (bindingSeq !== this.collabEditorBindingSeq) return;
+                if (ydoc !== collabClient.getYDoc()) return;
+                void this.refreshCollabSessionAndReconnect(false);
+              }, 100);
+            }
+          });
+          return;
+        }
+        if (attempt < 120) {
+          setTimeout(() => markBindingReady(attempt + 1), 25);
+        }
+      };
+      markBindingReady(0);
     });
   }
 
@@ -2321,6 +2451,8 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private disconnectCollabService(): void {
+    this.collabEditorBindingSeq += 1;
+    this.collabEditorBindingReady = false;
     if (!this.editor) return;
     this.pendingCollabRebindOnSync = false;
     this.pendingCollabRebindResetDoc = false;
@@ -2351,6 +2483,9 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private shouldPreservePendingLocalCollabState(): boolean {
+    if (this.reviewRoomDecisionMutationInFlight || this.reviewRoomPendingCanonicalDecisionDocument) {
+      return false;
+    }
     return this.collabCanEdit
       && (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0);
   }
@@ -2518,10 +2653,25 @@ class ProofEditorImpl implements ProofEditor {
           reconnectTemplate = this.normalizeMarkdownForCollab(this.lastMarkdown);
         }
       } else {
+        // An access-epoch change means a canonical server mutation finalized or
+        // rewrote review state. Clear local review anchors before attaching the
+        // new Y.Doc so stale pending marks cannot be published into the new
+        // epoch. Do not seed marks from the REST read below: while invalidation
+        // is in flight that read can legitimately come from the old live room.
+        this.suppressMarksSync = true;
+        try {
+          this.applyExternalMarks({}, { authoritative: true });
+        } finally {
+          this.suppressMarksSync = false;
+        }
+        this.lastReceivedServerMarks = {};
+        this.initialMarksSynced = false;
         try {
           const latest = await shareClient.fetchDocument();
-          if (!this.isShareRequestError(latest) && latest && typeof latest.markdown === 'string' && latest.markdown.trim().length > 0) {
-            reconnectTemplate = this.normalizeMarkdownForCollab(latest.markdown);
+          if (!this.isShareRequestError(latest) && latest) {
+            if (typeof latest.markdown === 'string' && latest.markdown.trim().length > 0) {
+              reconnectTemplate = this.normalizeMarkdownForCollab(latest.markdown);
+            }
           }
         } catch {
           // best-effort; reconnect against the live room without replaying stale local projection.
@@ -2582,6 +2732,32 @@ class ProofEditorImpl implements ProofEditor {
     this.uninstallShareContentFilter();
   }
 
+  private isCollabRemoteSettling(): boolean {
+    return Date.now() < this.collabRemoteSettlingUntilMs;
+  }
+
+  private hasRecentLocalEditorInput(): boolean {
+    return (Date.now() - this.lastLocalTypingAt) < this.collabTypingRecoveryGraceMs;
+  }
+
+  private deferLocalEditsForRemoteCollabUpdate(): void {
+    if (!this.isShareMode || !this.collabEnabled) return;
+    if (this.hasRecentLocalEditorInput()) return;
+    this.collabRemoteSettlingUntilMs = Date.now() + COLLAB_REMOTE_EDIT_SETTLE_MS;
+    this.updateShareEditGate();
+    if (this.collabRemoteSettleTimer !== null) {
+      clearTimeout(this.collabRemoteSettleTimer);
+    }
+    this.collabRemoteSettleTimer = setTimeout(() => {
+      this.collabRemoteSettleTimer = null;
+      if (this.isCollabRemoteSettling()) {
+        this.deferLocalEditsForRemoteCollabUpdate();
+        return;
+      }
+      this.updateShareEditGate();
+    }, COLLAB_REMOTE_EDIT_SETTLE_MS + 25);
+  }
+
   private updateShareEditGate(): void {
     if (!this.isShareMode) return;
     const awaitingTemplateSeed = Boolean(this.pendingCollabTemplateMarkdown && this.pendingCollabTemplateMarkdown.length > 0);
@@ -2589,6 +2765,10 @@ class ProofEditorImpl implements ProofEditor {
       && this.collabCanEdit
       && this.collabConnectionStatus === 'connected'
       && this.collabIsSynced
+      && this.collabEditorBindingReady
+      && this.isEditorBoundToActiveCollabDoc()
+      && !this.pendingCollabRebindOnSync
+      && !this.isCollabRemoteSettling()
       && !awaitingTemplateSeed;
     // Once initial hydration has completed, the editor is authoritative for local
     // edits and y-prosemirror's ySync plugin handles bidirectional sync. We must
@@ -4133,7 +4313,24 @@ class ProofEditorImpl implements ProofEditor {
     const role = document.createElement('div');
     role.textContent = this.formatReviewRoomRole(member.role);
     role.style.cssText = 'flex:0 0 auto;border:1px solid rgba(255,255,255,0.14);border-radius:999px;padding:4px 8px;font-size:11px;font-weight:750;color:rgba(255,255,255,0.80);background:rgba(255,255,255,0.06);';
-    row.append(left, role);
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;align-items:center;gap:8px;flex:0 0 auto;';
+    actions.appendChild(role);
+    if (member.openPath && member.openPath.includes('token=')) {
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = 'Copy link';
+      copy.style.cssText = 'border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.88);border-radius:999px;padding:5px 8px;font-size:11px;font-weight:750;cursor:pointer;';
+      copy.onclick = () => {
+        void (async () => {
+          const copied = await this.copyLinkWithFallback(this.absoluteReviewRoomOpenUrl(member.openPath));
+          copy.textContent = copied ? 'Copied' : 'Copy failed';
+          window.setTimeout(() => { copy.textContent = 'Copy link'; }, 1600);
+        })();
+      };
+      actions.appendChild(copy);
+    }
+    row.append(left, actions);
     return row;
   }
 
@@ -4666,6 +4863,17 @@ class ProofEditorImpl implements ProofEditor {
     return JSON.stringify({ markdown: snapshot.markdown, marks: snapshot.marks });
   }
 
+  private captureReviewRoomPersistedReviewSnapshot(
+    snapshot: { markdown: string; marks: Record<string, unknown> } | null = this.serializeCurrentShareDocument(),
+  ): void {
+    if (!snapshot) {
+      this.reviewRoomLastPersistedReviewSnapshotKey = null;
+      return;
+    }
+    this.reviewRoomLastPersistedReviewSnapshotKey = this.getReviewRoomSnapshotKey(snapshot);
+    this.reviewRoomLastPersistedReviewAtMs = Date.now();
+  }
+
   private captureReviewRoomSavedSnapshot(): void {
     if (!this.reviewRoomRestSaveMode) return;
     const snapshot = this.serializeCurrentShareDocument();
@@ -4921,22 +5129,35 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private async refreshReviewRoomDocumentFromServer(): Promise<void> {
-    const doc = await shareClient.fetchDocument();
+    const pendingCanonicalDecision = this.reviewRoomPendingCanonicalDecisionDocument;
+    const doc = pendingCanonicalDecision ?? await shareClient.fetchDocument();
     if (!doc) return;
-    this.applyShareTitle(doc.title);
-    const serverMarks = doc.marks as Record<string, StoredMark>;
+    if ('title' in doc) {
+      this.applyShareTitle(doc.title);
+    }
+    const serverMarks = { ...(doc.marks as Record<string, StoredMark>) };
+    for (const finalizedId of this.reviewRoomFinalizedSuggestionIds) {
+      delete serverMarks[finalizedId];
+    }
     this.lastReceivedServerMarks = { ...serverMarks };
     this.initialMarksSynced = true;
-    if (!this.collabEnabled) {
+    if (!this.collabEnabled || this.reviewRoomFinalizedSuggestionIds.size > 0) {
       // Only the REST save mode may replace the document wholesale. With live
       // collab connected, a local replaceWith races the same change arriving
       // over the websocket (concurrent full replaces duplicate or revert
       // content); the collab runtime delivers content and marks instead.
+      // After an explicit suggestion decision, the server has bumped the collab
+      // epoch and is authoritative; reloading prevents stale local marks from
+      // resurfacing in the Review pane while the socket reconnects.
       const contentWithMarks = embedMarks(doc.markdown, serverMarks);
       this.loadDocument(contentWithMarks, { allowShareContentMutation: true });
       if (Object.keys(serverMarks).length > 0) {
         this.applyExternalMarks(serverMarks);
       }
+      if (pendingCanonicalDecision && !this.collabEnabled) {
+        this.reviewRoomPendingCanonicalDecisionDocument = null;
+      }
+      this.captureReviewRoomPersistedReviewSnapshot();
       this.captureReviewRoomSavedSnapshot();
     }
     void this.updateReviewRoomReviewButtonCount();
@@ -4975,14 +5196,57 @@ class ProofEditorImpl implements ProofEditor {
   private async persistReviewRoomReviewMarks(): Promise<boolean> {
     const snapshot = this.serializeCurrentShareDocument();
     if (!snapshot) return false;
+    if (this.getReviewRoomSnapshotKey(snapshot) === this.reviewRoomLastPersistedReviewSnapshotKey) {
+      return true;
+    }
     if (this.reviewRoomRestSaveMode && this.collabCanEdit) {
       return this.saveReviewRoomDocument({ source: 'manual' });
     }
     if (this.collabEnabled && this.collabCanEdit) {
-      this.flushShareMarks({ persistContent: true });
+      if (this.collabConnectionStatus !== 'connected' || !this.collabIsSynced) return false;
+
+      // The bound Y.Doc is the content authority in live collaboration. Writing a
+      // serialized editor snapshot here races the Yjs projection and can persist
+      // duplicated remote content immediately before an accept/reject mutation.
+      collabClient.setMarksMetadata(snapshot.marks);
+      const deadline = Date.now() + 5_000;
+      while (
+        Date.now() < deadline
+        && (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0)
+      ) {
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+      }
+      if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) return false;
+
+      this.lastReceivedServerMarks = { ...snapshot.marks } as Record<string, StoredMark>;
+      this.captureReviewRoomPersistedReviewSnapshot(snapshot);
       return true;
     }
     return shareClient.pushMarks(snapshot.marks, getCurrentActor());
+  }
+
+  private getReviewRoomSuggestionFinalizeBlockReason(): string | null {
+    if (!this.collabEnabled) return null;
+    const snapshot = this.serializeCurrentShareDocument();
+    if (snapshot && this.getReviewRoomSnapshotKey(snapshot) === this.reviewRoomLastPersistedReviewSnapshotKey) {
+      return null;
+    }
+    if (this.collabConnectionStatus !== 'connected') {
+      return 'Realtime sync is disconnected. Reconnect before accepting or rejecting suggestions.';
+    }
+    if (!this.collabIsSynced) {
+      return 'Realtime sync is still catching up. Wait for the green sync indicator before accepting or rejecting suggestions.';
+    }
+    if (this.isCollabRemoteSettling()) {
+      return 'Remote edits are still settling. Wait a moment before accepting or rejecting suggestions.';
+    }
+    if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) {
+      if (this.reviewRoomLastPersistedReviewAtMs > 0 && this.lastLocalTypingAt <= this.reviewRoomLastPersistedReviewAtMs) {
+        return null;
+      }
+      return 'Local changes are still syncing. Wait for the document to finish saving before accepting or rejecting suggestions.';
+    }
+    return null;
   }
 
   private focusReviewRoomMark(markId: string): void {
@@ -5004,64 +5268,14 @@ class ProofEditorImpl implements ProofEditor {
 
   private async openReviewRoomReviewPanel(options: ReviewRoomReviewPanelOptions = {}): Promise<void> {
     if (!this.isShareMode) return;
+    if (this.collabCanEdit && this.shareAllowLocalEdits) {
+      await this.persistReviewRoomReviewMarks();
+    }
     await openReviewPanelUi(this.buildReviewPanelHost(), options);
   }
 
-  /**
-   * Fetch the document for the Review pane, overlaying live editor content onto
-   * the server projection. The server projection's mark metadata can carry
-   * fragmented `content` (e.g. when rapid/concurrent typing split an insertion
-   * into chunks), which makes the Review pane show garbled text like "hpf" for
-   * "hopefully" even when the body renders correctly. The live editor holds the
-   * authoritative covered text per mark (the `quote` of each mark = the actual
-   * document text in its range), so we overlay that onto matching suggestion
-   * marks for display while keeping the server's authoritative status/fields.
-   */
-  private async fetchReviewDocumentWithLiveContent(): Promise<{ markdown?: string | null; marks?: Record<string, unknown> } | null> {
-    const serverDoc = await shareClient.fetchDocument();
-    if (!serverDoc || !this.isShareMode || !this.editor) return serverDoc;
-
-    let liveMarks: Record<string, StoredMark> = {};
-    try {
-      this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
-        liveMarks = getMarkMetadataWithQuotes(view.state);
-      });
-    } catch {
-      return serverDoc;
-    }
-    if (Object.keys(liveMarks).length === 0) return serverDoc;
-
-    const serverMarks = (serverDoc.marks && typeof serverDoc.marks === 'object' && !Array.isArray(serverDoc.marks))
-      ? serverDoc.marks as Record<string, unknown>
-      : {};
-    const mergedMarks: Record<string, unknown> = { ...serverMarks };
-    for (const [id, live] of Object.entries(liveMarks)) {
-      const liveRec = live as Record<string, unknown>;
-      const kind = liveRec.kind;
-      if (kind !== 'insert' && kind !== 'replace' && kind !== 'delete') continue;
-      // The mark's quote is the actual text covered by its range in the live doc.
-      const liveText = typeof liveRec.quote === 'string' && liveRec.quote.length > 0
-        ? liveRec.quote
-        : (typeof liveRec.content === 'string' ? liveRec.content : '');
-      if (!liveText) continue;
-      // Overlay live range/anchor too: the Review pane groups contiguous inserts
-      // using these positions, and stale/missing range metadata on the server
-      // marks makes one insertion render as multiple chunks. The live doc has the
-      // accurate positions.
-      const liveOverlay: Record<string, unknown> = { content: liveText };
-      if (liveRec.range && typeof liveRec.range === 'object') liveOverlay.range = liveRec.range;
-      if (liveRec.startRel !== undefined) liveOverlay.startRel = liveRec.startRel;
-      if (liveRec.endRel !== undefined) liveOverlay.endRel = liveRec.endRel;
-      if (typeof liveRec.quote === 'string') liveOverlay.quote = liveRec.quote;
-      const existing = mergedMarks[id];
-      if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-        mergedMarks[id] = { ...(existing as Record<string, unknown>), ...liveOverlay };
-      } else {
-        mergedMarks[id] = { ...liveRec, ...liveOverlay };
-      }
-    }
-    return { ...serverDoc, marks: mergedMarks };
+  private async fetchReviewDocumentForPanel(): Promise<{ markdown?: string | null; marks?: Record<string, unknown> } | null> {
+    return shareClient.fetchDocument();
   }
 
   private buildReviewPanelHost(): ReviewPanelHost {
@@ -5073,16 +5287,48 @@ class ProofEditorImpl implements ProofEditor {
       resolveComment: (commentId) => this.markResolve(commentId),
       deleteCommentThread: (commentId) => this.markDeleteThread(commentId),
       acceptSuggestion: async (suggestionId) => {
-        const result = await shareClient.acceptSuggestion(suggestionId, getCurrentActor());
-        return Boolean(result && !('error' in result) && result.success === true);
+        this.reviewRoomDecisionMutationInFlight = true;
+        try {
+          const result = await shareClient.acceptSuggestion(suggestionId, getCurrentActor());
+          const succeeded = Boolean(result && !('error' in result) && result.success === true);
+          if (succeeded && result && !('error' in result)) {
+            this.reviewRoomFinalizedSuggestionIds.add(suggestionId);
+            const markdown = result.markdown ?? result.content;
+            if (typeof markdown === 'string' && result.marks) {
+              this.reviewRoomPendingCanonicalDecisionDocument = {
+                markdown,
+                marks: result.marks,
+              };
+            }
+          }
+          return succeeded;
+        } finally {
+          this.reviewRoomDecisionMutationInFlight = false;
+        }
       },
       rejectSuggestion: async (suggestionId) => {
-        const result = await shareClient.rejectSuggestion(suggestionId, getCurrentActor());
-        return Boolean(result && !('error' in result) && result.success === true);
+        this.reviewRoomDecisionMutationInFlight = true;
+        try {
+          const result = await shareClient.rejectSuggestion(suggestionId, getCurrentActor());
+          const succeeded = Boolean(result && !('error' in result) && result.success === true);
+          if (succeeded && result && !('error' in result)) {
+            this.reviewRoomFinalizedSuggestionIds.add(suggestionId);
+            const markdown = result.markdown ?? result.content;
+            if (typeof markdown === 'string' && result.marks) {
+              this.reviewRoomPendingCanonicalDecisionDocument = {
+                markdown,
+                marks: result.marks,
+              };
+            }
+          }
+          return succeeded;
+        } finally {
+          this.reviewRoomDecisionMutationInFlight = false;
+        }
       },
       refreshDocumentFromServer: () => this.refreshReviewRoomDocumentFromServer(),
       focusMark: (markId) => this.focusReviewRoomMark(markId),
-      fetchDocument: () => this.fetchReviewDocumentWithLiveContent(),
+      fetchDocument: () => this.fetchReviewDocumentForPanel(),
       fetchHistory: async (limit) => {
         const result = await shareClient.fetchReviewRoomHistory({ limit });
         return result && !('error' in result) && result.success ? result.events : [];
@@ -5114,6 +5360,7 @@ class ProofEditorImpl implements ProofEditor {
       canCreateBaseline: () => this.collabCanEdit,
       canUpdateTasks: () => this.collabCanComment,
       isRealtimeAvailable: () => !this.reviewRoomRestSaveMode,
+      getSuggestionFinalizeBlockReason: () => this.getReviewRoomSuggestionFinalizeBlockReason(),
       onToggle: (expanded) => {
         this.reviewRoomReviewButtonEl?.setAttribute('aria-expanded', String(expanded));
       },
@@ -5235,7 +5482,7 @@ class ProofEditorImpl implements ProofEditor {
     button.append(knob, label);
 
     button.onclick = () => {
-      if (!this.editor || !this.collabCanEdit) return;
+      if (!this.editor || !this.collabCanEdit || !this.shareAllowLocalEdits) return;
       this.toggleSuggestions();
       this.updateReviewRoomSuggestingToggle();
       this.triggerHaptic('selection');
@@ -5256,7 +5503,7 @@ class ProofEditorImpl implements ProofEditor {
     const button = this.reviewRoomSuggestingButtonEl;
     if (!button) return;
     const enabled = this.isSuggestionsEnabled();
-    const canUse = this.collabCanEdit;
+    const canUse = this.collabCanEdit && this.shareAllowLocalEdits;
     button.disabled = !canUse;
     button.setAttribute('aria-checked', String(enabled));
     button.style.background = enabled ? '#eaf6f1' : '#fff';
@@ -5425,10 +5672,11 @@ class ProofEditorImpl implements ProofEditor {
         menu.appendChild(hr);
       };
 
-      addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
       if (this.isReviewRoomRuntime()) {
         addActionItem(`Your access: ${this.formatReviewRoomRole(this.reviewRoomCurrentRole)}`, () => this.openReviewRoomMembersModal(), { subtle: true });
         addActionItem(this.reviewRoomCanManageMembers ? 'Manage collaborators' : 'View collaborators', () => this.openReviewRoomMembersModal());
+      } else {
+        addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
       }
       addItem('Download Markdown', async () => this.downloadCurrentDocument('markdown'), { successText: 'Saved' });
       addItem('Download Text', async () => this.downloadCurrentDocument('text'), { successText: 'Saved' });
@@ -5966,14 +6214,17 @@ class ProofEditorImpl implements ProofEditor {
     this.scheduleBannerLayoutUpdate();
   }
 
-  applyExternalMarks(marks: Record<string, StoredMark>): void {
+  applyExternalMarks(marks: Record<string, StoredMark>, options?: { authoritative?: boolean }): void {
     if (!this.editor) return;
 
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       // Use applyRemoteMarks to create ProseMirror anchors for new marks
       // (using the `quote` field) and merge metadata for existing marks.
-      applyRemoteMarks(view, marks, { hydrateAnchors: this.collabCanEdit });
+      applyRemoteMarks(view, marks, {
+        hydrateAnchors: this.collabCanEdit,
+        authoritative: options?.authoritative === true,
+      });
     });
   }
 
@@ -5998,6 +6249,31 @@ class ProofEditorImpl implements ProofEditor {
       this.suppressMarksSync = false;
       this.applyingCollabRemote = false;
     }
+  }
+
+  private scheduleLatestCollabMarksToEditor(): void {
+    if (!this.editor) return;
+    let activelyTyping = false;
+    try {
+      const view = this.editor.ctx.get(editorViewCtx);
+      activelyTyping = view.hasFocus() && (Date.now() - this.lastLocalTypingAt) < 600;
+    } catch {
+      // Fall through to immediate application if the editor view is unavailable.
+    }
+    if (!activelyTyping) {
+      if (this.collabMarksApplyTimer) {
+        clearTimeout(this.collabMarksApplyTimer);
+        this.collabMarksApplyTimer = null;
+      }
+      this.applyLatestCollabMarksToEditor();
+      return;
+    }
+
+    if (this.collabMarksApplyTimer) clearTimeout(this.collabMarksApplyTimer);
+    this.collabMarksApplyTimer = setTimeout(() => {
+      this.collabMarksApplyTimer = null;
+      this.scheduleLatestCollabMarksToEditor();
+    }, 625);
   }
 
   private resetProjectionPublishState(): void {

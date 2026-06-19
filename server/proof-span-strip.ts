@@ -454,6 +454,38 @@ export function listAuthoredProofSpanBounds(markdown: string): AuthoredSpanBound
   return spans;
 }
 
+/**
+ * Remove only the opening/closing wrapper for a Proof span id while preserving
+ * its exact inner markup. The stack-based match is required for suggestions
+ * that contain nested authored/comment spans; a non-greedy regex pairs the
+ * outer opening tag with the first inner closing tag and corrupts the document.
+ */
+export function unwrapProofSpanById(markdown: string, proofId: string): string | null {
+  if (!proofId) return null;
+  const spanTagRegex = /<\/?span\b[^>]*>/gi;
+  const stack: Array<{ openStart: number; openEnd: number; proofId: string | null }> = [];
+
+  for (const match of markdown.matchAll(spanTagRegex)) {
+    const matchIndex = match.index ?? -1;
+    if (matchIndex < 0) continue;
+    const tag = match[0];
+    if (!tag.startsWith('</')) {
+      stack.push({
+        openStart: matchIndex,
+        openEnd: matchIndex + tag.length,
+        proofId: extractProofSpanId(tag),
+      });
+      continue;
+    }
+
+    const entry = stack.pop();
+    if (!entry || entry.proofId !== proofId) continue;
+    return `${markdown.slice(0, entry.openStart)}${markdown.slice(entry.openEnd, matchIndex)}${markdown.slice(matchIndex + tag.length)}`;
+  }
+
+  return null;
+}
+
 export function expandRangeToIncludeFullyWrappedAuthoredSpan(
   markdown: string,
   start: number,
