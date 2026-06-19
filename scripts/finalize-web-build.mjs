@@ -9,8 +9,8 @@ const manifestPath = path.join(distDir, 'web-artifact-manifest.json');
 const buildInfoPath = path.join(root, '.proof-build-info.json');
 
 const packageJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
-let commitSha = process.env.GIT_COMMIT_SHA ?? 'uncommitted';
-if (!process.env.GIT_COMMIT_SHA) {
+let commitSha = process.env.GIT_COMMIT_SHA?.trim() || 'uncommitted';
+if (!process.env.GIT_COMMIT_SHA?.trim()) {
   try {
     commitSha = execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
   } catch {

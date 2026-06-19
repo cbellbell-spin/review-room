@@ -892,6 +892,24 @@ reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Resp
   });
 });
 
+reviewRoomRoutes.patch('/review-room/api/identity', async (req: Request, res: Response) => {
+  const identityId = getCurrentReviewRoomIdentityId(req);
+  const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim().slice(0, 120) : '';
+  if (!displayName) {
+    res.status(400).json({ success: false, code: 'DISPLAY_NAME_REQUIRED', error: 'Display name is required.' });
+    return;
+  }
+  const existing = await storeGetReviewRoomIdentity(identityId);
+  const identity = await storeUpsertReviewRoomIdentity({
+    id: identityId,
+    workspaceId: existing?.workspace_id ?? REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+    kind: existing?.kind === 'agent' ? 'agent' : 'human',
+    managerIdentityId: existing?.manager_identity_id ?? null,
+    displayName,
+  });
+  res.json({ success: true, currentIdentity: identity });
+});
+
 reviewRoomRoutes.get('/review-room/api/agents', async (_req: Request, res: Response) => {
   const agents = await storeListReviewRoomAgents(REVIEW_ROOM_DEFAULT_WORKSPACE_ID);
   res.json({

@@ -200,6 +200,10 @@ const collabReconnectHistogram = registry.histogram(
   'Client-observed collaboration reconnect latency in milliseconds',
   DEFAULT_RECONNECT_BUCKETS_MS,
 );
+const collabIncidentCounter = registry.counter(
+  'collab_client_incident_total',
+  'Privacy-safe client collaboration lifecycle events',
+);
 const markAnchorResolutionCounter = registry.counter(
   'mark_anchor_resolution_total',
   'Mark anchor resolution outcomes from collaborative updates',
@@ -1018,6 +1022,33 @@ metricsApiRoutes.post('/collab-reconnect', (req: Request, res: Response) => {
     ? req.body.source.trim()
     : 'web';
   recordCollabReconnect(durationMs, source);
+  res.json({ success: true });
+});
+
+metricsApiRoutes.post('/collab-incident', (req: Request, res: Response) => {
+  const allowedEvents = new Set([
+    'transport_probe_start', 'transport_probe_success', 'transport_probe_failure',
+    'recovery_attempt', 'recovery_success', 'recovery_failure', 'edit_gate_closed', 'edit_gate_open',
+  ]);
+  const event = typeof req.body?.event === 'string' ? req.body.event.trim() : '';
+  if (!allowedEvents.has(event)) {
+    res.status(400).json({ success: false, error: 'unknown collaboration incident event' });
+    return;
+  }
+  const safe = {
+    event,
+    providerGeneration: Number.isFinite(req.body?.providerGeneration) ? Number(req.body.providerGeneration) : null,
+    accessEpoch: Number.isFinite(req.body?.accessEpoch) ? Number(req.body.accessEpoch) : null,
+    recoveryAttempt: Number.isFinite(req.body?.recoveryAttempt) ? Number(req.body.recoveryAttempt) : null,
+    unhealthyDurationMs: Number.isFinite(req.body?.unhealthyDurationMs) ? Number(req.body.unhealthyDurationMs) : null,
+    unsyncedCount: Number.isFinite(req.body?.unsyncedCount) ? Number(req.body.unsyncedCount) : null,
+    editGated: req.body?.editGated === true,
+    result: typeof req.body?.result === 'string' ? req.body.result.slice(0, 40) : null,
+    requestId: typeof req.body?.requestId === 'string' ? req.body.requestId.slice(0, 120) : null,
+  };
+  collabIncidentCounter.inc({ event, result: safe.result ?? 'none' });
+  incrementAppsignalCounter('proof.collab_client_incident_total', 1, { event, result: safe.result ?? 'none' });
+  console.info('[collab-client-incident]', JSON.stringify(safe));
   res.json({ success: true });
 });
 

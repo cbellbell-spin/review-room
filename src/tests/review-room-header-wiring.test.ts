@@ -213,7 +213,8 @@ assert(
   'Expected hosted Review Room mode to allow local edits for manual save',
 );
 assert(
-  editorSource.includes('&& !this.pendingCollabRebindOnSync\n      && !this.isCollabRemoteSettling()\n      && !awaitingTemplateSeed'),
+  editorSource.includes('&& !this.pendingCollabRebindOnSync\n      && !awaitingTemplateSeed')
+    && editorSource.includes('const baseAllowLocalEdits = collabReadinessReady && !this.isCollabRemoteSettling();'),
   'Expected live collab editing to stay gated until deferred rebind/reset and remote update settling have completed',
 );
 assert(
@@ -228,7 +229,8 @@ assert(
 assert(
   editorSource.includes('const reviewRoomIdentityId = typeof context?.reviewRoom?.identityId === \'string\'')
     && editorSource.includes('Review Room member identity is missing')
-    && editorSource.includes('this.shareViewerName = reviewRoomIdentityId ?? existingViewerName')
+    && editorSource.includes('this.shareViewerName = context?.reviewRoom?.displayName || existingViewerName')
+    && editorSource.includes('this.reviewRoomActorLabels = context?.reviewRoom?.actorLabels ?? {}')
     && editorSource.includes('setCurrentActorValue(reviewRoomIdentityId ? `human:${reviewRoomIdentityId}`')
     && editorSource.includes('!existingViewerName && !reviewRoomIdentityId'),
   'Expected Review Room member identity to drive the current actor instead of the global viewer-name prompt',

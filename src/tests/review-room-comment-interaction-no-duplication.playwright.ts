@@ -238,7 +238,7 @@ async function run(): Promise<void> {
     await sidebarA.getByPlaceholder('Add a comment...').fill(OWNER_COMMENT);
     await sidebarA.getByRole('button', { name: 'Comment', exact: true }).click();
     await sidebarA.getByText(OWNER_COMMENT).waitFor({ state: 'visible', timeout: 15_000 });
-    await sidebarA.getByText(/human:comment-owner ·/).first().waitFor({ state: 'visible', timeout: 10_000 });
+    await sidebarA.getByText(/Document owner ·/).first().waitFor({ state: 'visible', timeout: 10_000 });
     await sidebarA.getByRole('button', { name: 'Close', exact: true }).click();
 
     await pageA.getByRole('switch', { name: 'Suggesting mode' }).click();
@@ -269,11 +269,11 @@ async function run(): Promise<void> {
     }
     await commentsTab.click();
     await pageB.getByText(OWNER_COMMENT).waitFor({ state: 'visible', timeout: 15_000 });
-    await pageB.getByText(/human:comment-owner ·/).first().waitFor({ state: 'visible', timeout: 10_000 });
+    await pageB.getByText(/Document owner ·/).first().waitFor({ state: 'visible', timeout: 10_000 });
     await pageB.getByPlaceholder('Reply...').fill('Reply from the second editor.');
     await pageB.getByRole('button', { name: 'Reply', exact: true }).click();
     await pageB.getByText('Reply from the second editor.').waitFor({ state: 'visible', timeout: 10_000 });
-    await pageB.getByText(/human:comment-editor ·/).first().waitFor({ state: 'visible', timeout: 10_000 });
+    await pageB.getByText(/Comment Editor ·/).first().waitFor({ state: 'visible', timeout: 10_000 });
 
     await waitForAsync(async () => {
       const [aText, bText] = await Promise.all([

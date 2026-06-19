@@ -7,6 +7,7 @@
 
 import { $markSchema, $markAttr } from '@milkdown/kit/utils';
 import type { Attrs } from '@milkdown/kit/prose/model';
+import { getActorColor } from '../../review-room/actor-presentation';
 
 type ProofSuggestionKind = 'insert' | 'delete' | 'replace';
 
@@ -114,6 +115,8 @@ export const proofSuggestionSchema = $markSchema('proofSuggestion', (ctx) => ({
       ...buildCommonDomAttrs(mark),
       ...attrs,
     };
+    const actorColor = getActorColor(String(mark.attrs.by || 'unknown'));
+    domAttrs.style = `--proof-actor-accent:${actorColor.accent};--proof-actor-tint:${actorColor.tint}`;
     if (mark.attrs.content) domAttrs['data-content'] = String(mark.attrs.content);
     if (mark.attrs.status) domAttrs['data-status'] = String(mark.attrs.status);
     if (mark.attrs.createdAt) domAttrs['data-created-at'] = String(mark.attrs.createdAt);

@@ -362,15 +362,18 @@
       margin-top: 0.5em;
     }
 
+    span[data-proof="suggestion"] {
+      background-color: var(--proof-actor-tint, rgba(37, 99, 235, 0.16));
+      border-bottom: 2px solid var(--proof-actor-accent, #2563EB);
+    }
+
     span[data-proof="suggestion"][data-kind="delete"] {
-      background-color: rgba(239, 68, 68, 0.2);
-      text-decoration: line-through;
+      text-decoration: line-through wavy;
       color: #666;
     }
 
     span[data-proof="suggestion"][data-kind="replace"] {
-      background-color: rgba(239, 68, 68, 0.2);
-      text-decoration: line-through;
+      text-decoration: line-through dashed;
       color: #666;
     }
 

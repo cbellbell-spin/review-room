@@ -264,8 +264,13 @@ async function run(): Promise<void> {
     await sidebar.waitFor({ state: 'visible', timeout: 10_000 });
     await waitFor(async () => {
       const text = (await sidebar.textContent()) ?? '';
-      return text.includes('human:owner-empty-flow') && text.includes('human:test-editor');
+      return text.includes('Document owner') && text.includes('Test Editor');
     }, 15_000, 'review pane to show distinct suggestion actors');
+    const [ownerBorder, editorBorder] = await Promise.all([
+      sidebar.locator('article').filter({ hasText: 'editor 1 suggesting with two people in the doc.' }).first().evaluate((item) => getComputedStyle(item).borderLeftColor),
+      sidebar.locator('article').filter({ hasText: 'second editor invited as an editor' }).first().evaluate((item) => getComputedStyle(item).borderLeftColor),
+    ]);
+    assert(ownerBorder !== editorBorder, `Expected collaborators to retain distinct suggestion colors, got ${ownerBorder}`);
 
     const editorSuggestion = sidebar.locator('article').filter({ hasText: 'second editor invited as an editor' }).first();
     if (!(await editorSuggestion.getByRole('button', { name: 'Accept', exact: true }).isVisible({ timeout: 10_000 }).catch(() => false))) {

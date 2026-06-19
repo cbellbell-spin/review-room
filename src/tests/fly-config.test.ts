@@ -22,7 +22,7 @@ const pluginPackage = read('server/claude-plugin-package.ts');
 assert(
   dockerfile.includes('FROM node:20-slim')
     && dockerfile.includes('python3 make g++ ca-certificates')
-    && dockerfile.includes('ARG GIT_COMMIT_SHA=uncommitted')
+    && dockerfile.includes('ARG GIT_COMMIT_SHA\n')
     && dockerfile.includes('ARG BUILD_RELEASE_DATE')
     && dockerfile.includes('RUN npm ci')
     && dockerfile.includes('RUN npm run build')
@@ -64,7 +64,8 @@ assert(
     && dockerignore.includes('dist')
     && dockerignore.includes('snapshots/')
     && dockerignore.includes('*.db')
-    && dockerignore.includes('*.db-wal'),
+    && dockerignore.includes('*.db-wal')
+    && !/^\.git$/m.test(dockerignore),
   'Expected .dockerignore to exclude generated assets, snapshots, and local SQLite files',
 );
 

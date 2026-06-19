@@ -116,6 +116,8 @@ import {
   storeCreateReviewRoomHistoryEvent,
   storeGetReviewRoomDocumentByProofSlug,
   storeGetReviewRoomDocumentMemberForProofSlugAndToken,
+  storeGetReviewRoomIdentity,
+  storeListReviewRoomDocumentMembersForProofSlug,
   storeUpdateReviewRoomDocumentTitleByProofSlug,
 } from './review-room-store.js';
 import { safeCreateAssignmentTasksFromCommentMentions } from './mention-tasks.js';
@@ -906,6 +908,8 @@ function deriveShareCapabilities(role: ShareRole, shareState: string): {
 async function buildReviewRoomOpenPayload(slug: string, presentedSecret: string | null): Promise<{
   documentId: string;
   identityId: string;
+  displayName: string;
+  actorLabels: Record<string, string>;
   currentRole: string;
   currentShareRole: ShareRole;
 } | null> {
@@ -913,9 +917,23 @@ async function buildReviewRoomOpenPayload(slug: string, presentedSecret: string 
     ? await storeGetReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret)
     : null;
   if (!member) return null;
+  const members = await storeListReviewRoomDocumentMembersForProofSlug(slug);
+  const identities = await Promise.all(members.map((entry) => storeGetReviewRoomIdentity(entry.identity_id)));
+  const actorLabels: Record<string, string> = {};
+  members.forEach((entry, index) => {
+    const storedName = identities[index]?.display_name?.trim();
+    const displayName = storedName && storedName !== entry.identity_id
+      ? storedName
+      : entry.role === 'owner' ? 'Document owner' : 'Collaborator';
+    actorLabels[entry.identity_id] = displayName;
+    actorLabels[`human:${entry.identity_id}`] = displayName;
+    actorLabels[`review-room:${entry.identity_id}`] = displayName;
+  });
   return {
     documentId: member.review_room_document_id,
     identityId: member.identity_id,
+    displayName: actorLabels[member.identity_id] ?? (member.role === 'owner' ? 'Document owner' : 'Collaborator'),
+    actorLabels,
     currentRole: member.role,
     currentShareRole: member.role === 'owner' ? 'owner_bot' : member.role,
   };
@@ -1392,10 +1410,11 @@ apiRoutes.get('/documents/:slug', async (req: Request, res: Response) => {
       role,
       reviewRoom: await storeGetReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret),
     });
+    const reviewRoom = await buildReviewRoomOpenPayload(slug, presentedSecret);
     res.json({
       ...hostedBody.doc,
       capabilities: hostedBody.capabilities,
-      reviewRoom: hostedBody.reviewRoom,
+      reviewRoom,
     });
     return;
   }
@@ -2407,11 +2426,13 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
       res.status(403).json({ error: 'Document is not currently accessible' });
       return;
     }
-    res.json(buildHostedOpenContextBody({
+    const hostedBody = buildHostedOpenContextBody({
       doc,
       role,
       reviewRoom: await storeGetReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret),
-    }));
+    });
+    const reviewRoom = await buildReviewRoomOpenPayload(slug, presentedSecret);
+    res.json({ ...hostedBody, ...(reviewRoom ? { reviewRoom } : {}) });
     return;
   }
   const doc = getCanonicalReadableDocumentSync(slug, 'share') ?? getDocumentBySlug(slug);

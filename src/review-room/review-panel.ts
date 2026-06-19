@@ -25,6 +25,7 @@ import {
 } from './review-items';
 import { getReviewRoomSuggestionGroups } from './suggestion-groups';
 import { ensureReviewRoomTokens } from './tokens';
+import { formatActorLabel, getActorColor } from './actor-presentation';
 
 // Review Room cockpit sidebar, extracted from the editor monolith. The editor
 // supplies document/mark operations through ReviewPanelHost; this module owns
@@ -63,6 +64,7 @@ export type ReviewPanelHost = {
   canUpdateTasks(): boolean;
   isRealtimeAvailable(): boolean;
   getSuggestionFinalizeBlockReason?(): string | null;
+  getActorLabel?(actorId: string): string;
   onToggle(expanded: boolean): void;
 };
 
@@ -159,6 +161,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     el.style.cssText = 'padding:14px 18px;border-top:1px solid var(--rr-border-soft);display:grid;gap:9px;';
     return el;
   };
+  const actorLabel = (actorId: string) => host.getActorLabel?.(actorId) ?? formatActorLabel(actorId);
 
   const emptyNote = (text: string): HTMLElement => {
     const empty = document.createElement('div');
@@ -367,7 +370,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       { value: 'all', label: 'All actors', count: comments.length },
       ...actors.map((actor) => ({
         value: actor,
-        label: actor,
+        label: actorLabel(actor),
         count: filterReviewComments(comments, 'all', actor).length,
       })),
     ], commentActorFilter, (value) => {
@@ -385,7 +388,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       { value: 'all', label: 'All actors', count: suggestions.length },
       ...actors.map((actor) => ({
         value: actor,
-        label: actor,
+        label: actorLabel(actor),
         count: filterReviewSuggestions(suggestions, { actorFilter: actor }).length,
       })),
     ], suggestionActorFilter, (value) => {
@@ -413,7 +416,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       { value: 'all', label: 'All actors', count: events.length },
       ...actors.map((actor) => ({
         value: actor,
-        label: actor,
+        label: actorLabel(actor),
         count: filterReviewHistoryEvents(events, { actorFilter: actor }).length,
       })),
     ], historyActorFilter, (value) => {
@@ -441,7 +444,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       { value: 'all', label: 'All actors', count: tasks.length },
       ...actors.map((actor) => ({
         value: actor,
-        label: actor,
+        label: actorLabel(actor),
         count: filterReviewTasks(tasks, { actorFilter: actor }).length,
       })),
     ], taskActorFilter, (value) => {
@@ -521,7 +524,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     item.appendChild(meta);
 
     const actor = document.createElement('div');
-    actor.textContent = `${rowView.actorId}${rowView.timestamp ? ` - ${rowView.timestamp}` : ''}`;
+    actor.textContent = `${actorLabel(rowView.actorId)}${rowView.timestamp ? ` - ${rowView.timestamp}` : ''}`;
     actor.style.cssText = 'font-size:11px;color:var(--rr-faint);overflow-wrap:anywhere;';
     item.appendChild(actor);
 
@@ -838,6 +841,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     }
     for (const suggestion of visibleSuggestions) {
       const item = row();
+      item.style.borderLeft = `4px solid ${getActorColor(suggestion.by).accent}`;
       attachReviewItemFocus(item, suggestion.id);
       applyFocusedItemStyle(item, suggestion.ids.includes(focusedMarkId ?? ''));
       if (suggestion.ids.includes(focusedMarkId ?? '')) {
@@ -847,7 +851,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
         });
       }
       const meta = document.createElement('div');
-      meta.textContent = `${suggestion.kind} by ${suggestion.by}${suggestion.count > 1 ? ` (${suggestion.count} adjacent chunks)` : ''}`;
+      meta.textContent = `${suggestion.kind} by ${actorLabel(suggestion.by)}${suggestion.count > 1 ? ` (${suggestion.count} adjacent chunks)` : ''}`;
       meta.style.cssText = 'font-size:12px;font-weight:750;color:var(--rr-muted);';
       const quote = suggestion.kind === 'insert' ? null : document.createElement('div');
       if (quote) {
@@ -929,7 +933,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
         });
       }
       const meta = document.createElement('div');
-      meta.textContent = `${comment.by}${comment.replies.length > 0 ? ` · ${comment.replies.length} replies` : ''}${comment.resolved ? ' · Resolved' : ''}`;
+      meta.textContent = `${actorLabel(comment.by)}${comment.replies.length > 0 ? ` · ${comment.replies.length} replies` : ''}${comment.resolved ? ' · Resolved' : ''}`;
       meta.style.cssText = 'font-size:12px;font-weight:750;color:var(--rr-muted);';
       const quote = document.createElement('div');
       quote.textContent = comment.quote || 'Document comment';
@@ -948,9 +952,9 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
         message.append(messageMeta, messageText);
         thread.appendChild(message);
       };
-      renderMessage(comment.by, comment.text, comment.at);
+      renderMessage(actorLabel(comment.by), comment.text, comment.at);
       for (const reply of comment.replies) {
-        renderMessage(reply.by, reply.text, reply.at);
+        renderMessage(actorLabel(reply.by), reply.text, reply.at);
       }
       const replyBox = document.createElement('textarea');
       replyBox.placeholder = 'Reply...';

@@ -156,6 +156,7 @@ import {
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
 import { countOpenReviewItems, filterOpenReviewAuditEvents } from '../review-room/review-items';
+import { formatActorLabel } from '../review-room/actor-presentation';
 import {
   openReviewRoomReviewPanel as openReviewPanelUi,
   type ReviewPanelHost,
@@ -1051,6 +1052,7 @@ class ProofEditorImpl implements ProofEditor {
   private collabCanEdit: boolean = false;
   private reviewRoomCurrentRole: ReviewRoomRole | null = null;
   private reviewRoomCanManageMembers: boolean = false;
+  private reviewRoomActorLabels: Record<string, string> = {};
   private applyingCollabRemote: boolean = false;
   private activeCollabSession: CollabSessionInfo | null = null;
   private collabRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -1062,6 +1064,10 @@ class ProofEditorImpl implements ProofEditor {
   private collabEditorBindingReady: boolean = false;
   private collabEditorBindingSeq: number = 0;
   private collabTransportRecoveryAttempts: number = 0;
+  private collabRecoveryExhausted: boolean = false;
+  private collabReconnectFeedbackVisible: boolean = false;
+  private collabReconnectFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private collabLastReportedGateOpen: boolean | null = null;
   private collabUnsyncedChanges: number = 0;
   private collabPendingLocalUpdates: number = 0;
   private collabUnhealthySinceMs: number | null = null;
@@ -1451,11 +1457,12 @@ class ProofEditorImpl implements ProofEditor {
       const reviewRoomIdentityId = typeof context?.reviewRoom?.identityId === 'string' && context.reviewRoom.identityId.trim()
         ? context.reviewRoom.identityId.trim()
         : null;
+      this.reviewRoomActorLabels = context?.reviewRoom?.actorLabels ?? {};
       if (this.isReviewRoomRuntime() && canActInDocument && !reviewRoomIdentityId) {
         throw new Error('Review Room member identity is missing. Open the document from a tokenized collaborator link before editing or reviewing.');
       }
       const existingViewerName = getViewerName();
-      this.shareViewerName = reviewRoomIdentityId ?? existingViewerName ?? this.shareViewerName ?? this.deriveDefaultShareViewerName();
+      this.shareViewerName = context?.reviewRoom?.displayName || existingViewerName || this.shareViewerName || this.deriveDefaultShareViewerName();
       setCurrentActorValue(reviewRoomIdentityId ? `human:${reviewRoomIdentityId}` : `human:${this.shareViewerName || 'Anonymous'}`);
       shareClient.setViewerName(this.shareViewerName || 'Anonymous');
       collabClient.setLocalUser(
@@ -2223,7 +2230,9 @@ class ProofEditorImpl implements ProofEditor {
       const finishBindingReady = () => {
         if (bindingSeq !== this.collabEditorBindingSeq) return;
         if (ydoc !== collabClient.getYDoc()) return;
+        const completedRecoveryAttempts = this.collabTransportRecoveryAttempts;
         this.collabTransportRecoveryAttempts = 0;
+        this.collabRecoveryExhausted = false;
         this.collabEditorBindingReady = true;
         if (resetEditorDoc) {
           // Clearing before bind is not sufficient: the retiring y-sync binding
@@ -2238,6 +2247,10 @@ class ProofEditorImpl implements ProofEditor {
           }
         }
         this.updateShareEditGate();
+        this.reportCollabIncident('transport_probe_success', { result: 'acknowledged' });
+        if (completedRecoveryAttempts > 0) {
+          this.reportCollabIncident('recovery_success', { recoveryAttempt: completedRecoveryAttempts });
+        }
       };
       const markBindingReady = (attempt: number) => {
         if (bindingSeq !== this.collabEditorBindingSeq) return;
@@ -2249,6 +2262,7 @@ class ProofEditorImpl implements ProofEditor {
         ) {
           if (transportProbeInFlight) return;
           transportProbeInFlight = true;
+          this.reportCollabIncident('transport_probe_start');
           void collabClient.verifyTransportRoundTrip(ydoc).then((ready) => {
             transportProbeInFlight = false;
             if (bindingSeq !== this.collabEditorBindingSeq) return;
@@ -2257,13 +2271,19 @@ class ProofEditorImpl implements ProofEditor {
               finishBindingReady();
               return;
             }
+            this.reportCollabIncident('transport_probe_failure', { result: 'not_acknowledged' });
             if (this.collabTransportRecoveryAttempts < 3) {
               this.collabTransportRecoveryAttempts += 1;
+              this.reportCollabIncident('recovery_attempt', { recoveryAttempt: this.collabTransportRecoveryAttempts });
               setTimeout(() => {
                 if (bindingSeq !== this.collabEditorBindingSeq) return;
                 if (ydoc !== collabClient.getYDoc()) return;
                 void this.refreshCollabSessionAndReconnect(false);
               }, 100);
+            } else {
+              this.collabRecoveryExhausted = true;
+              this.reportCollabIncident('recovery_failure', { recoveryAttempt: this.collabTransportRecoveryAttempts, result: 'exhausted' });
+              this.updateShareEditGate();
             }
           });
           return;
@@ -2761,15 +2781,15 @@ class ProofEditorImpl implements ProofEditor {
   private updateShareEditGate(): void {
     if (!this.isShareMode) return;
     const awaitingTemplateSeed = Boolean(this.pendingCollabTemplateMarkdown && this.pendingCollabTemplateMarkdown.length > 0);
-    const baseAllowLocalEdits = this.collabEnabled
+    const collabReadinessReady = this.collabEnabled
       && this.collabCanEdit
       && this.collabConnectionStatus === 'connected'
       && this.collabIsSynced
       && this.collabEditorBindingReady
       && this.isEditorBoundToActiveCollabDoc()
       && !this.pendingCollabRebindOnSync
-      && !this.isCollabRemoteSettling()
       && !awaitingTemplateSeed;
+    const baseAllowLocalEdits = collabReadinessReady && !this.isCollabRemoteSettling();
     // Once initial hydration has completed, the editor is authoritative for local
     // edits and y-prosemirror's ySync plugin handles bidirectional sync. We must
     // NOT force-rerender from the Yjs fragment after that point: a local edit makes
@@ -2788,6 +2808,7 @@ class ProofEditorImpl implements ProofEditor {
     }
     const allowLocalEdits = this.reviewRoomRestSaveMode || (baseAllowLocalEdits && hydrated);
     this.shareAllowLocalEdits = allowLocalEdits;
+    this.updateCollabReconnectFeedback(this.reviewRoomRestSaveMode || collabReadinessReady);
     // Only block content mutations for true view-only sessions.
     // Avoid using filterTransaction as a temporary "sync lock", since it can deadlock hydration.
     this.setShareContentFilterEnabled(this.collabEnabled && !this.collabCanEdit);
@@ -2802,6 +2823,63 @@ class ProofEditorImpl implements ProofEditor {
     this.updateReviewRoomSuggestingToggle();
     const shareButton = this.getActiveShareChromeRoot()?.querySelector('.share-pill-share-btn') as HTMLElement | null;
     if (shareButton) shareButton.style.display = (this.collabCanEdit || this.isReviewRoomRuntime()) ? 'inline-flex' : 'none';
+  }
+
+  private reportCollabIncident(event: string, extra: Record<string, string | number | boolean | null> = {}): void {
+    const unhealthyDurationMs = this.collabUnhealthySinceMs === null ? 0 : Math.max(0, Date.now() - this.collabUnhealthySinceMs);
+    shareClient.reportCollabIncident(event, {
+      providerGeneration: this.collabEditorBindingSeq,
+      accessEpoch: this.activeCollabSession?.accessEpoch ?? null,
+      unhealthyDurationMs,
+      unsyncedCount: this.collabUnsyncedChanges + this.collabPendingLocalUpdates,
+      editGated: !this.shareAllowLocalEdits,
+      ...extra,
+    });
+  }
+
+  private updateCollabReconnectFeedback(editGateOpen: boolean): void {
+    if (!this.collabEnabled || !this.collabCanEdit || this.reviewRoomRestSaveMode) return;
+    if (this.collabLastReportedGateOpen !== editGateOpen) {
+      this.collabLastReportedGateOpen = editGateOpen;
+      this.reportCollabIncident(editGateOpen ? 'edit_gate_open' : 'edit_gate_closed');
+    }
+    if (editGateOpen) {
+      if (this.collabReconnectFeedbackTimer) clearTimeout(this.collabReconnectFeedbackTimer);
+      this.collabReconnectFeedbackTimer = null;
+      this.collabReconnectFeedbackVisible = false;
+      this.collabRecoveryExhausted = false;
+      this.updateShareBannerSyncDisplay();
+      return;
+    }
+    if (!this.collabReconnectFeedbackVisible && !this.collabReconnectFeedbackTimer) {
+      this.collabReconnectFeedbackTimer = setTimeout(() => {
+        this.collabReconnectFeedbackTimer = null;
+        if (this.shareAllowLocalEdits) return;
+        this.collabReconnectFeedbackVisible = true;
+        this.updateShareBannerSyncDisplay();
+      }, 1_500);
+    }
+    if (this.collabRecoveryExhausted) this.showCollabRecoveryFailure();
+  }
+
+  private showCollabRecoveryFailure(): void {
+    const diagnostics = JSON.stringify({
+      providerGeneration: this.collabEditorBindingSeq,
+      accessEpoch: this.activeCollabSession?.accessEpoch ?? null,
+      unhealthyDurationMs: this.collabUnhealthySinceMs === null ? 0 : Date.now() - this.collabUnhealthySinceMs,
+      unsyncedCount: this.collabUnsyncedChanges + this.collabPendingLocalUpdates,
+      editGateOpen: this.shareAllowLocalEdits,
+    }, null, 2);
+    this.showErrorBanner("Couldn't reconnect — editing remains paused to protect your changes.", {
+      retryLabel: 'Retry',
+      onRetry: () => {
+        this.collabRecoveryExhausted = false;
+        this.collabTransportRecoveryAttempts = 0;
+        void this.refreshCollabSessionAndReconnect(false);
+      },
+      secondaryLabel: 'Copy diagnostics',
+      onSecondary: () => { void navigator.clipboard?.writeText(diagnostics); },
+    });
   }
 
   private ensureShareWebSocketConnection(): void {
@@ -3072,6 +3150,14 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.collabEnabled) {
       return { label: 'Live sync unavailable', color: '#ef4444' };
     }
+    if (this.collabCanEdit && !this.shareAllowLocalEdits && this.collabReconnectFeedbackVisible) {
+      return {
+        label: this.collabRecoveryExhausted
+          ? "Couldn't reconnect — editing paused"
+          : 'Reconnecting — editing paused to protect your changes',
+        color: '#b45309',
+      };
+    }
     if (this.collabConnectionStatus === 'connected') {
       if (!this.collabIsSynced) {
         return { label: 'Syncing...', color: '#f59e0b' };
@@ -3124,12 +3210,15 @@ class ProofEditorImpl implements ProofEditor {
       'Manual save': 'Manual',
       'Autosaving...': 'Saving',
       'Unsaved changes': 'Unsaved',
+      'Reconnecting — editing paused to protect your changes': 'Reconnecting — editing paused to protect your changes',
+      "Couldn't reconnect — editing paused": "Couldn't reconnect — editing paused",
     };
     return map[label] ?? 'Saved';
   }
 
   private shouldShowStatusText(statusLabel: string): boolean {
     const normalized = statusLabel.trim() || 'Saved';
+    if (normalized.startsWith('Reconnecting') || normalized.startsWith("Couldn't reconnect")) return true;
     const now = Date.now();
 
     if (normalized !== this.shareLastStatusLabel) {
@@ -5361,6 +5450,7 @@ class ProofEditorImpl implements ProofEditor {
       canUpdateTasks: () => this.collabCanComment,
       isRealtimeAvailable: () => !this.reviewRoomRestSaveMode,
       getSuggestionFinalizeBlockReason: () => this.getReviewRoomSuggestionFinalizeBlockReason(),
+      getActorLabel: (actorId) => formatActorLabel(actorId, this.reviewRoomActorLabels),
       onToggle: (expanded) => {
         this.reviewRoomReviewButtonEl?.setAttribute('aria-expanded', String(expanded));
       },
@@ -6590,7 +6680,7 @@ class ProofEditorImpl implements ProofEditor {
 
   private showErrorBanner(
     message: string,
-    options?: { retryLabel?: string; onRetry?: () => void },
+    options?: { retryLabel?: string; onRetry?: () => void; secondaryLabel?: string; onSecondary?: () => void },
   ): void {
     this.clearErrorBanner();
     const banner = document.createElement('div');
@@ -6633,6 +6723,14 @@ class ProofEditorImpl implements ProofEditor {
       `;
       retryButton.onclick = () => options.onRetry?.();
       banner.appendChild(retryButton);
+    }
+    if (options?.onSecondary) {
+      const secondaryButton = document.createElement('button');
+      secondaryButton.type = 'button';
+      secondaryButton.textContent = options.secondaryLabel ?? 'Copy diagnostics';
+      secondaryButton.style.cssText = 'border:1px solid rgba(255,255,255,0.45);background:transparent;color:white;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;cursor:pointer;';
+      secondaryButton.onclick = () => options.onSecondary?.();
+      banner.appendChild(secondaryButton);
     }
 
     document.body.prepend(banner);

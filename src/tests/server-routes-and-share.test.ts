@@ -625,6 +625,15 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(Array.isArray(payload.identities), 'Expected identities array');
       assert(payload.identities.some((entry: { id?: string }) => entry.id === 'local-human'), 'Expected local human identity');
       assert(payload.identities.some((entry: { id?: string }) => entry.id === 'agent-reviewer'), 'Expected local agent identity');
+
+      const rename = await fetch(`${baseUrl}/review-room/api/identity`, {
+        method: 'PATCH',
+        headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json', 'x-review-room-identity-id': 'local-human' },
+        body: JSON.stringify({ displayName: 'Chris Bell' }),
+      });
+      assert(rename.status === 200, `Expected identity rename status 200, got ${rename.status}`);
+      const renamed = await rename.json();
+      assertEqual(renamed.currentIdentity?.display_name, 'Chris Bell', 'Expected identity rename to preserve the ID and update its label');
     });
 
     await test('D2: Review Room creates registry-backed documents', async () => {
@@ -782,6 +791,9 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         const openPayload = await openContext.json();
         assertEqual(openPayload.reviewRoom?.currentRole, entry.role, `Expected open payload currentRole for ${entry.role}`);
         assertEqual(openPayload.reviewRoom?.currentShareRole, entry.shareRole, `Expected open payload share role for ${entry.role}`);
+        assertEqual(openPayload.reviewRoom?.identityId, 'local-human', 'Expected the durable identity ID to remain in open context');
+        assertEqual(openPayload.reviewRoom?.displayName, 'Chris Bell', 'Expected open context to include the stored display name');
+        assertEqual(openPayload.reviewRoom?.actorLabels?.['human:local-human'], 'Chris Bell', 'Expected actor label map to resolve stable human attribution');
         assertEqual(openPayload.capabilities.canEdit, entry.canEdit, `Expected open canEdit for ${entry.role}`);
         assertEqual(openPayload.capabilities.canComment, entry.canComment, `Expected open canComment for ${entry.role}`);
 

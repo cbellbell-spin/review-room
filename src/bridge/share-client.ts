@@ -56,6 +56,8 @@ export interface ShareOpenContext {
   reviewRoom?: {
     documentId: string;
     identityId: string;
+    displayName: string;
+    actorLabels: Record<string, string>;
     currentRole: 'owner' | 'editor' | 'commenter' | 'viewer';
     currentShareRole: ShareRole;
   };
@@ -325,6 +327,7 @@ export class ShareClient {
   private lastObservedUpdatedAt: string | null = null;
   private lastObservedMutationBase: ShareMutationBase | null = null;
   private mutationAccessEpoch: number | null = null;
+  private lastRequestId: string | null = null;
 
   constructor() {
     this.detectShareMode();
@@ -778,6 +781,7 @@ export class ShareClient {
     const headers = this.getShareAuthHeaders(options?.token);
 
     const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/collab-session`, { headers });
+    this.lastRequestId = this.readRequestId(response);
     if (!response.ok) return this.parseRequestError(response);
     const payload = await response.json() as {
       session?: CollabSessionInfo;
@@ -809,6 +813,7 @@ export class ShareClient {
     if (!this.slug) return null;
     const headers = this.getShareAuthHeaders(options?.token);
     const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/open-context`, { headers });
+    this.lastRequestId = this.readRequestId(response);
     if (!response.ok) return this.parseRequestError(response);
     const payload = await response.json() as ShareOpenContext;
     if (!payload?.doc || !payload?.capabilities) return null;
@@ -1140,6 +1145,7 @@ export class ShareClient {
       method: 'POST',
       headers: this.getShareAuthHeaders(),
     });
+    this.lastRequestId = this.readRequestId(response);
     if (!response.ok) return this.parseRequestError(response);
     const payload = await response.json() as {
       session?: CollabSessionInfo;
@@ -1623,6 +1629,10 @@ export class ShareClient {
       durationMs,
       source,
     });
+  }
+
+  reportCollabIncident(event: string, details: Record<string, string | number | boolean | null>): void {
+    this.postMetric('collab-incident', { event, ...details, requestId: this.lastRequestId, source: 'web' });
   }
 
   reportMarkAnchorResolution(result: 'success' | 'failure', source: string = 'web'): void {

@@ -7,7 +7,7 @@ FROM node:20-slim
 
 WORKDIR /app
 
-ARG GIT_COMMIT_SHA=uncommitted
+ARG GIT_COMMIT_SHA
 ARG BUILD_RELEASE_DATE
 
 # Build toolchain for better-sqlite3's native addon.
