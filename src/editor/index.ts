@@ -2227,6 +2227,26 @@ class ProofEditorImpl implements ProofEditor {
       collabService.connect();
       this.installCollabCursorsWhenReady(view, ctx, collabService);
       let transportProbeInFlight = false;
+      const finishReadOnlyBindingReady = () => {
+        if (bindingSeq !== this.collabEditorBindingSeq) return;
+        if (ydoc !== collabClient.getYDoc()) return;
+        const completedRecoveryAttempts = this.collabTransportRecoveryAttempts;
+        this.collabTransportRecoveryAttempts = 0;
+        this.collabRecoveryExhausted = false;
+        this.collabEditorBindingReady = true;
+        if (resetEditorDoc) {
+          this.suppressMarksSync = true;
+          try {
+            this.applyExternalMarks(this.lastReceivedServerMarks, { authoritative: true });
+          } finally {
+            this.suppressMarksSync = false;
+          }
+        }
+        this.updateShareEditGate();
+        if (completedRecoveryAttempts > 0) {
+          this.reportCollabIncident('recovery_success', { recoveryAttempt: completedRecoveryAttempts });
+        }
+      };
       const finishBindingReady = () => {
         if (bindingSeq !== this.collabEditorBindingSeq) return;
         if (ydoc !== collabClient.getYDoc()) return;
@@ -2260,6 +2280,15 @@ class ProofEditorImpl implements ProofEditor {
           && this.collabIsSynced
           && this.isEditorBoundToActiveCollabDoc()
         ) {
+          // Viewer/commenter websocket connections are intentionally read-only.
+          // A transport write probe would be rejected by the server, leaving a
+          // permanent unsynced update that drives a false Saving/recovery loop.
+          // The write acknowledgement remains mandatory for every session that
+          // can edit; read-only sessions need only a structurally active binding.
+          if (!this.collabCanEdit) {
+            finishReadOnlyBindingReady();
+            return;
+          }
           if (transportProbeInFlight) return;
           transportProbeInFlight = true;
           this.reportCollabIncident('transport_probe_start');

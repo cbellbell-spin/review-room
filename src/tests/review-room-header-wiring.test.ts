@@ -218,6 +218,13 @@ assert(
   'Expected live collab editing to stay gated until deferred rebind/reset and remote update settling have completed',
 );
 assert(
+  editorSource.includes('const finishReadOnlyBindingReady = () => {')
+    && editorSource.includes('if (!this.collabCanEdit) {\n            finishReadOnlyBindingReady();\n            return;')
+    && editorSource.includes('finishBindingReady();')
+    && editorSource.includes("this.reportCollabIncident('transport_probe_success', { result: 'acknowledged' });"),
+  'Expected read-only collab sessions to avoid forbidden write probes while edit-capable sessions still require acknowledgement',
+);
+assert(
   editorSource.includes('const localMetadata = getMarkMetadataWithQuotes(view.state);')
     && editorSource.includes('mergePendingServerMarks(\n      localMetadata,\n      this.lastReceivedServerMarks,'),
   'Expected Review Room mark sync to push quote/range-enriched metadata instead of raw plugin metadata',

@@ -37,6 +37,7 @@
     "test:review-room-single-editor-typed-accept": "npm run build && tsx src/tests/review-room-single-editor-typed-insert-accept.playwright.ts",
     "test:review-room-accept-race": "npm run build && tsx src/tests/review-room-accept-live-collab-race.playwright.ts",
     "test:review-room-comment-duplication": "npm run build && tsx src/tests/review-room-comment-interaction-no-duplication.playwright.ts",
+    "test:review-room-viewer-sync-stability": "npm run build && tsx src/tests/review-room-viewer-sync-stability.playwright.ts",
     "test:review-room-suggested-line-position": "npm run build && tsx src/tests/review-room-suggested-line-position.playwright.ts",
     "test:review-room-two-browser-contract": "npm run build && tsx src/tests/review-room-two-editor-empty-doc-fragment-drift.playwright.ts",
     "smoke:review-room-production": "node scripts/review-room-production-smoke.mjs",
