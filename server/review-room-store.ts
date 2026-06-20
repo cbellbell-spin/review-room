@@ -171,6 +171,29 @@ const REVIEW_ROOM_TABLE_DDL = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_review_room_history_document_created ON review_room_history_events(document_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_review_room_history_workspace_created ON review_room_history_events(workspace_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS review_room_identity_invitations (
+    id TEXT PRIMARY KEY,
+    identity_id TEXT NOT NULL,
+    review_room_document_id TEXT NOT NULL,
+    proof_slug TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_by_identity_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    accepted_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_review_room_identity_invites_identity ON review_room_identity_invitations(identity_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS review_room_sessions (
+    id TEXT PRIMARY KEY,
+    identity_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_review_room_sessions_identity ON review_room_sessions(identity_id, expires_at)`,
 ];
 
 async function ensureStore(): Promise<Client> {
@@ -294,6 +317,133 @@ export async function storeListReviewRoomIdentities(workspaceId: string = REVIEW
     WHERE workspace_id = ?
     ORDER BY kind DESC, display_name ASC
   `, [workspaceId]);
+}
+
+export type ReviewRoomIdentityInvitation = {
+  id: string;
+  identity_id: string;
+  review_room_document_id: string;
+  proof_slug: string;
+  created_by_identity_id: string;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+};
+
+export type ReviewRoomSession = {
+  id: string;
+  identity_id: string;
+  expires_at: string;
+  revoked_at: string | null;
+  created_at: string;
+  last_seen_at: string;
+};
+
+export async function storeCreateReviewRoomIdentityInvitation(input: {
+  identityId: string;
+  reviewRoomDocumentId: string;
+  proofSlug: string;
+  createdByIdentityId: string;
+  ttlMs?: number;
+}): Promise<{ invitation: ReviewRoomIdentityInvitation; secret: string }> {
+  const now = new Date();
+  const id = randomUUID();
+  const secret = `${randomUUID()}${randomUUID()}`.replace(/-/g, '');
+  const expiresAt = new Date(now.getTime() + (input.ttlMs ?? 7 * 24 * 60 * 60 * 1000)).toISOString();
+  const db = await ensureStore();
+  await db.batch([
+    {
+      sql: `UPDATE review_room_identity_invitations
+            SET revoked_at = ?
+            WHERE identity_id = ?
+              AND review_room_document_id = ?
+              AND accepted_at IS NULL
+              AND revoked_at IS NULL`,
+      args: [now.toISOString(), input.identityId, input.reviewRoomDocumentId],
+    },
+    {
+      sql: `INSERT INTO review_room_identity_invitations (
+              id, identity_id, review_room_document_id, proof_slug, token_hash,
+              created_by_identity_id, expires_at, accepted_at, revoked_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+      args: [
+        id,
+        input.identityId,
+        input.reviewRoomDocumentId,
+        input.proofSlug,
+        hashSecret(secret),
+        input.createdByIdentityId,
+        expiresAt,
+        now.toISOString(),
+      ],
+    },
+  ]);
+  const invitation = await execute<ReviewRoomIdentityInvitation>(`
+    SELECT id, identity_id, review_room_document_id, proof_slug, created_by_identity_id,
+           expires_at, accepted_at, revoked_at, created_at
+    FROM review_room_identity_invitations WHERE id = ? LIMIT 1
+  `, [id]);
+  if (!invitation) throw new Error('Review Room identity invitation was not persisted.');
+  return { invitation, secret };
+}
+
+export async function storeConsumeReviewRoomIdentityInvitation(secret: string): Promise<ReviewRoomIdentityInvitation | null> {
+  const now = new Date().toISOString();
+  return execute<ReviewRoomIdentityInvitation>(`
+    UPDATE review_room_identity_invitations
+    SET accepted_at = ?
+    WHERE token_hash = ?
+      AND accepted_at IS NULL
+      AND revoked_at IS NULL
+      AND expires_at > ?
+    RETURNING id, identity_id, review_room_document_id, proof_slug, created_by_identity_id,
+              expires_at, accepted_at, revoked_at, created_at
+  `, [now, hashSecret(secret), now]);
+}
+
+export async function storeCreateReviewRoomSession(identityId: string, ttlMs: number = 30 * 24 * 60 * 60 * 1000): Promise<{
+  session: ReviewRoomSession;
+  secret: string;
+}> {
+  const now = new Date();
+  const id = randomUUID();
+  const secret = `${randomUUID()}${randomUUID()}`.replace(/-/g, '');
+  const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+  const db = await ensureStore();
+  await db.execute({
+    sql: `INSERT INTO review_room_sessions (id, identity_id, token_hash, expires_at, revoked_at, created_at, last_seen_at)
+          VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+    args: [id, identityId, hashSecret(secret), expiresAt, now.toISOString(), now.toISOString()],
+  });
+  const session = await execute<ReviewRoomSession>(`
+    SELECT id, identity_id, expires_at, revoked_at, created_at, last_seen_at
+    FROM review_room_sessions WHERE id = ? LIMIT 1
+  `, [id]);
+  if (!session) throw new Error('Review Room session was not persisted.');
+  return { session, secret };
+}
+
+export async function storeResolveReviewRoomSession(secret: string | null | undefined): Promise<ReviewRoomSession | null> {
+  const trimmed = (secret ?? '').trim();
+  if (!trimmed) return null;
+  const now = new Date().toISOString();
+  return execute<ReviewRoomSession>(`
+    SELECT id, identity_id, expires_at, revoked_at, created_at, last_seen_at
+    FROM review_room_sessions
+    WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
+    LIMIT 1
+  `, [hashSecret(trimmed), now]);
+}
+
+export async function storeRevokeReviewRoomSession(secret: string | null | undefined): Promise<boolean> {
+  const trimmed = (secret ?? '').trim();
+  if (!trimmed) return false;
+  const result = await (await ensureStore()).execute({
+    sql: `UPDATE review_room_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`,
+    args: [new Date().toISOString(), hashSecret(trimmed)],
+  });
+  return result.rowsAffected > 0;
 }
 
 export async function storeListReviewRoomAgents(workspaceId: string = REVIEW_ROOM_DEFAULT_WORKSPACE_ID): Promise<ReviewRoomAgentRow[]> {

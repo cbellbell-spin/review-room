@@ -85,9 +85,20 @@ Completed in the June 19 identity/clarity slice:
 - Owner/editor/commenter/viewer behavior is covered across title updates, comments, suggestions, tasks, baselines, member management, and role-scoped open links.
 - Independent-browser coverage verifies owner/editor identity, presence, suggestion colors, and the complete suggestion decision matrix.
 
+Session-backed identity foundation implemented:
+
+- Owners now receive a one-time, seven-day identity invitation when adding or updating a collaborator. A replacement invitation revokes any older unused invitation for the same collaborator and document.
+- Accepting the invitation binds the existing stable Review Room identity to a 30-day server session in an `HttpOnly`, `SameSite=Lax` cookie, then opens the collaborator's existing role-scoped document link.
+- Invitation and session secrets are stored only as SHA-256 hashes. Invitations are single-use and sessions can be explicitly revoked through logout.
+- An authenticated session takes precedence over legacy identity headers, preventing a caller from changing actor attribution while a browser session is active.
+- Existing UUID-backed identities, memberships, role tokens, document links, and open-context actor IDs remain compatible. Document authority and live-collab transport are unchanged.
+- Manual invitation distribution is intentional for this foundation; no email provider is required. A delivery adapter can be added later without changing the invitation/session model.
+- Focused regression coverage pins invitation rotation and replay rejection, cookie flags, session precedence, stable-ID profile rename, and logout revocation.
+
 Remaining permissions work:
 
-- Replace browser-local seeded identities with session-backed accounts and authenticated profile management.
+- Add first-class profile/session controls in the UI, including current-device sign-out and clearer account continuity guidance.
+- Define account recovery and additional-device enrollment before enabling self-service invitation email.
 - Re-check every affordance against capabilities as new controls are added; permission behavior should stay centralized rather than inferred from display state.
 
 ## Phase 2 Fly.io Migration Closeout
@@ -111,18 +122,18 @@ Migration closeout is complete:
 
 ## Following Slices
 
-### Recommended Next Slice: Session-Backed Identity
+### Recommended Next Slice: Identity Continuity UI
 
-- Add real authenticated human sessions while preserving existing Review Room identity IDs and document membership.
-- Make display-name editing a first-class profile action rather than an API-only path.
-- Define account recovery, invitation acceptance, and browser/device continuity before adding broader workspace collaboration.
+- Surface the active identity and session state in Review Room chrome.
+- Make display-name editing and current-device sign-out first-class profile actions rather than API-only paths.
+- Explain that a one-time invitation establishes identity on this browser, and define the additional-device/recovery flow before adding email delivery.
 - Keep document authority, mark identity, and live-collab transport unchanged.
 
-This is the preferred deeper feature slice. Small UI polish can continue opportunistically, but another reconnect/Yjs refactor is not justified while the convergence contract is stable.
+This is the preferred polish-to-product bridge. After it, the next deeper feature should be the actual agent review workflow; another reconnect/Yjs refactor is not justified while the convergence contract is stable.
 
 ### Workspace And Permissions
 
-- Replace local seeded identities with real session-backed users.
+- Complete migration from local seeded identities to session-backed users after recovery and additional-device behavior are defined.
 - Model owner, editor, commenter, viewer, and agent permissions in Review Room UI state.
 - Hide or disable actions the current user cannot perform.
 - Add explicit permission tests for document opening, comments, resolve/reopen, title editing, sharing, and agent actions.

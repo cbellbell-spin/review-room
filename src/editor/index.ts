@@ -4361,15 +4361,15 @@ class ProofEditorImpl implements ProofEditor {
             setStatus(this.isShareRequestError(saved) ? saved.error.message : 'Could not save collaborator.', 'error');
             return;
           }
-          const link = this.absoluteReviewRoomOpenUrl(saved.member.openPath);
+          const link = this.absoluteReviewRoomOpenUrl(saved.identityInvitePath || saved.member.openPath);
           result.style.display = 'grid';
           result.replaceChildren();
           const linkText = document.createElement('div');
-          linkText.textContent = `${saved.member.displayName || saved.member.identityId} can open as ${this.formatReviewRoomRole(saved.member.role)}.`;
+          linkText.textContent = `${saved.member.displayName || saved.member.identityId} can accept this one-time identity invitation as ${this.formatReviewRoomRole(saved.member.role)}.`;
           linkText.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.88);';
           const copy = document.createElement('button');
           copy.type = 'button';
-          copy.textContent = 'Copy collaborator link';
+          copy.textContent = 'Copy identity invitation';
           copy.style.cssText = 'justify-self:start;border:0;background:rgba(255,255,255,0.92);color:#111827;padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;';
           copy.onclick = () => {
             void (async () => {

@@ -190,6 +190,8 @@ export interface ReviewRoomUpsertMemberResponse {
   success: boolean;
   document?: Record<string, unknown>;
   member: ReviewRoomDocumentMember;
+  identityInvitePath?: string | null;
+  identityInviteExpiresAt?: string | null;
 }
 
 export type ShareRequestError = {
@@ -1136,6 +1138,8 @@ export class ShareClient {
         ? payload.document as Record<string, unknown>
         : undefined,
       member,
+      identityInvitePath: typeof payload?.identityInvitePath === 'string' ? payload.identityInvitePath : null,
+      identityInviteExpiresAt: typeof payload?.identityInviteExpiresAt === 'string' ? payload.identityInviteExpiresAt : null,
     };
   }
 

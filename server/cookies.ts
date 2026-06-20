@@ -40,6 +40,7 @@ export function ownerTokenCookieName(slug: string): string {
 // ── Global session cookie (dashboard auth) ────────────────────────────────────
 
 export const SESSION_COOKIE_NAME = 'proof_session';
+export const REVIEW_ROOM_SESSION_COOKIE_NAME = 'proof_review_room_session';
 const DEFAULT_SESSION_MAX_AGE_SEC = 30 * 24 * 60 * 60; // 30 days
 const DASHBOARD_AUTH_COOKIE_PREFIX = 'proof_dashboard_auth_';
 
@@ -111,6 +112,18 @@ export function setSessionCookie(req: Request, res: Response, token: string, max
 
 export function clearSessionCookie(req: Request, res: Response): void {
   clearCookie(req, res, SESSION_COOKIE_NAME, true);
+}
+
+export function getReviewRoomSessionCookie(req: Request): string | null {
+  return getCookie(req, REVIEW_ROOM_SESSION_COOKIE_NAME);
+}
+
+export function setReviewRoomSessionCookie(req: Request, res: Response, token: string, maxAgeSec: number): void {
+  appendCookie(req, res, REVIEW_ROOM_SESSION_COOKIE_NAME, token, { maxAgeSec, httpOnly: true });
+}
+
+export function clearReviewRoomSessionCookie(req: Request, res: Response): void {
+  clearCookie(req, res, REVIEW_ROOM_SESSION_COOKIE_NAME, true);
 }
 
 function dashboardAuthCookieName(state: string): string {

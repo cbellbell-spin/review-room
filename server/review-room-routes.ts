@@ -19,6 +19,11 @@ import {
 } from './db.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
 import {
+  clearReviewRoomSessionCookie,
+  getReviewRoomSessionCookie,
+  setReviewRoomSessionCookie,
+} from './cookies.js';
+import {
   addHostedDocumentEvent,
   createHostedReviewRoomDocument,
   getHostedDocumentBySlug,
@@ -29,6 +34,9 @@ import {
   storeCreatePublishedVersion,
   storeCreateReviewRoomDocumentRecord,
   storeCreateReviewRoomHistoryEvent,
+  storeCreateReviewRoomIdentityInvitation,
+  storeCreateReviewRoomSession,
+  storeConsumeReviewRoomIdentityInvitation,
   storeGetAssignmentTask,
   storeGetLatestPublishedVersion,
   storeGetReviewRoomDocumentByProofSlug,
@@ -42,6 +50,8 @@ import {
   storeListReviewRoomDocuments,
   storeListReviewRoomHistoryEvents,
   storeListReviewRoomIdentities,
+  storeResolveReviewRoomSession,
+  storeRevokeReviewRoomSession,
   storeUpdateAssignmentTaskStatus,
   storeUpsertReviewRoomIdentity,
   storeUpsertReviewRoomDocumentMember,
@@ -80,8 +90,13 @@ function getExplicitReviewRoomIdentityId(req: Request): string | null {
   return fromQuery ? normalizeReviewRoomIdentityId(fromQuery) : null;
 }
 
-function getCurrentReviewRoomIdentityId(req: Request): string {
-  return getExplicitReviewRoomIdentityId(req) ?? normalizeReviewRoomIdentityId(null);
+async function getReviewRoomSession(req: Request) {
+  return storeResolveReviewRoomSession(getReviewRoomSessionCookie(req));
+}
+
+async function getCurrentReviewRoomIdentityId(req: Request): Promise<string> {
+  const session = await getReviewRoomSession(req);
+  return session?.identity_id ?? getExplicitReviewRoomIdentityId(req) ?? normalizeReviewRoomIdentityId(null);
 }
 
 function getPresentedShareToken(req: Request): string | null {
@@ -229,12 +244,13 @@ type ReviewRoomDocumentAccess = {
 async function getReviewRoomDocumentAccess(req: Request, proofSlug: string): Promise<ReviewRoomDocumentAccess | null> {
   const document = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
   if (!document) return null;
-  const explicitIdentityId = getExplicitReviewRoomIdentityId(req);
+  const session = await getReviewRoomSession(req);
+  const explicitIdentityId = session?.identity_id ?? getExplicitReviewRoomIdentityId(req);
   const token = getPresentedShareToken(req);
   const tokenMember = explicitIdentityId
     ? null
     : await storeGetReviewRoomDocumentMemberForProofSlugAndToken(proofSlug, token);
-  const identityId = explicitIdentityId ?? tokenMember?.identity_id ?? getCurrentReviewRoomIdentityId(req);
+  const identityId = explicitIdentityId ?? tokenMember?.identity_id ?? await getCurrentReviewRoomIdentityId(req);
   const member = tokenMember ?? await storeGetReviewRoomDocumentMemberForProofSlug(proofSlug, identityId);
   return {
     identityId: member?.identity_id ?? identityId,
@@ -880,7 +896,8 @@ reviewRoomRoutes.get('/review-room/claude-plugin.zip', (_req: Request, res: Resp
 });
 
 reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Response) => {
-  const identityId = getCurrentReviewRoomIdentityId(req);
+  const identityId = await getCurrentReviewRoomIdentityId(req);
+  const session = await getReviewRoomSession(req);
   res.json({
     success: true,
     workspace: {
@@ -888,12 +905,56 @@ reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Resp
       name: REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
     },
     currentIdentity: await storeGetReviewRoomIdentity(identityId),
+    session: session ? { active: true, expiresAt: session.expires_at } : { active: false },
     identities: await storeListReviewRoomIdentities(REVIEW_ROOM_DEFAULT_WORKSPACE_ID),
   });
 });
 
+reviewRoomRoutes.get('/review-room/session/accept', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  const secret = typeof req.query.invite === 'string' ? req.query.invite.trim() : '';
+  if (!secret) {
+    res.status(400).type('text/plain').send('This identity invitation is invalid.');
+    return;
+  }
+  const invitation = await storeConsumeReviewRoomIdentityInvitation(secret);
+  if (!invitation) {
+    res.status(410).type('text/plain').send('This identity invitation has expired or was already used.');
+    return;
+  }
+  const identity = await storeGetReviewRoomIdentity(invitation.identity_id);
+  const member = await storeGetReviewRoomDocumentMemberForProofSlug(invitation.proof_slug, invitation.identity_id);
+  if (!identity || !member) {
+    res.status(409).type('text/plain').send('This invitation no longer has a matching collaborator membership.');
+    return;
+  }
+  const { session, secret: sessionSecret } = await storeCreateReviewRoomSession(invitation.identity_id);
+  const maxAgeSec = Math.max(1, Math.floor((Date.parse(session.expires_at) - Date.now()) / 1000));
+  setReviewRoomSessionCookie(req, res, sessionSecret, maxAgeSec);
+  const openPath = appendTokenToPath(buildReviewRoomOpenPath(invitation.proof_slug), member.proof_access_token ?? null);
+  if (req.accepts(['html', 'json']) === 'json') {
+    res.json({
+      success: true,
+      identity: { id: identity.id, displayName: identity.display_name },
+      session: { active: true, expiresAt: session.expires_at },
+      openPath,
+    });
+    return;
+  }
+  res.redirect(303, openPath);
+});
+
+reviewRoomRoutes.post('/review-room/api/session/logout', async (req: Request, res: Response) => {
+  const secret = getReviewRoomSessionCookie(req);
+  await storeRevokeReviewRoomSession(secret);
+  clearReviewRoomSessionCookie(req, res);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true });
+});
+
 reviewRoomRoutes.patch('/review-room/api/identity', async (req: Request, res: Response) => {
-  const identityId = getCurrentReviewRoomIdentityId(req);
+  const identityId = await getCurrentReviewRoomIdentityId(req);
   const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim().slice(0, 120) : '';
   if (!displayName) {
     res.status(400).json({ success: false, code: 'DISPLAY_NAME_REQUIRED', error: 'Display name is required.' });
@@ -920,7 +981,7 @@ reviewRoomRoutes.get('/review-room/api/agents', async (_req: Request, res: Respo
 
 reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Response) => {
   const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 50;
-  const identityId = getCurrentReviewRoomIdentityId(req);
+  const identityId = await getCurrentReviewRoomIdentityId(req);
   const rows = await storeListReviewRoomDocuments(REVIEW_ROOM_DEFAULT_WORKSPACE_ID, Number.isFinite(limit) ? limit : 50);
   const documents = (await Promise.all(
     rows.map(async (row) => {
@@ -967,7 +1028,7 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req
 reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/audit/:eventId/reviewed', async (req: Request, res: Response) => {
   const proofSlug = String(req.params.proofSlug || '').trim();
   const eventId = String(req.params.eventId || '').trim();
-  const identityId = getCurrentReviewRoomIdentityId(req);
+  const identityId = await getCurrentReviewRoomIdentityId(req);
   if (!proofSlug || !eventId) {
     res.status(400).json({ success: false, code: 'AUDIT_TARGET_REQUIRED', error: 'Document slug and audit event id are required.' });
     return;
@@ -1052,7 +1113,7 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/baselines', async (r
 
 reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/baselines', async (req: Request, res: Response) => {
   const proofSlug = String(req.params.proofSlug || '').trim();
-  const identityId = getCurrentReviewRoomIdentityId(req);
+  const identityId = await getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim().slice(0, 500) : null;
   if (!proofSlug) {
@@ -1148,7 +1209,7 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/tasks', async (req: 
 reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/tasks/:taskId/status', async (req: Request, res: Response) => {
   const proofSlug = String(req.params.proofSlug || '').trim();
   const taskId = String(req.params.taskId || '').trim();
-  const identityId = getCurrentReviewRoomIdentityId(req);
+  const identityId = await getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const status = typeof body.status === 'string' ? body.status.trim().toLowerCase() : '';
   if (!proofSlug || !taskId) {
@@ -1272,6 +1333,12 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/members', async (re
     role,
     proofSlug,
   });
+  const { invitation, secret: invitationSecret } = await storeCreateReviewRoomIdentityInvitation({
+    identityId,
+    reviewRoomDocumentId: access.document.id,
+    proofSlug,
+    createdByIdentityId: access.identityId,
+  });
   await storeCreateReviewRoomHistoryEvent({
     workspaceId: access.document.workspace_id,
     documentId: access.document.id,
@@ -1288,11 +1355,13 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/members', async (re
     success: true,
     document: serializeDocument(access.document, access.member),
     member: serializeDocumentMember(member, identity, true, true),
+    identityInvitePath: `/review-room/session/accept?invite=${encodeURIComponent(invitationSecret)}`,
+    identityInviteExpiresAt: invitation.expires_at,
   });
 });
 
 reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Response) => {
-  const identityId = getCurrentReviewRoomIdentityId(req);
+  const identityId = await getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Untitled document';
   const markdown = typeof body.markdown === 'string' ? body.markdown : '';
@@ -1376,7 +1445,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
 });
 
 reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request, res: Response) => {
-  const identityId = getCurrentReviewRoomIdentityId(req);
+  const identityId = await getCurrentReviewRoomIdentityId(req);
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const rawProofSlug = typeof body.proofSlug === 'string' ? body.proofSlug : '';
   const parsed = parseProofSlugInput(rawProofSlug);

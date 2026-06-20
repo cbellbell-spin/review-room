@@ -242,6 +242,13 @@ assert(
   'Expected existing Review Room member rows to expose copyable tokenized collaborator links',
 );
 assert(
+  shareClientSource.includes('identityInvitePath?: string | null;')
+    && editorSource.includes('saved.identityInvitePath || saved.member.openPath')
+    && editorSource.includes('can accept this one-time identity invitation')
+    && editorSource.includes("copy.textContent = 'Copy identity invitation';"),
+  'Expected newly saved collaborators to receive a one-time identity invitation while legacy document links remain compatible',
+);
+assert(
   editorSource.includes("} else {\n        addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));\n      }"),
   'Expected Review Room to expose only member-specific collaborator links instead of copying the current member token',
 );

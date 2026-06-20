@@ -132,6 +132,98 @@ async function run(): Promise<void> {
     assert(editorOpenContext.reviewRoom?.identityId === 'editor-alice', 'Expected editor token to resolve to the editor Review Room identity');
     assert(editorOpenContext.reviewRoom?.currentRole === 'editor', 'Expected editor token to resolve to editor role');
 
+    const firstSessionInvite = await readJson<{
+      success: boolean;
+      identityInvitePath: string;
+    }>(await postJson(base, `/review-room/api/documents/${slug}/members`, {
+      identityId: 'session-sam',
+      displayName: 'Session Sam',
+      role: 'commenter',
+    }));
+    const replacementSessionInvite = await readJson<{
+      success: boolean;
+      identityInvitePath: string;
+    }>(await postJson(base, `/review-room/api/documents/${slug}/members`, {
+      identityId: 'session-sam',
+      displayName: 'Session Sam',
+      role: 'commenter',
+    }));
+    assert(firstSessionInvite.identityInvitePath.includes('invite='), 'Expected a one-time identity invitation path');
+    assert(
+      replacementSessionInvite.identityInvitePath !== firstSessionInvite.identityInvitePath,
+      'Expected a replacement identity invitation to mint a new secret',
+    );
+    const revokedInvite = await fetch(`${base}${firstSessionInvite.identityInvitePath}`, {
+      headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
+    });
+    assert(revokedInvite.status === 410, `Expected replaced invitation status 410, got ${revokedInvite.status}`);
+
+    const acceptedInvite = await fetch(`${base}${replacementSessionInvite.identityInvitePath}`, {
+      headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
+    });
+    const acceptedPayload = await readJson<{
+      success: boolean;
+      identity: { id: string; displayName: string };
+      session: { active: boolean };
+      openPath: string;
+    }>(acceptedInvite);
+    assert(acceptedPayload.identity.id === 'session-sam', 'Expected invitation to bind the intended stable identity');
+    assert(acceptedPayload.identity.displayName === 'Session Sam', 'Expected invitation to preserve the collaborator display name');
+    assert(acceptedPayload.session.active === true, 'Expected invitation acceptance to create an active session');
+    assert(acceptedPayload.openPath.includes('token='), 'Expected invitation acceptance to return the authorized document path');
+    const setCookie = acceptedInvite.headers.get('set-cookie') ?? '';
+    assert(setCookie.includes('proof_review_room_session='), 'Expected Review Room session cookie');
+    assert(setCookie.includes('HttpOnly'), 'Expected Review Room session cookie to be HttpOnly');
+    assert(setCookie.includes('SameSite=Lax'), 'Expected Review Room session cookie to use SameSite=Lax');
+    const sessionCookie = setCookie.split(';', 1)[0] ?? '';
+    assert(sessionCookie.startsWith('proof_review_room_session='), 'Expected extractable Review Room session cookie');
+
+    const replayedInvite = await fetch(`${base}${replacementSessionInvite.identityInvitePath}`, {
+      headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
+    });
+    assert(replayedInvite.status === 410, `Expected consumed invitation replay status 410, got ${replayedInvite.status}`);
+
+    const sessionIdentity = await readJson<{
+      currentIdentity: { id: string; display_name: string };
+      session: { active: boolean };
+    }>(await fetch(`${base}/review-room/api/identity`, {
+      headers: {
+        ...CLIENT_HEADERS,
+        Cookie: sessionCookie,
+        'x-review-room-identity-id': 'spoofed-identity',
+      },
+    }));
+    assert(sessionIdentity.currentIdentity.id === 'session-sam', 'Expected session identity to override a legacy identity header');
+    assert(sessionIdentity.session.active === true, 'Expected identity endpoint to report the active session');
+
+    const renamedIdentity = await readJson<{
+      currentIdentity: { id: string; display_name: string };
+    }>(await fetch(`${base}/review-room/api/identity`, {
+      method: 'PATCH',
+      headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json', Cookie: sessionCookie },
+      body: JSON.stringify({ displayName: 'Samuel Session' }),
+    }));
+    assert(renamedIdentity.currentIdentity.id === 'session-sam', 'Expected rename to preserve the stable actor identity');
+    assert(renamedIdentity.currentIdentity.display_name === 'Samuel Session', 'Expected session-backed profile rename');
+
+    const logoutResponse = await fetch(`${base}/review-room/api/session/logout`, {
+      method: 'POST',
+      headers: { ...CLIENT_HEADERS, Cookie: sessionCookie },
+    });
+    assert(logoutResponse.ok, `Expected logout success, got ${logoutResponse.status}`);
+    const clearedCookie = logoutResponse.headers.get('set-cookie') ?? '';
+    assert(clearedCookie.includes('proof_review_room_session='), 'Expected logout to clear the Review Room session cookie');
+    assert(clearedCookie.includes('Max-Age=0'), 'Expected logout cookie to expire immediately');
+
+    const revokedSessionIdentity = await readJson<{
+      currentIdentity: { id: string };
+      session: { active: boolean };
+    }>(await fetch(`${base}/review-room/api/identity`, {
+      headers: { ...CLIENT_HEADERS, Cookie: sessionCookie },
+    }));
+    assert(revokedSessionIdentity.currentIdentity.id === 'local-human', 'Expected revoked session to stop asserting the collaborator identity');
+    assert(revokedSessionIdentity.session.active === false, 'Expected revoked session to report inactive');
+
     const editorList = await readJson<{ documents: Array<{ proofSlug?: string; currentRole?: string; capabilities?: { canEdit?: boolean } }> }>(
       await fetch(`${base}/review-room/api/documents?identityId=editor-alice`, { headers: CLIENT_HEADERS }),
     );
