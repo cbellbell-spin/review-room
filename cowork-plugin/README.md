@@ -40,7 +40,7 @@ zip -r ../review-room.zip .claude-plugin .mcp.json skills
 
 ```
 cowork-plugin/
-├── .claude-plugin/plugin.json     # Cowork plugin manifest (v0.3.0)
+├── .claude-plugin/plugin.json     # Cowork plugin manifest (v0.4.0)
 ├── .mcp.json                      # MCP server config (review-room)
 ├── skills/
 │   └── review-room/SKILL.md       # Agent instructions for the MCP tools

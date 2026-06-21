@@ -149,6 +149,7 @@ import { fileClient } from '../bridge/file-client';
 import {
   shareClient,
   type CollabSessionInfo,
+  type ReviewRoomAgentReviewRun,
   type ReviewRoomDocumentMember,
   type ReviewRoomRole,
   type SharePendingEvent,
@@ -1053,6 +1054,12 @@ class ProofEditorImpl implements ProofEditor {
   private reviewRoomCurrentRole: ReviewRoomRole | null = null;
   private reviewRoomCanManageMembers: boolean = false;
   private reviewRoomActorLabels: Record<string, string> = {};
+  private reviewRoomIdentityId: string | null = null;
+  private reviewRoomProfileButtonEl: HTMLButtonElement | null = null;
+  private reviewRoomLatestAgentReviewRun: ReviewRoomAgentReviewRun | null = null;
+  private reviewRoomAgentReviewCanStart: boolean = false;
+  private reviewRoomAgentReviewRefreshInFlight: boolean = false;
+  private reviewRoomAgentReviewPollTimer: ReturnType<typeof setTimeout> | null = null;
   private applyingCollabRemote: boolean = false;
   private activeCollabSession: CollabSessionInfo | null = null;
   private collabRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -1457,6 +1464,7 @@ class ProofEditorImpl implements ProofEditor {
       const reviewRoomIdentityId = typeof context?.reviewRoom?.identityId === 'string' && context.reviewRoom.identityId.trim()
         ? context.reviewRoom.identityId.trim()
         : null;
+      this.reviewRoomIdentityId = reviewRoomIdentityId;
       this.reviewRoomActorLabels = context?.reviewRoom?.actorLabels ?? {};
       if (this.isReviewRoomRuntime() && canActInDocument && !reviewRoomIdentityId) {
         throw new Error('Review Room member identity is missing. Open the document from a tokenized collaborator link before editing or reviewing.');
@@ -3876,7 +3884,11 @@ class ProofEditorImpl implements ProofEditor {
     const { entries: agents, nextExpiryAtMs } = this.collectConnectedAgentEntries();
     this.scheduleShareAgentPresenceExpiryRefresh(nextExpiryAtMs);
     const nextState = agents.length > 0 ? 'connected' : 'empty';
-    const signature = agents.map((agent) => `${agent.id}:${agent.status}:${agent.at}`).join('|');
+    const reviewRun = this.reviewRoomLatestAgentReviewRun;
+    const reviewSignature = reviewRun
+      ? `${reviewRun.id}:${reviewRun.status}:${reviewRun.attemptCount}:${reviewRun.resultCount}:${reviewRun.failedOutputCount}`
+      : `none:${this.reviewRoomAgentReviewCanStart}`;
+    const signature = `${agents.map((agent) => `${agent.id}:${agent.status}:${agent.at}`).join('|')}|review:${reviewSignature}`;
     if (
       this.shareBannerAgentSlotEl.dataset.agentState === nextState
       && this.shareBannerAgentSlotEl.dataset.agentSignature === signature
@@ -3971,8 +3983,9 @@ class ProofEditorImpl implements ProofEditor {
       const reviewSlot = document.getElementById('review-room-review-slot');
       const formatSlot = document.getElementById('review-room-format-slot');
       const saveSlot = document.getElementById('review-room-save-slot');
+      const profileSlot = document.getElementById('review-room-profile-slot');
       const shareSlot = document.getElementById('review-room-share-slot');
-      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && reviewSlot && formatSlot && saveSlot && shareSlot) {
+      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && reviewSlot && formatSlot && saveSlot && profileSlot && shareSlot) {
         titleSlot.replaceChildren(title);
         statusSlot.replaceChildren(syncStatusInline);
         presenceSlot.replaceChildren(avatars);
@@ -3985,7 +3998,11 @@ class ProofEditorImpl implements ProofEditor {
         formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());
         this.updateReviewRoomToolbarEditState();
         saveSlot.replaceChildren(this.createReviewRoomSaveControls());
+        profileSlot.replaceChildren(this.createReviewRoomProfileButton());
         shareSlot.replaceChildren(shareBtn);
+        if (!this.reviewRoomLatestAgentReviewRun) {
+          void this.refreshReviewRoomAgentReviewStatus();
+        }
         this.scheduleBannerLayoutUpdate();
         return;
       }
@@ -4229,6 +4246,219 @@ class ProofEditorImpl implements ProofEditor {
 
     refresh();
     refreshCursors();
+  }
+
+  private updateReviewRoomProfileButton(): void {
+    if (!this.reviewRoomProfileButtonEl) return;
+    const label = (this.shareViewerName || 'Profile').trim() || 'Profile';
+    const avatar = this.reviewRoomProfileButtonEl.querySelector<HTMLElement>('[data-review-room-profile-avatar]');
+    const text = this.reviewRoomProfileButtonEl.querySelector<HTMLElement>('[data-review-room-profile-label]');
+    if (avatar) avatar.textContent = label.slice(0, 1).toUpperCase() || '?';
+    if (text) text.textContent = label;
+    this.reviewRoomProfileButtonEl.title = `Profile: ${label}`;
+  }
+
+  private createReviewRoomProfileButton(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Open profile');
+    button.style.cssText = 'min-height:40px;max-width:170px;display:inline-flex;align-items:center;gap:7px;padding:0 10px;border:1px solid #cbd7c6;border-radius:999px;background:#fff;color:#1f2933;font:inherit;font-size:12px;font-weight:650;cursor:pointer;';
+
+    const avatar = document.createElement('span');
+    avatar.dataset.reviewRoomProfileAvatar = '1';
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.style.cssText = 'width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#eef4e9;color:#266854;font-size:11px;font-weight:750;flex:0 0 auto;';
+    const label = document.createElement('span');
+    label.dataset.reviewRoomProfileLabel = '1';
+    label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    const caret = document.createElement('span');
+    caret.textContent = '▾';
+    caret.setAttribute('aria-hidden', 'true');
+    caret.style.cssText = 'font-size:9px;color:#607064;';
+    button.append(avatar, label, caret);
+    button.onclick = () => this.openReviewRoomProfileModal();
+    this.reviewRoomProfileButtonEl = button;
+    this.updateReviewRoomProfileButton();
+    return button;
+  }
+
+  private getReviewRoomIdentityHeaders(extra?: Record<string, string>): Record<string, string> {
+    const headers = { ...(extra ?? {}) };
+    if (this.reviewRoomIdentityId) headers['x-review-room-identity-id'] = this.reviewRoomIdentityId;
+    return headers;
+  }
+
+  private openReviewRoomProfileModal(): void {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:1150;background:rgba(0,0,0,0.55);display:flex;align-items:flex-start;justify-content:center;padding:48px 16px;';
+    const panel = document.createElement('div');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', 'Review Room profile');
+    panel.style.cssText = 'width:min(440px,100%);background:rgba(17,24,39,0.98);border:1px solid rgba(255,255,255,0.12);border-radius:16px;box-shadow:0 24px 60px rgba(0,0,0,0.45);color:rgba(255,255,255,0.92);overflow:hidden;';
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.10);';
+    const title = document.createElement('div');
+    title.textContent = 'Your profile';
+    title.style.cssText = 'font-size:13px;font-weight:700;';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.style.cssText = 'border:0;background:rgba(255,255,255,0.10);color:white;padding:6px 10px;border-radius:999px;font-size:12px;cursor:pointer;';
+    header.append(title, close);
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:16px;display:grid;gap:14px;font-size:12px;line-height:1.5;';
+    const loading = document.createElement('div');
+    loading.textContent = 'Loading profile…';
+    loading.style.color = 'rgba(255,255,255,0.68)';
+    body.appendChild(loading);
+    panel.append(header, body);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    const cleanup = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKeyDown, true);
+      this.reviewRoomProfileButtonEl?.focus();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cleanup();
+    };
+    close.onclick = cleanup;
+    overlay.addEventListener('mousedown', (event) => {
+      if (event.target === overlay) cleanup();
+    });
+    document.addEventListener('keydown', onKeyDown, true);
+
+    void (async () => {
+      try {
+        const response = await fetch('/review-room/api/identity', {
+          headers: this.getReviewRoomIdentityHeaders(),
+        });
+        const payload = await response.json() as {
+          currentIdentity?: { id?: string; display_name?: string; displayName?: string };
+          session?: { active?: boolean; expiresAt?: string };
+          error?: string;
+        };
+        if (!response.ok) throw new Error(payload.error || 'Could not load profile.');
+
+        const identity = payload.currentIdentity ?? {};
+        const displayName = identity.display_name || identity.displayName || this.shareViewerName || identity.id || 'Review Room user';
+        const sessionActive = payload.session?.active === true;
+        body.replaceChildren();
+
+        const summary = document.createElement('div');
+        summary.style.cssText = 'display:grid;gap:3px;';
+        const name = document.createElement('div');
+        name.textContent = displayName;
+        name.style.cssText = 'font-size:14px;font-weight:750;overflow-wrap:anywhere;';
+        const state = document.createElement('div');
+        state.textContent = sessionActive ? 'Linked on this browser' : 'Document-link identity on this browser';
+        state.style.cssText = 'color:rgba(255,255,255,0.62);';
+        summary.append(name, state);
+
+        const form = document.createElement('form');
+        form.style.cssText = 'display:grid;gap:8px;padding:0;';
+        const label = document.createElement('label');
+        label.textContent = 'Display name';
+        label.style.cssText = 'display:grid;gap:6px;color:rgba(255,255,255,0.78);font-size:12px;font-weight:650;';
+        const input = document.createElement('input');
+        input.name = 'displayName';
+        input.value = displayName;
+        input.maxLength = 120;
+        input.required = true;
+        input.autocomplete = 'name';
+        input.style.cssText = 'width:100%;min-height:38px;border:1px solid rgba(255,255,255,0.16);border-radius:9px;background:rgba(255,255,255,0.08);color:white;padding:0 10px;font:inherit;';
+        label.appendChild(input);
+        const actionRow = document.createElement('div');
+        actionRow.style.cssText = 'display:flex;align-items:center;gap:10px;';
+        const save = document.createElement('button');
+        save.type = 'submit';
+        save.textContent = 'Save name';
+        save.style.cssText = 'border:0;background:#f9fafb;color:#111827;padding:8px 12px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;';
+        const status = document.createElement('span');
+        status.setAttribute('role', 'status');
+        status.style.cssText = 'min-height:18px;color:rgba(255,255,255,0.66);';
+        actionRow.append(save, status);
+        form.append(label, actionRow);
+        form.onsubmit = (event) => {
+          event.preventDefault();
+          void (async () => {
+            const nextName = input.value.trim();
+            if (!nextName) return;
+            save.disabled = true;
+            status.textContent = 'Saving…';
+            try {
+              const renameResponse = await fetch('/review-room/api/identity', {
+                method: 'PATCH',
+                headers: this.getReviewRoomIdentityHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ displayName: nextName }),
+              });
+              const renamed = await renameResponse.json() as { currentIdentity?: { display_name?: string }; error?: string };
+              if (!renameResponse.ok) throw new Error(renamed.error || 'Could not save display name.');
+              const savedName = renamed.currentIdentity?.display_name || nextName;
+              this.shareViewerName = savedName;
+              shareClient.setViewerName(savedName);
+              collabClient.setLocalUser({ name: savedName }, shareClient.getSlug() ?? undefined);
+              if (this.reviewRoomIdentityId) {
+                this.reviewRoomActorLabels[this.reviewRoomIdentityId] = savedName;
+                this.reviewRoomActorLabels[`human:${this.reviewRoomIdentityId}`] = savedName;
+              }
+              name.textContent = savedName;
+              this.updateReviewRoomProfileButton();
+              status.textContent = 'Saved.';
+            } catch (error) {
+              status.textContent = error instanceof Error ? error.message : String(error);
+              status.style.color = '#fecaca';
+            } finally {
+              save.disabled = false;
+            }
+          })();
+        };
+
+        const guidance = document.createElement('div');
+        guidance.style.cssText = 'display:grid;gap:7px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.10);color:rgba(255,255,255,0.66);';
+        const continuity = document.createElement('p');
+        continuity.style.margin = '0';
+        continuity.textContent = sessionActive
+          ? 'A one-time invitation linked this identity to this browser. Signing out ends that identity session here; shared document links can still grant document access.'
+          : 'This document currently identifies you through its collaborator link. A one-time owner invitation can link the same identity across Review Room on this browser.';
+        const devices = document.createElement('p');
+        devices.style.margin = '0';
+        devices.textContent = 'To use this identity on another device, ask the document owner for a fresh invitation. Account recovery and email delivery are not available yet.';
+        guidance.append(continuity, devices);
+        if (sessionActive) {
+          const signout = document.createElement('button');
+          signout.type = 'button';
+          signout.textContent = 'Sign out this device';
+          signout.style.cssText = 'justify-self:start;border:0;background:transparent;color:#fca5a5;padding:3px 0;font:inherit;font-weight:700;cursor:pointer;';
+          signout.onclick = () => {
+            void (async () => {
+              signout.disabled = true;
+              status.textContent = 'Signing out…';
+              try {
+                const logoutResponse = await fetch('/review-room/api/session/logout', {
+                  method: 'POST',
+                  headers: this.getReviewRoomIdentityHeaders(),
+                });
+                if (!logoutResponse.ok) throw new Error('Could not sign out this device.');
+                window.location.href = '/review-room';
+              } catch (error) {
+                status.textContent = error instanceof Error ? error.message : String(error);
+                status.style.color = '#fecaca';
+                signout.disabled = false;
+              }
+            })();
+          };
+          guidance.appendChild(signout);
+        }
+        body.append(summary, form, guidance);
+        input.focus();
+      } catch (error) {
+        loading.textContent = error instanceof Error ? error.message : String(error);
+        loading.style.color = '#fecaca';
+      }
+    })();
   }
 
   private openReviewRoomMembersModal(): void {
@@ -4821,10 +5051,10 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
-  private getAgentInviteMessage(): string {
+  private getAgentInviteMessage(options?: { agentToken?: string; requestId?: string; agentId?: string; expiresAt?: string }): string {
     const shareUrl = this.getCanonicalShareUrl();
     const slug = shareClient.getSlug() || this.extractShareSlugFromUrl(shareUrl);
-    const token = this.extractShareTokenFromUrl(shareUrl);
+    const documentToken = this.extractShareTokenFromUrl(shareUrl);
     const origin = (() => {
       try {
         return new URL(shareUrl).origin;
@@ -4848,6 +5078,13 @@ class ProofEditorImpl implements ProofEditor {
     const stateUrl = `${origin}/documents/${encodedSlug}/state`;
     const presenceUrl = `${origin}/documents/${encodedSlug}/presence`;
     const eventsUrl = `${origin}/documents/${encodedSlug}/events/pending?after=0`;
+    const activeReviewRequest = this.reviewRoomLatestAgentReviewRun
+      && ['queued', 'claimed', 'running'].includes(this.reviewRoomLatestAgentReviewRun.status)
+      ? this.reviewRoomLatestAgentReviewRun
+      : null;
+    const reviewRequestId = options?.requestId || activeReviewRequest?.id || null;
+    const token = options?.agentToken
+      || (activeReviewRequest ? '<use Add agent → Copy request to mint scoped access>' : documentToken);
 
     return [
       'Review this document with me in Review Room.',
@@ -4855,21 +5092,31 @@ class ProofEditorImpl implements ProofEditor {
       `Doc: ${shareUrl}`,
       `Slug: ${slug}`,
       `Token: ${token || '<token-from-doc-url>'}`,
+      ...(reviewRequestId ? [`Review request: ${reviewRequestId}`] : []),
+      ...(options?.agentId ? [`Assigned agent identity: ${options.agentId}`] : []),
       `MCP URL: ${mcpUrl}`,
       `Claude/Cowork plugin: ${pluginUrl}`,
       `Docs: ${docsUrl}`,
       '',
       'Use the Review Room MCP first if it is available.',
+      ...(options?.agentToken ? [
+        'This is a request-scoped agent credential. It can read, comment, suggest, and operate this review request; it cannot directly edit, accept/reject suggestions, publish, or manage access.',
+        ...(options.expiresAt ? [`Credential expires: ${options.expiresAt}`] : []),
+      ] : []),
       'In Claude/Cowork, install the plugin above or add the MCP URL as a streamable HTTP connector.',
       'For MCP tool calls, pass the token as the `token` argument. The server also accepts `Authorization: Bearer <token>`.',
       '',
-      'Start here:',
+      'For a queued review request:',
+      '1. Call `review_room_list_review_requests` with `{ slug, token }` and choose the queued request shown above.',
+      '2. Call `review_room_claim_review_request` with `{ slug, token, requestId }`. Review Room binds the assigned agent identity. Keep the returned `leaseToken` secret.',
+      '3. Call `review_room_heartbeat_review_request` before work and periodically while reviewing.',
+      '4. Call `review_room_get_state`, then submit feedback with `review_room_add_comment` or `review_room_add_suggestion`. Include `{ requestId, leaseToken }` so outputs are attributed and deduplicated.',
+      '5. Call `review_room_complete_review_request` when done. If blocked, call `review_room_fail_review_request` or `review_room_release_review_request`.',
+      '',
+      'For general collaboration without a queued request:',
       '1. Call `review_room_get_state` with `{ slug, token }`.',
-      '2. Reply: Connected in Review Room and ready.',
-      '3. For review feedback, use `review_room_add_comment` with exact quoted text.',
-      '4. For proposed edits, use `review_room_add_suggestion` so the human can accept or reject the change.',
-      '5. Use `review_room_reply_comment` and `review_room_resolve_comment` when responding to existing threads.',
-      '6. Re-read state before making another tool call if the human edits the document.',
+      '2. Use comments for review feedback and suggestions for edits the human should accept or reject.',
+      '3. Re-read state before another write if the human edits the document.',
       '',
       'Fallback HTTP routes if MCP is unavailable:',
       `- GET ${stateUrl}`,
@@ -4880,7 +5127,20 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private async copyAgentInviteWithFallback(): Promise<boolean> {
-    const message = this.getAgentInviteMessage();
+    let message = this.getAgentInviteMessage();
+    const request = this.reviewRoomLatestAgentReviewRun;
+    if (request?.status === 'queued' && this.reviewRoomAgentReviewCanStart) {
+      const response = await shareClient.createReviewRoomAgentCredential(request.id);
+      if (!response || this.isShareRequestError(response) || response.success !== true || !response.credential.token) return false;
+      message = this.getAgentInviteMessage({
+        agentToken: response.credential.token,
+        requestId: response.credential.reviewRequestId,
+        agentId: response.credential.agentId,
+        expiresAt: response.credential.expiresAt,
+      });
+      request.agentAccessExpiresAt = response.credential.expiresAt;
+      request.agentAccessRevokedAt = null;
+    }
     const copied = await this.copyTextToClipboard(message);
     if (copied) {
       this.triggerHaptic('success');
@@ -5837,6 +6097,92 @@ class ProofEditorImpl implements ProofEditor {
     return container;
   }
 
+  private scheduleReviewRoomAgentReviewPoll(): void {
+    if (!this.isReviewRoomRuntime()) return;
+    if (this.reviewRoomAgentReviewPollTimer) clearTimeout(this.reviewRoomAgentReviewPollTimer);
+    const status = this.reviewRoomLatestAgentReviewRun?.status;
+    if (status !== 'queued' && status !== 'claimed' && status !== 'running') {
+      this.reviewRoomAgentReviewPollTimer = null;
+      return;
+    }
+    this.reviewRoomAgentReviewPollTimer = setTimeout(() => {
+      this.reviewRoomAgentReviewPollTimer = null;
+      void this.refreshReviewRoomAgentReviewStatus();
+    }, 1500);
+  }
+
+  private async refreshReviewRoomAgentReviewStatus(): Promise<void> {
+    if (!this.isReviewRoomRuntime() || this.reviewRoomAgentReviewRefreshInFlight) return;
+    this.reviewRoomAgentReviewRefreshInFlight = true;
+    try {
+      const response = await shareClient.fetchReviewRoomAgentReviewRuns({ limit: 5 });
+      if (!response || this.isShareRequestError(response) || response.success !== true) return;
+      const previousStatus = this.reviewRoomLatestAgentReviewRun?.status ?? null;
+      this.reviewRoomLatestAgentReviewRun = response.runs[0] ?? null;
+      this.reviewRoomAgentReviewCanStart = response.canStart;
+      this.updateShareBannerAgentControlDisplay();
+      if (previousStatus && previousStatus !== 'completed' && this.reviewRoomLatestAgentReviewRun?.status === 'completed') {
+        void this.updateReviewRoomReviewButtonCount();
+      }
+    } finally {
+      this.reviewRoomAgentReviewRefreshInFlight = false;
+      this.scheduleReviewRoomAgentReviewPoll();
+    }
+  }
+
+  private async startReviewRoomAgentReview(): Promise<boolean> {
+    if (!this.reviewRoomAgentReviewCanStart) return false;
+    const idempotencyKey = typeof crypto?.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const response = await shareClient.startReviewRoomAgentReview(idempotencyKey, {
+      scope: 'document',
+      instructions: 'Review the document and submit only high-confidence comments or suggestions. Humans retain all decision authority.',
+    });
+    if (!response || this.isShareRequestError(response) || response.success !== true) return false;
+    this.reviewRoomLatestAgentReviewRun = response.run;
+    this.updateShareBannerAgentControlDisplay();
+    this.scheduleReviewRoomAgentReviewPoll();
+    return true;
+  }
+
+  private async retryReviewRoomAgentReview(): Promise<boolean> {
+    const run = this.reviewRoomLatestAgentReviewRun;
+    if (!run || !['failed', 'cancelled', 'lease_expired'].includes(run.status) || !this.reviewRoomAgentReviewCanStart) return false;
+    const response = await shareClient.retryReviewRoomAgentReview(run.id);
+    if (!response || this.isShareRequestError(response) || response.success !== true) return false;
+    this.reviewRoomLatestAgentReviewRun = response.run;
+    this.updateShareBannerAgentControlDisplay();
+    this.scheduleReviewRoomAgentReviewPoll();
+    return true;
+  }
+
+  private async cancelReviewRoomAgentReview(): Promise<boolean> {
+    const run = this.reviewRoomLatestAgentReviewRun;
+    if (!run || !['queued', 'claimed', 'running'].includes(run.status) || !this.reviewRoomAgentReviewCanStart) return false;
+    const response = await shareClient.cancelReviewRoomAgentReview(run.id);
+    if (!response || this.isShareRequestError(response) || response.success !== true) return false;
+    this.reviewRoomLatestAgentReviewRun = response.run;
+    this.updateShareBannerAgentControlDisplay();
+    return true;
+  }
+
+  private async openReviewRoomAgentReviewResults(): Promise<boolean> {
+    await this.refreshReviewRoomDocumentFromServer();
+    await this.openReviewRoomReviewPanel({ initialTab: 'suggestions' });
+    return true;
+  }
+
+  private reviewRoomAgentReviewStatusLabel(run: ReviewRoomAgentReviewRun): string {
+    if (run.status === 'queued') return 'Waiting for an agent';
+    if (run.status === 'claimed') return `Claimed by ${run.claimedByAgentId || 'an agent'}`;
+    if (run.status === 'running') return `Reviewing: ${run.claimedByAgentId || 'external agent'}`;
+    if (run.status === 'completed') return `${run.resultCount} review item${run.resultCount === 1 ? '' : 's'} ready`;
+    if (run.status === 'cancelled') return 'Review cancelled';
+    if (run.status === 'lease_expired') return 'Agent lease expired';
+    return 'Review failed';
+  }
+
   private createAgentMenuButton(
     seedAgents?: Array<{
       id: string;
@@ -5852,6 +6198,7 @@ class ProofEditorImpl implements ProofEditor {
     container.style.cssText = 'position:relative;display:inline-flex;align-items:center';
     const agents = seedAgents ?? this.getConnectedAgentEntries();
     const hasAgents = agents.length > 0;
+    const reviewRun = this.reviewRoomLatestAgentReviewRun;
 
     const buildAgentFace = (
       agent: {
@@ -6002,13 +6349,13 @@ class ProofEditorImpl implements ProofEditor {
       `;
 
       const icon = document.createElement('span');
-      icon.textContent = '+';
+      icon.textContent = reviewRun && ['queued', 'claimed', 'running'].includes(reviewRun.status) ? '●' : '+';
       icon.style.cssText = 'font-size:12px;line-height:1;color:#6b7280;';
       btn.appendChild(icon);
 
       const label = document.createElement('span');
       label.className = 'agent-btn-label';
-      label.textContent = 'Agent';
+      label.textContent = reviewRun ? this.reviewRoomAgentReviewStatusLabel(reviewRun) : 'Agent';
       label.style.cssText = 'font-size:12px;font-weight:600;line-height:1;';
       btn.appendChild(label);
 
@@ -6094,10 +6441,47 @@ class ProofEditorImpl implements ProofEditor {
         menu.appendChild(item);
       };
 
+      const currentRun = this.reviewRoomLatestAgentReviewRun;
+      if (this.isReviewRoomRuntime()) {
+        const reviewHeader = document.createElement('div');
+        reviewHeader.textContent = 'Agent review';
+        reviewHeader.style.cssText = 'padding:8px 12px 4px;color:#fff;font-size:13px;font-weight:700;';
+        const reviewBody = document.createElement('div');
+        reviewBody.textContent = currentRun
+          ? [
+            this.reviewRoomAgentReviewStatusLabel(currentRun),
+            currentRun.status === 'queued' && currentRun.agentAccessExpiresAt && !currentRun.agentAccessRevokedAt
+              ? `Agent access expires ${new Date(currentRun.agentAccessExpiresAt).toLocaleString()}.`
+              : currentRun.status === 'queued' && currentRun.agentAccessRevokedAt
+                ? 'Previous agent access was revoked; copy the request again to create fresh access.'
+                : '',
+          ].filter(Boolean).join(' ')
+          : 'Request a review from an external agent. Review Room coordinates the work; the agent brings its own model and credentials.';
+        reviewBody.style.cssText = 'padding:0 12px 8px;color:rgba(255,255,255,0.78);font-size:12px;line-height:1.35;';
+        menu.append(reviewHeader, reviewBody);
+        if (!this.reviewRoomAgentReviewCanStart) {
+          addMenuButton('Only the owner can request a review', async () => false, { disabled: true, subtle: true });
+        } else if (currentRun && ['queued', 'claimed', 'running'].includes(currentRun.status)) {
+          addMenuButton(this.reviewRoomAgentReviewStatusLabel(currentRun), async () => false, { disabled: true });
+          if (currentRun.status === 'queued') {
+            addMenuButton('Copy request for an agent', async () => this.copyAgentInviteWithFallback(), { successText: 'Copied' });
+          }
+          addMenuButton('Cancel review request', async () => this.cancelReviewRoomAgentReview(), { destructive: true, successText: 'Cancelled' });
+        } else if (currentRun && ['failed', 'cancelled', 'lease_expired'].includes(currentRun.status)) {
+          addMenuButton('Requeue review request', async () => this.retryReviewRoomAgentReview(), { successText: 'Queued' });
+        } else {
+          if (currentRun?.status === 'completed') {
+            addMenuButton('Open review results', async () => this.openReviewRoomAgentReviewResults(), { successText: 'Opened' });
+          }
+          addMenuButton(currentRun ? 'Request another review' : 'Request document review', async () => this.startReviewRoomAgentReview(), { successText: 'Waiting' });
+        }
+        addDivider();
+      }
+
       const agentsNow = this.getConnectedAgentEntries();
       if (agentsNow.length === 0) {
         const header = document.createElement('div');
-        header.textContent = 'Add an agent';
+        header.textContent = 'External agent setup';
         header.style.cssText = 'padding:8px 12px 4px;color:#fff;font-size:13px;font-weight:700;';
         const body = document.createElement('div');
         body.textContent = 'Invite an agent collaborator to edit, suggest, and review this doc.';

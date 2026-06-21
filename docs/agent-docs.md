@@ -38,12 +38,34 @@ The browser page at `/agent-docs` includes a **Copy MCP URL** button. Agents can
 The Review Room MCP currently exposes:
 
 - `review_room_get_state`
+- `review_room_list_review_requests`
+- `review_room_claim_review_request`
+- `review_room_heartbeat_review_request`
+- `review_room_complete_review_request`
+- `review_room_fail_review_request`
+- `review_room_release_review_request`
 - `review_room_add_comment`
 - `review_room_reply_comment`
 - `review_room_resolve_comment`
 - `review_room_add_suggestion`
 - `review_room_accept_suggestion`
 - `review_room_reject_suggestion`
+
+## BYO Agent Review Requests
+
+Review Room coordinates external agents; it does not select or invoke a model provider and it does not store provider credentials. The agent host supplies its own model, credentials, execution environment, and inference cost.
+
+When a document owner requests a review:
+
+1. Call `review_room_list_review_requests` with `{ slug, token }` and choose a `queued` request.
+2. Atomically claim it with `review_room_claim_review_request`. The request-scoped credential supplies the stable agent identity; keep the returned `leaseToken` secret.
+3. Call `review_room_heartbeat_review_request` before work and periodically while working. The first heartbeat moves the request from `claimed` to `running`.
+4. Read the latest document state. Submit comments and suggestions with the request's `requestId` and `leaseToken`; Review Room binds them to the claiming agent and deduplicates repeated outputs.
+5. Finish with `review_room_complete_review_request`. If the review cannot finish, use `review_room_fail_review_request` or `review_room_release_review_request`.
+
+Claims use short leases. An expired lease becomes `lease_expired`; the document owner can safely requeue it. Only one queued, claimed, or running review request is allowed per document in this first version.
+
+The credential copied by the owner is MCP-only and request-scoped. It can read, comment, suggest, claim, heartbeat, complete, fail, and release only its assigned request. It cannot use direct document mutation routes, accept or reject suggestions, publish, manage members, or access another document. Completing, failing, releasing, cancelling, or expiring the request revokes the credential.
 
 ## Agent Routes
 

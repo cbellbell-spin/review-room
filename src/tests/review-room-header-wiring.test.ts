@@ -17,6 +17,8 @@ const root = process.cwd();
 const indexHtml = readFileSync(path.join(root, 'src/index.html'), 'utf8');
 const editorSource = readFileSync(path.join(root, 'src/editor/index.ts'), 'utf8');
 const serverIndexSource = readFileSync(path.join(root, 'server/index.ts'), 'utf8');
+const reviewRoomRoutesSource = readFileSync(path.join(root, 'server/review-room-routes.ts'), 'utf8');
+const reviewRoomMcpSource = readFileSync(path.join(root, 'server/review-room-mcp-routes.ts'), 'utf8');
 const reviewPanelSource = readFileSync(path.join(root, 'src/review-room/review-panel.ts'), 'utf8');
 const reviewItemsSource = readFileSync(path.join(root, 'src/review-room/review-items.ts'), 'utf8');
 const reviewTokensSource = readFileSync(path.join(root, 'src/review-room/tokens.ts'), 'utf8');
@@ -36,6 +38,7 @@ assert(indexHtml.includes('id="review-room-agent-slot"'), 'Expected Review Room 
 assert(indexHtml.includes('id="review-room-format-slot"'), 'Expected Review Room header to expose a formatting toolbar slot');
 assert(indexHtml.includes('id="review-room-save-slot"'), 'Expected Review Room header to expose a save slot');
 assert(indexHtml.includes('id="review-room-share-slot"'), 'Expected Review Room header to expose a share control slot');
+assert(indexHtml.includes('id="review-room-profile-slot"'), 'Expected Review Room header to expose a profile control slot');
 assert(indexHtml.includes('class="review-room-controls"'), 'Expected Review Room header to group controls below the title row');
 assert(
   indexHtml.indexOf('id="review-room-title-slot"') < indexHtml.indexOf('class="review-room-controls"'),
@@ -54,8 +57,34 @@ assert(
     && editorSource.includes("agentSlotContainer.replaceChildren(agentSlot);")
     && editorSource.includes("formatSlot.replaceChildren(this.createReviewRoomFormattingToolbar());")
     && editorSource.includes("saveSlot.replaceChildren(this.createReviewRoomSaveControls());")
+    && editorSource.includes("profileSlot.replaceChildren(this.createReviewRoomProfileButton());")
     && editorSource.includes("shareSlot.replaceChildren(shareBtn);"),
   'Expected existing share controls to be mounted into Review Room header slots',
+);
+assert(
+  editorSource.includes('private createReviewRoomProfileButton()')
+    && editorSource.includes('private openReviewRoomProfileModal()')
+    && editorSource.includes("state.textContent = sessionActive ? 'Linked on this browser' : 'Document-link identity on this browser';")
+    && editorSource.includes("method: 'PATCH'")
+    && editorSource.includes("fetch('/review-room/api/session/logout'")
+    && editorSource.includes('shared document links can still grant document access')
+    && editorSource.includes('Account recovery and email delivery are not available yet.'),
+  'Expected Review Room document chrome to expose identity continuity, rename, and current-device sign-out controls',
+);
+assert(
+  reviewRoomRoutesSource.includes('id="profile-button"')
+    && reviewRoomRoutesSource.includes("profileSession.textContent = sessionActive ? 'Linked on this browser' : 'Local browser identity';")
+    && reviewRoomRoutesSource.includes("profileForm.addEventListener('submit'")
+    && reviewRoomRoutesSource.includes("profileSignout.addEventListener('click'")
+    && reviewRoomRoutesSource.includes('shared document links can still grant document access')
+    && reviewRoomRoutesSource.includes('Account recovery and email delivery are not available yet.'),
+  'Expected the Review Room dashboard to expose the same identity continuity controls and guidance',
+);
+assert(
+  reviewRoomRoutesSource.includes('@media (max-width: 560px)')
+    && reviewRoomRoutesSource.includes('.nav { display: none; }')
+    && indexHtml.includes('#review-room-profile-slot [data-review-room-profile-label]'),
+  'Expected identity controls to stay compact in narrow Review Room headers',
 );
 assert(
   reviewPanelSource.includes("REVIEW_PANEL_ID = 'review-room-review-sidebar'")
@@ -203,10 +232,36 @@ assert(
     && editorSource.includes('MCP URL:')
     && editorSource.includes('review_room_get_state')
     && editorSource.includes('review_room_add_suggestion')
-    && editorSource.includes('review_room_resolve_comment')
+    && editorSource.includes('review_room_claim_review_request')
+    && editorSource.includes('review_room_complete_review_request')
     && editorSource.includes('/review-room/claude-plugin.zip')
     && editorSource.includes('/documents/${encodedSlug}/events/pending?after=0'),
   'Expected Add agent to expose a Review Room MCP-first prompt modal',
+);
+assert(
+  shareClientSource.includes('async fetchReviewRoomAgentReviewRuns(')
+    && shareClientSource.includes('async startReviewRoomAgentReview(')
+    && shareClientSource.includes('async retryReviewRoomAgentReview(')
+    && shareClientSource.includes('async cancelReviewRoomAgentReview(')
+    && shareClientSource.includes('async createReviewRoomAgentCredential(')
+    && editorSource.includes('private async refreshReviewRoomAgentReviewStatus()')
+    && editorSource.includes('private async startReviewRoomAgentReview()')
+    && editorSource.includes('private async retryReviewRoomAgentReview()')
+    && editorSource.includes("addMenuButton(currentRun ? 'Request another review' : 'Request document review'")
+    && editorSource.includes("addMenuButton('Open review results'")
+    && editorSource.includes("addMenuButton('Requeue review request'")
+    && editorSource.includes('the agent brings its own model and credentials')
+    && editorSource.includes('This is a request-scoped agent credential')
+    && editorSource.includes('shareClient.createReviewRoomAgentCredential(request.id)')
+    && reviewRoomRoutesSource.includes("reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs'")
+    && reviewRoomRoutesSource.includes("reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/retry'")
+    && reviewRoomRoutesSource.includes("reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/cancel'")
+    && reviewRoomRoutesSource.includes("reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/agent-credential'")
+    && reviewRoomMcpSource.includes("name: 'review_room_claim_review_request'")
+    && reviewRoomMcpSource.includes("name: 'review_room_heartbeat_review_request'")
+    && reviewRoomMcpSource.includes("name: 'review_room_complete_review_request'")
+    && reviewItemsSource.includes("event.eventType === 'agent_review.completed'"),
+  'Expected Add agent to request, monitor, cancel, and requeue a provider-neutral BYO agent review',
 );
 assert(
   editorSource.includes('this.reviewRoomRestSaveMode || (baseAllowLocalEdits && hydrated)'),

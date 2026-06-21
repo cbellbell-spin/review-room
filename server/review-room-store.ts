@@ -114,6 +114,19 @@ const REVIEW_ROOM_TABLE_DDL = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS review_room_agent_credentials (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    review_request_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_by_identity_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_review_room_agent_credentials_request ON review_room_agent_credentials(review_request_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS review_room_document_agent_settings (
     document_id TEXT NOT NULL,
     agent_id TEXT NOT NULL,
@@ -142,6 +155,45 @@ const REVIEW_ROOM_TABLE_DDL = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_review_room_tasks_document_status ON review_room_assignment_tasks(document_id, status, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_review_room_tasks_assignee_status ON review_room_assignment_tasks(assigned_to_actor_id, status, created_at)`,
+  `CREATE TABLE IF NOT EXISTS review_room_agent_review_runs (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    requested_by_identity_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    model TEXT,
+    scope TEXT NOT NULL DEFAULT 'document',
+    instructions TEXT,
+    claim_token_hash TEXT,
+    lease_expires_at TEXT,
+    claimed_at TEXT,
+    heartbeat_at TEXT,
+    cancelled_at TEXT,
+    result_count INTEGER NOT NULL DEFAULT 0,
+    failed_output_count INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    UNIQUE (document_id, idempotency_key)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_review_room_agent_runs_document_created ON review_room_agent_review_runs(document_id, created_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_review_room_agent_runs_one_active_v2 ON review_room_agent_review_runs(document_id) WHERE status IN ('queued', 'claimed', 'running')`,
+  `CREATE TABLE IF NOT EXISTS review_room_agent_review_outputs (
+    run_id TEXT NOT NULL,
+    item_key TEXT NOT NULL,
+    item_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    mark_id TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, item_key)
+  )`,
   `CREATE TABLE IF NOT EXISTS review_room_published_versions (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
@@ -196,6 +248,67 @@ const REVIEW_ROOM_TABLE_DDL = [
   `CREATE INDEX IF NOT EXISTS idx_review_room_sessions_identity ON review_room_sessions(identity_id, expires_at)`,
 ];
 
+export type ReviewRoomAgentReviewRunStatus =
+  | 'queued'
+  | 'claimed'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'lease_expired';
+
+export type ReviewRoomAgentReviewRun = {
+  id: string;
+  document_id: string;
+  agent_id: string;
+  requested_by_identity_id: string;
+  idempotency_key: string;
+  status: ReviewRoomAgentReviewRunStatus;
+  attempt_count: number;
+  model: string | null;
+  scope: string;
+  instructions: string | null;
+  claim_token_hash: string | null;
+  lease_expires_at: string | null;
+  claimed_at: string | null;
+  heartbeat_at: string | null;
+  cancelled_at: string | null;
+  result_count: number;
+  failed_output_count: number;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+export type ReviewRoomAgentReviewOutput = {
+  run_id: string;
+  item_key: string;
+  item_type: string;
+  status: 'pending' | 'applied' | 'failed';
+  mark_id: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReviewRoomAgentCredential = {
+  id: string;
+  document_id: string;
+  review_request_id: string;
+  agent_id: string;
+  token_hash: string;
+  created_by_identity_id: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+  proof_slug?: string;
+  request_status?: ReviewRoomAgentReviewRunStatus;
+};
+
 async function ensureStore(): Promise<Client> {
   const db = getClient();
   if (initialized) return db;
@@ -205,6 +318,23 @@ async function ensureStore(): Promise<Client> {
   }
   for (const ddl of REVIEW_ROOM_TABLE_DDL) {
     await db.execute(ddl);
+  }
+  // The review-request protocol replaced an unshipped provider-runner experiment.
+  // Keep local development databases forward-compatible while the schema is still pre-release.
+  for (const column of [
+    "scope TEXT NOT NULL DEFAULT 'document'",
+    'instructions TEXT',
+    'claim_token_hash TEXT',
+    'lease_expires_at TEXT',
+    'claimed_at TEXT',
+    'heartbeat_at TEXT',
+    'cancelled_at TEXT',
+  ]) {
+    try {
+      await db.execute(`ALTER TABLE review_room_agent_review_runs ADD COLUMN ${column}`);
+    } catch {
+      // Existing databases already have the column.
+    }
   }
   const now = new Date().toISOString();
   await db.batch([
@@ -294,7 +424,7 @@ export async function storeUpsertReviewRoomIdentity(input: {
   const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
   const kind = input.kind === 'agent' ? 'agent' : 'human';
   const displayName = input.displayName?.trim() || id;
-  await db.execute({
+  const result = await db.execute({
     sql: `INSERT INTO review_room_identities (id, workspace_id, kind, display_name, manager_identity_id, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
@@ -463,6 +593,128 @@ export async function storeListReviewRoomAgents(workspaceId: string = REVIEW_ROO
     WHERE workspace_id = ?
     ORDER BY name ASC
   `, [workspaceId]);
+}
+
+export async function storeCreateReviewRoomAgentCredential(input: {
+  documentId: string;
+  reviewRequestId: string;
+  agentId: string;
+  agentName: string;
+  tokenHash: string;
+  createdByIdentityId: string;
+  expiresAt: string;
+}): Promise<ReviewRoomAgentCredential> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  await storeUpsertReviewRoomIdentity({
+    id: input.agentId,
+    kind: 'agent',
+    displayName: input.agentName,
+    managerIdentityId: input.createdByIdentityId,
+  });
+  await db.execute({
+    sql: `INSERT INTO review_room_agents (
+            id, workspace_id, owner_identity_id, manager_identity_id, name, description,
+            integration_type, capabilities_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'external', ?, ?, ?)
+          ON CONFLICT (id) DO UPDATE SET
+            manager_identity_id = excluded.manager_identity_id,
+            name = excluded.name,
+            capabilities_json = excluded.capabilities_json,
+            updated_at = excluded.updated_at`,
+    args: [
+      input.agentId,
+      REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+      input.createdByIdentityId,
+      input.createdByIdentityId,
+      input.agentName,
+      'External BYO agent with request-scoped Review Room access.',
+      JSON.stringify(['read', 'comment', 'suggest', 'claim', 'heartbeat', 'complete', 'fail', 'release']),
+      now,
+      now,
+    ],
+  });
+  await db.execute({
+    sql: `UPDATE review_room_agent_credentials
+          SET revoked_at = ?
+          WHERE review_request_id = ? AND revoked_at IS NULL`,
+    args: [now, input.reviewRequestId],
+  });
+  const id = randomUUID();
+  await db.execute({
+    sql: `INSERT INTO review_room_agent_credentials (
+            id, document_id, review_request_id, agent_id, token_hash,
+            created_by_identity_id, expires_at, revoked_at, last_used_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+    args: [
+      id,
+      input.documentId,
+      input.reviewRequestId,
+      input.agentId,
+      input.tokenHash,
+      input.createdByIdentityId,
+      input.expiresAt,
+      now,
+    ],
+  });
+  const credential = await storeGetReviewRoomAgentCredential(id);
+  if (!credential) throw new Error('Review Room agent credential was not persisted.');
+  return credential;
+}
+
+export async function storeGetReviewRoomAgentCredential(id: string): Promise<ReviewRoomAgentCredential | null> {
+  return execute<ReviewRoomAgentCredential>(`
+    SELECT * FROM review_room_agent_credentials WHERE id = ? LIMIT 1
+  `, [id]);
+}
+
+export async function storeGetLatestReviewRoomAgentCredential(reviewRequestId: string): Promise<ReviewRoomAgentCredential | null> {
+  return execute<ReviewRoomAgentCredential>(`
+    SELECT * FROM review_room_agent_credentials
+    WHERE review_request_id = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `, [reviewRequestId]);
+}
+
+export async function storeResolveReviewRoomAgentCredential(
+  proofSlug: string,
+  token: string,
+): Promise<ReviewRoomAgentCredential | null> {
+  const trimmed = token.trim();
+  if (!trimmed) return null;
+  const tokenHash = hashSecret(trimmed);
+  return execute<ReviewRoomAgentCredential>(`
+    SELECT c.*, d.proof_slug, r.status AS request_status
+    FROM review_room_agent_credentials c
+    JOIN review_room_documents d ON d.id = c.document_id
+    JOIN review_room_agent_review_runs r ON r.id = c.review_request_id
+    WHERE d.proof_slug = ?
+      AND c.token_hash = ?
+      AND c.revoked_at IS NULL
+      AND c.expires_at > ?
+      AND r.status IN ('queued', 'claimed', 'running')
+    LIMIT 1
+  `, [proofSlug, tokenHash, new Date().toISOString()]);
+}
+
+export async function storeTouchReviewRoomAgentCredential(id: string): Promise<void> {
+  const db = await ensureStore();
+  await db.execute({
+    sql: `UPDATE review_room_agent_credentials SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL`,
+    args: [new Date().toISOString(), id],
+  });
+}
+
+export async function storeRevokeReviewRoomAgentCredentials(reviewRequestId: string): Promise<number> {
+  const db = await ensureStore();
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_credentials
+          SET revoked_at = ?
+          WHERE review_request_id = ? AND revoked_at IS NULL`,
+    args: [new Date().toISOString(), reviewRequestId],
+  });
+  return Number(result.rowsAffected ?? 0);
 }
 
 const DOCUMENT_SELECT = `
@@ -939,4 +1191,313 @@ export async function storeListReviewRoomHistoryEvents(input: {
     ORDER BY created_at DESC
     LIMIT ?
   `, [input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID, safeLimit]);
+}
+
+export async function storeCreateAgentReviewRun(input: {
+  documentId: string;
+  requestedByIdentityId: string;
+  idempotencyKey: string;
+  scope?: string;
+  instructions?: string | null;
+}): Promise<{ run: ReviewRoomAgentReviewRun; reused: boolean }> {
+  const db = await ensureStore();
+  const existing = await storeGetAgentReviewRunByIdempotencyKey(input.documentId, input.idempotencyKey);
+  if (existing) return { run: existing, reused: true };
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  try {
+    await db.execute({
+      sql: `INSERT INTO review_room_agent_review_runs (
+        id, document_id, agent_id, requested_by_identity_id, idempotency_key, status, attempt_count,
+        model, scope, instructions, result_count, failed_output_count, error_code, error_message,
+        created_at, updated_at, started_at, completed_at
+      ) VALUES (?, ?, '', ?, ?, 'queued', 1, NULL, ?, ?, 0, 0, NULL, NULL, ?, ?, NULL, NULL)`,
+      args: [
+        id,
+        input.documentId,
+        input.requestedByIdentityId,
+        input.idempotencyKey,
+        (input.scope || 'document').slice(0, 120),
+        input.instructions?.slice(0, 4000) ?? null,
+        now,
+        now,
+      ],
+    });
+  } catch (error) {
+    const raced = await storeGetAgentReviewRunByIdempotencyKey(input.documentId, input.idempotencyKey);
+    if (raced) return { run: raced, reused: true };
+    const active = await storeGetActiveAgentReviewRun(input.documentId);
+    if (active) return { run: active, reused: true };
+    throw error;
+  }
+  const run = await storeGetAgentReviewRun(id);
+  if (!run) throw new Error('Review Room agent review run was not persisted.');
+  return { run, reused: false };
+}
+
+export async function storeGetAgentReviewRun(id: string): Promise<ReviewRoomAgentReviewRun | null> {
+  return execute<ReviewRoomAgentReviewRun>(`
+    SELECT * FROM review_room_agent_review_runs WHERE id = ? LIMIT 1
+  `, [id]);
+}
+
+export async function storeGetAgentReviewRunByIdempotencyKey(
+  documentId: string,
+  idempotencyKey: string,
+): Promise<ReviewRoomAgentReviewRun | null> {
+  return execute<ReviewRoomAgentReviewRun>(`
+    SELECT * FROM review_room_agent_review_runs
+    WHERE document_id = ? AND idempotency_key = ?
+    LIMIT 1
+  `, [documentId, idempotencyKey]);
+}
+
+export async function storeGetActiveAgentReviewRun(documentId: string): Promise<ReviewRoomAgentReviewRun | null> {
+  return execute<ReviewRoomAgentReviewRun>(`
+    SELECT * FROM review_room_agent_review_runs
+    WHERE document_id = ? AND status IN ('queued', 'claimed', 'running')
+    ORDER BY created_at DESC
+    LIMIT 1
+  `, [documentId]);
+}
+
+export async function storeListAgentReviewRuns(documentId: string, limit: number = 20): Promise<ReviewRoomAgentReviewRun[]> {
+  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+  return executeAll<ReviewRoomAgentReviewRun>(`
+    SELECT * FROM review_room_agent_review_runs
+    WHERE document_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `, [documentId, safeLimit]);
+}
+
+export async function storeClaimAgentReviewRun(input: {
+  id: string;
+  agentId: string;
+  claimTokenHash: string;
+  leaseExpiresAt: string;
+}): Promise<ReviewRoomAgentReviewRun | null> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_review_runs
+          SET status = 'claimed', agent_id = ?, claim_token_hash = ?, lease_expires_at = ?,
+              claimed_at = ?, heartbeat_at = ?, error_code = NULL, error_message = NULL,
+              started_at = NULL, completed_at = NULL, cancelled_at = NULL, updated_at = ?
+          WHERE id = ? AND status = 'queued'`,
+    args: [input.agentId, input.claimTokenHash, input.leaseExpiresAt, now, now, now, input.id],
+  });
+  if (Number(result.rowsAffected ?? 0) <= 0) return null;
+  return storeGetAgentReviewRun(input.id);
+}
+
+export async function storeHeartbeatAgentReviewRun(input: {
+  id: string;
+  claimTokenHash: string;
+  leaseExpiresAt: string;
+}): Promise<ReviewRoomAgentReviewRun | null> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_review_runs
+          SET status = 'running', heartbeat_at = ?, lease_expires_at = ?,
+              started_at = COALESCE(started_at, ?), updated_at = ?
+          WHERE id = ? AND claim_token_hash = ? AND status IN ('claimed', 'running')
+            AND lease_expires_at > ?`,
+    args: [now, input.leaseExpiresAt, now, now, input.id, input.claimTokenHash, now],
+  });
+  if (Number(result.rowsAffected ?? 0) <= 0) return null;
+  return storeGetAgentReviewRun(input.id);
+}
+
+export async function storeCompleteAgentReviewRun(input: {
+  id: string;
+  claimTokenHash: string;
+  resultCount: number;
+  failedOutputCount: number;
+}): Promise<ReviewRoomAgentReviewRun | null> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_review_runs
+          SET status = 'completed', result_count = ?, failed_output_count = ?,
+              error_code = NULL, error_message = NULL, completed_at = ?,
+              lease_expires_at = NULL, claim_token_hash = NULL, updated_at = ?
+          WHERE id = ? AND claim_token_hash = ? AND status IN ('claimed', 'running')
+            AND lease_expires_at > ?`,
+    args: [input.resultCount, input.failedOutputCount, now, now, input.id, input.claimTokenHash, now],
+  });
+  if (Number(result.rowsAffected ?? 0) <= 0) return null;
+  await storeRevokeReviewRoomAgentCredentials(input.id);
+  return storeGetAgentReviewRun(input.id);
+}
+
+export async function storeFailAgentReviewRun(input: {
+  id: string;
+  claimTokenHash?: string;
+  code: string;
+  message: string;
+  resultCount?: number;
+  failedOutputCount?: number;
+}): Promise<ReviewRoomAgentReviewRun | null> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_review_runs
+          SET status = 'failed', error_code = ?, error_message = ?,
+              result_count = COALESCE(?, result_count), failed_output_count = COALESCE(?, failed_output_count),
+              claim_token_hash = NULL, lease_expires_at = NULL, completed_at = ?, updated_at = ?
+          WHERE id = ? AND status IN ('claimed', 'running')
+            AND (? IS NULL OR claim_token_hash = ?)`,
+    args: [input.code, input.message.slice(0, 1000), input.resultCount ?? null, input.failedOutputCount ?? null, now, now, input.id, input.claimTokenHash ?? null, input.claimTokenHash ?? null],
+  });
+  if (Number(result.rowsAffected ?? 0) <= 0) return null;
+  await storeRevokeReviewRoomAgentCredentials(input.id);
+  return storeGetAgentReviewRun(input.id);
+}
+
+export async function storeQueueAgentReviewRunRetry(id: string): Promise<ReviewRoomAgentReviewRun | null> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_review_runs
+          SET status = 'queued', attempt_count = attempt_count + 1,
+              agent_id = '', claim_token_hash = NULL, lease_expires_at = NULL, claimed_at = NULL,
+              heartbeat_at = NULL, error_code = NULL, error_message = NULL,
+              started_at = NULL, completed_at = NULL, cancelled_at = NULL, updated_at = ?
+          WHERE id = ? AND status IN ('failed', 'cancelled', 'lease_expired')`,
+    args: [now, id],
+  });
+  if (Number(result.rowsAffected ?? 0) <= 0) return null;
+  await storeRevokeReviewRoomAgentCredentials(id);
+  return storeGetAgentReviewRun(id);
+}
+
+export async function storeReleaseAgentReviewRun(id: string, claimTokenHash: string): Promise<ReviewRoomAgentReviewRun | null> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_review_runs
+          SET status = 'queued', agent_id = '', claim_token_hash = NULL, lease_expires_at = NULL,
+              claimed_at = NULL, heartbeat_at = NULL, started_at = NULL, updated_at = ?
+          WHERE id = ? AND claim_token_hash = ? AND status IN ('claimed', 'running')`,
+    args: [now, id, claimTokenHash],
+  });
+  if (Number(result.rowsAffected ?? 0) <= 0) return null;
+  await storeRevokeReviewRoomAgentCredentials(id);
+  return storeGetAgentReviewRun(id);
+}
+
+export async function storeCancelAgentReviewRun(id: string): Promise<ReviewRoomAgentReviewRun | null> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_review_runs
+          SET status = 'cancelled', claim_token_hash = NULL, lease_expires_at = NULL,
+              cancelled_at = ?, completed_at = ?, updated_at = ?
+          WHERE id = ? AND status IN ('queued', 'claimed', 'running')`,
+    args: [now, now, now, id],
+  });
+  if (Number(result.rowsAffected ?? 0) <= 0) return null;
+  await storeRevokeReviewRoomAgentCredentials(id);
+  return storeGetAgentReviewRun(id);
+}
+
+export async function storeExpireAgentReviewRunLeases(documentId?: string): Promise<number> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const expiring = await executeAll<{ id: string }>(`
+    SELECT id FROM review_room_agent_review_runs
+    WHERE status IN ('claimed', 'running') AND lease_expires_at <= ?
+      AND (? IS NULL OR document_id = ?)
+  `, [now, documentId ?? null, documentId ?? null]);
+  const result = await db.execute({
+    sql: `UPDATE review_room_agent_review_runs
+          SET status = 'lease_expired', claim_token_hash = NULL, lease_expires_at = NULL,
+              error_code = 'AGENT_LEASE_EXPIRED', error_message = 'The external agent lease expired.',
+              completed_at = ?, updated_at = ?
+          WHERE status IN ('claimed', 'running') AND lease_expires_at <= ?
+            AND (? IS NULL OR document_id = ?)`,
+    args: [now, now, now, documentId ?? null, documentId ?? null],
+  });
+  for (const run of expiring) await storeRevokeReviewRoomAgentCredentials(run.id);
+  return Number(result.rowsAffected ?? 0);
+}
+
+export async function storeCountAgentReviewOutputs(runId: string): Promise<number> {
+  const row = await execute<{ count: number }>(`
+    SELECT COUNT(*) AS count FROM review_room_agent_review_outputs
+    WHERE run_id = ? AND status = 'applied'
+  `, [runId]);
+  return Number(row?.count ?? 0);
+}
+
+export async function storeGetAgentReviewOutput(runId: string, itemKey: string): Promise<ReviewRoomAgentReviewOutput | null> {
+  return execute<ReviewRoomAgentReviewOutput>(`
+    SELECT * FROM review_room_agent_review_outputs WHERE run_id = ? AND item_key = ? LIMIT 1
+  `, [runId, itemKey]);
+}
+
+export async function storeReserveAgentReviewOutput(input: {
+  runId: string;
+  itemKey: string;
+  itemType: string;
+}): Promise<{ output: ReviewRoomAgentReviewOutput; reserved: boolean }> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  const inserted = await db.execute({
+    sql: `INSERT INTO review_room_agent_review_outputs (
+            run_id, item_key, item_type, status, mark_id, error_message, created_at, updated_at
+          ) VALUES (?, ?, ?, 'pending', NULL, NULL, ?, ?)
+          ON CONFLICT (run_id, item_key) DO NOTHING`,
+    args: [input.runId, input.itemKey, input.itemType, now, now],
+  });
+  let reserved = Number(inserted.rowsAffected ?? 0) > 0;
+  if (!reserved) {
+    const retried = await db.execute({
+      sql: `UPDATE review_room_agent_review_outputs
+            SET status = 'pending', error_message = NULL, updated_at = ?
+            WHERE run_id = ? AND item_key = ? AND status = 'failed'`,
+      args: [now, input.runId, input.itemKey],
+    });
+    reserved = Number(retried.rowsAffected ?? 0) > 0;
+  }
+  const output = await storeGetAgentReviewOutput(input.runId, input.itemKey);
+  if (!output) throw new Error('Review Room agent review output reservation was not persisted.');
+  return { output, reserved };
+}
+
+export async function storeUpsertAgentReviewOutput(input: {
+  runId: string;
+  itemKey: string;
+  itemType: string;
+  status: ReviewRoomAgentReviewOutput['status'];
+  markId?: string | null;
+  errorMessage?: string | null;
+}): Promise<ReviewRoomAgentReviewOutput> {
+  const db = await ensureStore();
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `INSERT INTO review_room_agent_review_outputs (
+            run_id, item_key, item_type, status, mark_id, error_message, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (run_id, item_key) DO UPDATE SET
+            status = excluded.status,
+            mark_id = excluded.mark_id,
+            error_message = excluded.error_message,
+            updated_at = excluded.updated_at`,
+    args: [
+      input.runId,
+      input.itemKey,
+      input.itemType,
+      input.status,
+      input.markId ?? null,
+      input.errorMessage?.slice(0, 1000) ?? null,
+      now,
+      now,
+    ],
+  });
+  const output = await storeGetAgentReviewOutput(input.runId, input.itemKey);
+  if (!output) throw new Error('Review Room agent review output was not persisted.');
+  return output;
 }

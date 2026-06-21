@@ -164,6 +164,66 @@ export interface ReviewRoomTaskStatusResponse {
   task: ReviewRoomAssignmentTask;
 }
 
+export type ReviewRoomAgentReviewRunStatus =
+  | 'queued'
+  | 'claimed'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'lease_expired';
+
+export interface ReviewRoomAgentReviewRun {
+  id: string;
+  documentId: string;
+  agentId?: string | null;
+  claimedByAgentId?: string | null;
+  requestedByIdentityId: string;
+  status: ReviewRoomAgentReviewRunStatus;
+  attemptCount: number;
+  scope: string;
+  instructions?: string | null;
+  leaseExpiresAt?: string | null;
+  claimedAt?: string | null;
+  heartbeatAt?: string | null;
+  agentAccessExpiresAt?: string | null;
+  agentAccessRevokedAt?: string | null;
+  resultCount: number;
+  failedOutputCount: number;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface ReviewRoomAgentReviewRunsResponse {
+  success: boolean;
+  canStart: boolean;
+  runs: ReviewRoomAgentReviewRun[];
+}
+
+export interface ReviewRoomAgentReviewRunResponse {
+  success: boolean;
+  reused?: boolean;
+  run: ReviewRoomAgentReviewRun;
+}
+
+export interface ReviewRoomAgentCredential {
+  id: string;
+  reviewRequestId: string;
+  agentId: string;
+  agentName: string;
+  token: string;
+  expiresAt: string;
+}
+
+export interface ReviewRoomAgentCredentialResponse {
+  success: boolean;
+  credential: ReviewRoomAgentCredential;
+}
+
 export type ReviewRoomRole = 'owner' | 'editor' | 'commenter' | 'viewer';
 
 export interface ReviewRoomDocumentMember {
@@ -1037,6 +1097,150 @@ export class ShareClient {
           updatedAt: typeof task.updatedAt === 'string' ? task.updatedAt : '',
           completedAt: typeof task.completedAt === 'string' ? task.completedAt : null,
         })),
+    };
+  }
+
+  private parseReviewRoomAgentReviewRun(run: Record<string, unknown>): ReviewRoomAgentReviewRun {
+    const status = run.status === 'queued'
+      || run.status === 'claimed'
+      || run.status === 'running'
+      || run.status === 'completed'
+      || run.status === 'failed'
+      || run.status === 'cancelled'
+      || run.status === 'lease_expired'
+      ? run.status
+      : 'failed';
+    return {
+      id: typeof run.id === 'string' ? run.id : '',
+      documentId: typeof run.documentId === 'string' ? run.documentId : '',
+      agentId: typeof run.claimedByAgentId === 'string' ? run.claimedByAgentId : null,
+      claimedByAgentId: typeof run.claimedByAgentId === 'string' ? run.claimedByAgentId : null,
+      requestedByIdentityId: typeof run.requestedByIdentityId === 'string' ? run.requestedByIdentityId : '',
+      status,
+      attemptCount: typeof run.attemptCount === 'number' ? run.attemptCount : 1,
+      scope: typeof run.scope === 'string' ? run.scope : 'document',
+      instructions: typeof run.instructions === 'string' ? run.instructions : null,
+      leaseExpiresAt: typeof run.leaseExpiresAt === 'string' ? run.leaseExpiresAt : null,
+      claimedAt: typeof run.claimedAt === 'string' ? run.claimedAt : null,
+      heartbeatAt: typeof run.heartbeatAt === 'string' ? run.heartbeatAt : null,
+      agentAccessExpiresAt: typeof run.agentAccessExpiresAt === 'string' ? run.agentAccessExpiresAt : null,
+      agentAccessRevokedAt: typeof run.agentAccessRevokedAt === 'string' ? run.agentAccessRevokedAt : null,
+      resultCount: typeof run.resultCount === 'number' ? run.resultCount : 0,
+      failedOutputCount: typeof run.failedOutputCount === 'number' ? run.failedOutputCount : 0,
+      errorCode: typeof run.errorCode === 'string' ? run.errorCode : null,
+      errorMessage: typeof run.errorMessage === 'string' ? run.errorMessage : null,
+      createdAt: typeof run.createdAt === 'string' ? run.createdAt : '',
+      updatedAt: typeof run.updatedAt === 'string' ? run.updatedAt : '',
+      startedAt: typeof run.startedAt === 'string' ? run.startedAt : null,
+      completedAt: typeof run.completedAt === 'string' ? run.completedAt : null,
+    };
+  }
+
+  async fetchReviewRoomAgentReviewRuns(
+    options?: { token?: string; limit?: number },
+  ): Promise<ReviewRoomAgentReviewRunsResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const limit = Math.max(1, Math.min(100, Math.trunc(options?.limit ?? 20)));
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/review-runs?limit=${limit}`, {
+      headers: this.getShareAuthHeaders(options?.token),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+    return {
+      success: payload?.success === true,
+      canStart: payload?.canStart === true,
+      runs: runs
+        .filter((run): run is Record<string, unknown> => Boolean(run) && typeof run === 'object' && !Array.isArray(run))
+        .map((run) => this.parseReviewRoomAgentReviewRun(run)),
+    };
+  }
+
+  async startReviewRoomAgentReview(
+    idempotencyKey: string,
+    input?: { scope?: string; instructions?: string },
+    options?: { token?: string },
+  ): Promise<ReviewRoomAgentReviewRunResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/review-runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.getShareAuthHeaders(options?.token) },
+      body: JSON.stringify({ idempotencyKey, scope: input?.scope, instructions: input?.instructions }),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const run = payload?.run && typeof payload.run === 'object' && !Array.isArray(payload.run)
+      ? this.parseReviewRoomAgentReviewRun(payload.run as Record<string, unknown>)
+      : null;
+    if (!run) return { success: false, run: {} as ReviewRoomAgentReviewRun };
+    return { success: payload?.success === true, reused: payload?.reused === true, run };
+  }
+
+  async retryReviewRoomAgentReview(
+    runId: string,
+    options?: { token?: string },
+  ): Promise<ReviewRoomAgentReviewRunResponse | ShareRequestError | null> {
+    if (!this.slug || !runId.trim()) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/review-runs/${encodeURIComponent(runId)}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.getShareAuthHeaders(options?.token) },
+      body: JSON.stringify({}),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const run = payload?.run && typeof payload.run === 'object' && !Array.isArray(payload.run)
+      ? this.parseReviewRoomAgentReviewRun(payload.run as Record<string, unknown>)
+      : null;
+    if (!run) return { success: false, run: {} as ReviewRoomAgentReviewRun };
+    return { success: payload?.success === true, run };
+  }
+
+  async cancelReviewRoomAgentReview(
+    runId: string,
+    options?: { token?: string },
+  ): Promise<ReviewRoomAgentReviewRunResponse | ShareRequestError | null> {
+    if (!this.slug || !runId.trim()) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/review-runs/${encodeURIComponent(runId)}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.getShareAuthHeaders(options?.token) },
+      body: JSON.stringify({}),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const run = payload?.run && typeof payload.run === 'object' && !Array.isArray(payload.run)
+      ? this.parseReviewRoomAgentReviewRun(payload.run as Record<string, unknown>)
+      : null;
+    if (!run) return { success: false, run: {} as ReviewRoomAgentReviewRun };
+    return { success: payload?.success === true, run };
+  }
+
+  async createReviewRoomAgentCredential(
+    runId: string,
+    agentName?: string,
+    options?: { token?: string },
+  ): Promise<ReviewRoomAgentCredentialResponse | ShareRequestError | null> {
+    if (!this.slug || !runId.trim()) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/review-runs/${encodeURIComponent(runId)}/agent-credential`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.getShareAuthHeaders(options?.token) },
+      body: JSON.stringify({ agentName }),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const raw = payload?.credential && typeof payload.credential === 'object' && !Array.isArray(payload.credential)
+      ? payload.credential as Record<string, unknown>
+      : null;
+    if (!raw) return { success: false, credential: {} as ReviewRoomAgentCredential };
+    return {
+      success: payload?.success === true,
+      credential: {
+        id: typeof raw.id === 'string' ? raw.id : '',
+        reviewRequestId: typeof raw.reviewRequestId === 'string' ? raw.reviewRequestId : '',
+        agentId: typeof raw.agentId === 'string' ? raw.agentId : '',
+        agentName: typeof raw.agentName === 'string' ? raw.agentName : 'External review agent',
+        token: typeof raw.token === 'string' ? raw.token : '',
+        expiresAt: typeof raw.expiresAt === 'string' ? raw.expiresAt : '',
+      },
     };
   }
 

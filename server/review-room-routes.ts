@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { buildClaudePluginZip } from './claude-plugin-package.js';
 import { generateSlug } from './slug.js';
@@ -32,19 +32,26 @@ import {
 } from './hosted-review-room-db.js';
 import {
   storeCreatePublishedVersion,
+  storeCreateAgentReviewRun,
   storeCreateReviewRoomDocumentRecord,
   storeCreateReviewRoomHistoryEvent,
   storeCreateReviewRoomIdentityInvitation,
   storeCreateReviewRoomSession,
+  storeCreateReviewRoomAgentCredential,
+  storeCancelAgentReviewRun,
   storeConsumeReviewRoomIdentityInvitation,
   storeGetAssignmentTask,
+  storeGetAgentReviewRun,
   storeGetLatestPublishedVersion,
   storeGetReviewRoomDocumentByProofSlug,
   storeGetReviewRoomDocumentMemberForProofSlug,
   storeGetReviewRoomDocumentMemberForProofSlugAndToken,
   storeGetReviewRoomIdentity,
+  storeGetLatestReviewRoomAgentCredential,
+  storeExpireAgentReviewRunLeases,
   storeListReviewRoomDocumentMembersForProofSlug,
   storeListAssignmentTasks,
+  storeListAgentReviewRuns,
   storeListPublishedVersions,
   storeListReviewRoomAgents,
   storeListReviewRoomDocuments,
@@ -52,6 +59,7 @@ import {
   storeListReviewRoomIdentities,
   storeResolveReviewRoomSession,
   storeRevokeReviewRoomSession,
+  storeQueueAgentReviewRunRetry,
   storeUpdateAssignmentTaskStatus,
   storeUpsertReviewRoomIdentity,
   storeUpsertReviewRoomDocumentMember,
@@ -232,6 +240,38 @@ function serializeDocumentMember(
   };
   if (includeAccessToken) payload.accessToken = member.proof_access_token ?? null;
   return payload;
+}
+
+function serializeAgentReviewRun(
+  run: Awaited<ReturnType<typeof storeGetAgentReviewRun>>,
+  credential?: Awaited<ReturnType<typeof storeGetLatestReviewRoomAgentCredential>>,
+): Record<string, unknown> | null {
+  if (!run) return null;
+  return {
+    id: run.id,
+    documentId: run.document_id,
+    agentId: run.agent_id,
+    requestedByIdentityId: run.requested_by_identity_id,
+    status: run.status,
+    attemptCount: run.attempt_count,
+    scope: run.scope,
+    instructions: run.instructions,
+    claimedByAgentId: run.agent_id || null,
+    leaseExpiresAt: run.lease_expires_at,
+    claimedAt: run.claimed_at,
+    heartbeatAt: run.heartbeat_at,
+    resultCount: run.result_count,
+    failedOutputCount: run.failed_output_count,
+    errorCode: run.error_code,
+    errorMessage: run.error_message,
+    createdAt: run.created_at,
+    updatedAt: run.updated_at,
+    startedAt: run.started_at,
+    completedAt: run.completed_at,
+    cancelledAt: run.cancelled_at,
+    agentAccessExpiresAt: credential?.expires_at ?? null,
+    agentAccessRevokedAt: credential?.revoked_at ?? null,
+  };
 }
 
 type ReviewRoomDocumentAccess = {
@@ -482,6 +522,76 @@ function renderReviewRoomHome(): string {
       font-weight: 650;
       white-space: nowrap;
     }
+    .profile-control { position: relative; }
+    .profile-button {
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 220px;
+      padding: 6px 10px;
+      border: 1px solid var(--rr-control-border);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--rr-ink);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .profile-button-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .profile-avatar {
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--rr-accent-soft);
+      color: var(--rr-accent);
+      font-size: 11px;
+      font-weight: 750;
+      flex: 0 0 auto;
+    }
+    .profile-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: min(340px, calc(100vw - 32px));
+      display: none;
+      gap: 14px;
+      padding: 16px;
+      border: 1px solid var(--rr-border);
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 18px 48px rgba(31, 41, 51, 0.16);
+      z-index: 20;
+    }
+    .profile-menu[data-open="true"] { display: grid; }
+    .profile-heading { display: grid; gap: 3px; }
+    .profile-name { font-weight: 700; overflow-wrap: anywhere; }
+    .profile-session { color: var(--rr-muted); font-size: 12px; }
+    .profile-form { padding: 0; gap: 8px; }
+    .profile-form-actions { display: flex; align-items: center; gap: 10px; }
+    .profile-form-actions .button { min-height: 34px; }
+    .profile-status { min-height: 18px; color: var(--rr-muted); font-size: 12px; }
+    .profile-guidance {
+      display: grid;
+      gap: 6px;
+      padding-top: 12px;
+      border-top: 1px solid var(--rr-border-soft);
+      color: var(--rr-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .profile-signout {
+      justify-self: start;
+      border: 0;
+      background: transparent;
+      color: var(--rr-danger);
+      padding: 0;
+      cursor: pointer;
+      font-weight: 650;
+    }
     main {
       width: min(860px, 100%);
       margin: 0 auto;
@@ -621,6 +731,12 @@ function renderReviewRoomHome(): string {
       .download-row { align-items: flex-start; flex-direction: column; }
       .import-actions { align-items: stretch; flex-direction: column; }
     }
+    @media (max-width: 560px) {
+      .topbar { gap: 8px; }
+      .brand { white-space: nowrap; }
+      .nav { display: none; }
+      .profile-button { max-width: 190px; }
+    }
   </style>
 </head>
 <body>
@@ -633,6 +749,32 @@ function renderReviewRoomHome(): string {
           <a href="/agent-docs">Agent API</a>
         </nav>
         <span id="workspace-chip" class="workspace-chip">Local Review Room</span>
+        <div id="profile-control" class="profile-control">
+          <button id="profile-button" class="profile-button" type="button" aria-haspopup="dialog" aria-expanded="false">
+            <span id="profile-avatar" class="profile-avatar" aria-hidden="true">?</span>
+            <span id="profile-button-label" class="profile-button-label">Profile</span>
+            <span aria-hidden="true">▾</span>
+          </button>
+          <section id="profile-menu" class="profile-menu" role="dialog" aria-label="Review Room profile">
+            <div class="profile-heading">
+              <div id="profile-name" class="profile-name">Review Room profile</div>
+              <div id="profile-session" class="profile-session"></div>
+            </div>
+            <form id="profile-form" class="profile-form">
+              <label for="profile-display-name">Display name</label>
+              <input id="profile-display-name" name="displayName" maxlength="120" autocomplete="name" required>
+              <div class="profile-form-actions">
+                <button id="profile-save" class="button secondary" type="submit">Save name</button>
+                <span id="profile-status" class="profile-status" role="status"></span>
+              </div>
+            </form>
+            <div class="profile-guidance">
+              <p id="profile-continuity-copy"></p>
+              <p>To use this identity on another device, ask the document owner for a fresh invitation. Account recovery and email delivery are not available yet.</p>
+              <button id="profile-signout" class="profile-signout" type="button">Sign out this device</button>
+            </div>
+          </section>
+        </div>
       </div>
     </header>
     <main>
@@ -709,6 +851,19 @@ function renderReviewRoomHome(): string {
   <script>
     const documentsEl = document.getElementById('documents');
     const workspaceChip = document.getElementById('workspace-chip');
+    const profileControl = document.getElementById('profile-control');
+    const profileButton = document.getElementById('profile-button');
+    const profileButtonLabel = document.getElementById('profile-button-label');
+    const profileAvatar = document.getElementById('profile-avatar');
+    const profileMenu = document.getElementById('profile-menu');
+    const profileName = document.getElementById('profile-name');
+    const profileSession = document.getElementById('profile-session');
+    const profileForm = document.getElementById('profile-form');
+    const profileDisplayName = document.getElementById('profile-display-name');
+    const profileSave = document.getElementById('profile-save');
+    const profileStatus = document.getElementById('profile-status');
+    const profileContinuityCopy = document.getElementById('profile-continuity-copy');
+    const profileSignout = document.getElementById('profile-signout');
     const newDocumentButton = document.getElementById('new-document-button');
     const importForm = document.getElementById('import-form');
     const importFileInput = document.getElementById('import-file');
@@ -717,6 +872,7 @@ function renderReviewRoomHome(): string {
     const errorEl = document.getElementById('form-error');
     const registerErrorEl = document.getElementById('register-error');
     const identityStorageKey = 'proof.reviewRoom.identityId.v1';
+    let currentIdentityPayload = null;
 
     function createBrowserIdentityId() {
       const randomPart = window.crypto && typeof window.crypto.randomUUID === 'function'
@@ -769,6 +925,25 @@ function renderReviewRoomHome(): string {
 
     function renderIdentity(payload) {
       workspaceChip.textContent = payload.workspace && payload.workspace.name ? payload.workspace.name : 'Review Room';
+      currentIdentityPayload = payload;
+      const identity = payload.currentIdentity || {};
+      const displayName = identity.display_name || identity.displayName || identity.id || 'Review Room user';
+      const sessionActive = Boolean(payload.session && payload.session.active);
+      profileButtonLabel.textContent = displayName;
+      profileAvatar.textContent = displayName.trim().slice(0, 1).toUpperCase() || '?';
+      profileName.textContent = displayName;
+      profileDisplayName.value = displayName;
+      profileSession.textContent = sessionActive ? 'Linked on this browser' : 'Local browser identity';
+      profileContinuityCopy.textContent = sessionActive
+        ? 'A one-time invitation linked this identity to this browser. Signing out ends that identity session here; shared document links can still grant document access.'
+        : 'This identity currently lives only in this browser. Accepting an owner invitation links a stable collaborator identity here.';
+      profileSignout.hidden = !sessionActive;
+    }
+
+    function setProfileMenuOpen(open) {
+      profileMenu.dataset.open = open ? 'true' : 'false';
+      profileButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) window.setTimeout(() => profileDisplayName.focus(), 0);
     }
 
     function escapeHtml(value) {
@@ -790,6 +965,61 @@ function renderReviewRoomHome(): string {
       renderDocuments(docsPayload.documents || []);
       renderIdentity(identityPayload);
     }
+
+    profileButton.addEventListener('click', () => {
+      setProfileMenuOpen(profileMenu.dataset.open !== 'true');
+    });
+
+    document.addEventListener('mousedown', (event) => {
+      if (profileMenu.dataset.open !== 'true' || profileControl.contains(event.target)) return;
+      setProfileMenuOpen(false);
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && profileMenu.dataset.open === 'true') {
+        setProfileMenuOpen(false);
+        profileButton.focus();
+      }
+    });
+
+    profileForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const displayName = profileDisplayName.value.trim();
+      if (!displayName) return;
+      profileSave.disabled = true;
+      profileStatus.textContent = 'Saving…';
+      try {
+        const response = await fetch('/review-room/api/identity', {
+          method: 'PATCH',
+          headers: reviewRoomHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ displayName }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not save display name.');
+        renderIdentity(Object.assign({}, currentIdentityPayload || {}, { currentIdentity: payload.currentIdentity }));
+        profileStatus.textContent = 'Saved.';
+      } catch (error) {
+        profileStatus.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        profileSave.disabled = false;
+      }
+    });
+
+    profileSignout.addEventListener('click', async () => {
+      profileSignout.disabled = true;
+      profileStatus.textContent = 'Signing out…';
+      try {
+        const response = await fetch('/review-room/api/session/logout', {
+          method: 'POST',
+          headers: reviewRoomHeaders(),
+        });
+        if (!response.ok) throw new Error('Could not sign out this device.');
+        window.location.href = '/review-room';
+      } catch (error) {
+        profileStatus.textContent = error instanceof Error ? error.message : String(error);
+        profileSignout.disabled = false;
+      }
+    });
 
     newDocumentButton.addEventListener('click', async () => {
       errorEl.textContent = '';
@@ -994,6 +1224,202 @@ reviewRoomRoutes.get('/review-room/api/documents', async (req: Request, res: Res
     currentIdentity: await storeGetReviewRoomIdentity(identityId),
     documents,
   });
+});
+
+reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/review-runs', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const access = proofSlug ? await getReviewRoomDocumentAccess(req, proofSlug) : null;
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (!access.capabilities.canRead) {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_FORBIDDEN', 'Your Review Room role cannot read agent review runs.');
+    return;
+  }
+  const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 20;
+  await storeExpireAgentReviewRunLeases(access.document.id);
+  const runs = await storeListAgentReviewRuns(access.document.id, Number.isFinite(limit) ? limit : 20);
+  res.json({
+    success: true,
+    canStart: access.member?.role === 'owner',
+    runs: await Promise.all(runs.map(async (run) => (
+      serializeAgentReviewRun(run, await storeGetLatestReviewRoomAgentCredential(run.id))
+    ))),
+  });
+});
+
+reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const access = proofSlug ? await getReviewRoomDocumentAccess(req, proofSlug) : null;
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (access.member?.role !== 'owner') {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_AGENT_REVIEW_FORBIDDEN', 'Only the document owner can start an agent review.');
+    return;
+  }
+  const providedKey = typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey.trim() : '';
+  const idempotencyKey = (providedKey || randomUUID()).slice(0, 120);
+  const scope = typeof req.body?.scope === 'string' && req.body.scope.trim()
+    ? req.body.scope.trim().slice(0, 120)
+    : 'document';
+  const instructions = typeof req.body?.instructions === 'string' && req.body.instructions.trim()
+    ? req.body.instructions.trim().slice(0, 4000)
+    : null;
+  await storeExpireAgentReviewRunLeases(access.document.id);
+  const created = await storeCreateAgentReviewRun({
+    documentId: access.document.id,
+    requestedByIdentityId: access.identityId,
+    idempotencyKey,
+    scope,
+    instructions,
+  });
+  if (!created.reused) {
+    await storeCreateReviewRoomHistoryEvent({
+      documentId: access.document.id,
+      actorId: access.identityId,
+      actorType: 'human',
+      eventType: 'agent_review.requested',
+      targetType: 'agent_review_run',
+      targetId: created.run.id,
+      after: { status: 'queued', scope, instructions },
+    });
+  }
+  res.status(created.reused ? 200 : 202).json({
+    success: true,
+    reused: created.reused,
+    run: serializeAgentReviewRun(created.run),
+  });
+});
+
+reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/retry', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const runId = String(req.params.runId || '').trim();
+  const access = proofSlug ? await getReviewRoomDocumentAccess(req, proofSlug) : null;
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (access.member?.role !== 'owner') {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_AGENT_REVIEW_FORBIDDEN', 'Only the document owner can retry an agent review.');
+    return;
+  }
+  const existing = await storeGetAgentReviewRun(runId);
+  if (!existing || existing.document_id !== access.document.id) {
+    res.status(404).json({ success: false, code: 'AGENT_REVIEW_RUN_MISSING', error: 'Agent review run not found.' });
+    return;
+  }
+  const queued = await storeQueueAgentReviewRunRetry(runId);
+  if (!queued) {
+    res.status(409).json({ success: false, code: 'AGENT_REVIEW_RETRY_NOT_ALLOWED', error: 'Only failed agent reviews can be retried.' });
+    return;
+  }
+  await storeCreateReviewRoomHistoryEvent({
+    documentId: access.document.id,
+    actorId: access.identityId,
+    actorType: 'human',
+    eventType: 'agent_review.requeued',
+    targetType: 'agent_review_run',
+    targetId: runId,
+    before: { status: existing.status },
+    after: { status: 'queued', attemptCount: queued.attempt_count },
+  });
+  res.status(202).json({ success: true, run: serializeAgentReviewRun(queued) });
+});
+
+reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/agent-credential', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const runId = String(req.params.runId || '').trim();
+  const access = proofSlug ? await getReviewRoomDocumentAccess(req, proofSlug) : null;
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (access.member?.role !== 'owner') {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_AGENT_CREDENTIAL_FORBIDDEN', 'Only the document owner can create agent access.');
+    return;
+  }
+  const run = await storeGetAgentReviewRun(runId);
+  if (!run || run.document_id !== access.document.id) {
+    res.status(404).json({ success: false, code: 'AGENT_REVIEW_RUN_MISSING', error: 'Review request not found.' });
+    return;
+  }
+  if (run.status !== 'queued') {
+    res.status(409).json({ success: false, code: 'AGENT_CREDENTIAL_NOT_ALLOWED', error: 'Agent access can only be created while a review request is waiting.' });
+    return;
+  }
+  const previous = await storeGetLatestReviewRoomAgentCredential(runId);
+  const agentId = previous?.agent_id || `ai:review-agent-${runId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}`;
+  const requestedName = typeof req.body?.agentName === 'string' ? req.body.agentName.trim() : '';
+  const agentName = (requestedName || 'External review agent').slice(0, 120);
+  const secret = randomBytes(32).toString('base64url');
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const credential = await storeCreateReviewRoomAgentCredential({
+    documentId: access.document.id,
+    reviewRequestId: runId,
+    agentId,
+    agentName,
+    tokenHash: createHash('sha256').update(secret).digest('hex'),
+    createdByIdentityId: access.identityId,
+    expiresAt,
+  });
+  await storeCreateReviewRoomHistoryEvent({
+    documentId: access.document.id,
+    actorId: access.identityId,
+    actorType: 'human',
+    eventType: 'agent_access.created',
+    targetType: 'agent_review_run',
+    targetId: runId,
+    after: { agentId, expiresAt },
+  });
+  res.status(201).json({
+    success: true,
+    credential: {
+      id: credential.id,
+      reviewRequestId: credential.review_request_id,
+      agentId: credential.agent_id,
+      agentName,
+      token: secret,
+      expiresAt: credential.expires_at,
+    },
+  });
+});
+
+reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/cancel', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const runId = String(req.params.runId || '').trim();
+  const access = proofSlug ? await getReviewRoomDocumentAccess(req, proofSlug) : null;
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (access.member?.role !== 'owner') {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_AGENT_REVIEW_FORBIDDEN', 'Only the document owner can cancel a review request.');
+    return;
+  }
+  const existing = await storeGetAgentReviewRun(runId);
+  if (!existing || existing.document_id !== access.document.id) {
+    res.status(404).json({ success: false, code: 'AGENT_REVIEW_RUN_MISSING', error: 'Review request not found.' });
+    return;
+  }
+  const cancelled = await storeCancelAgentReviewRun(runId);
+  if (!cancelled) {
+    res.status(409).json({ success: false, code: 'AGENT_REVIEW_CANCEL_NOT_ALLOWED', error: 'Only active review requests can be cancelled.' });
+    return;
+  }
+  await storeCreateReviewRoomHistoryEvent({
+    documentId: access.document.id,
+    actorId: access.identityId,
+    actorType: 'human',
+    eventType: 'agent_review.cancelled',
+    targetType: 'agent_review_run',
+    targetId: runId,
+    before: { status: existing.status },
+    after: { status: 'cancelled' },
+  });
+  res.json({ success: true, run: serializeAgentReviewRun(cancelled) });
 });
 
 reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/history', async (req: Request, res: Response) => {

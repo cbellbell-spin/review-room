@@ -188,6 +188,7 @@
     #review-room-presence-slot,
     #review-room-agent-slot,
     #review-room-save-slot,
+    #review-room-profile-slot,
     #review-room-share-slot {
       display: inline-flex;
       align-items: center;
@@ -253,6 +254,16 @@
       .review-room-nav a {
         font-size: 12px;
         padding: 6px 7px;
+      }
+
+      #review-room-profile-slot button {
+        width: 40px;
+        padding: 0 !important;
+      }
+
+      #review-room-profile-slot [data-review-room-profile-label],
+      #review-room-profile-slot [data-review-room-profile-label] + span {
+        display: none !important;
       }
     }
 
@@ -1241,6 +1252,7 @@
         <div id="review-room-review-slot"></div>
         <div id="review-room-save-slot"></div>
         <div id="review-room-agent-slot"></div>
+        <div id="review-room-profile-slot"></div>
         <div id="review-room-share-slot"></div>
       </div>
     </div>

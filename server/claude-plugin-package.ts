@@ -16,8 +16,8 @@ const EMBEDDED_PLUGIN_ENTRIES: Array<{ name: string; text: string }> = [
     name: '.claude-plugin/plugin.json',
     text: `{
   "name": "review-room",
-  "version": "0.3.0",
-  "description": "Read, create, and review shared Review Room documents via the document server's MCP. Submits comments and suggested edits for human review, and can accept or reject pending suggestions."
+  "version": "0.4.0",
+  "description": "Claim and complete BYO-agent review requests through Review Room MCP, with comments and suggestions kept under human control."
 }
 `,
   },
@@ -45,6 +45,12 @@ description: Read, create, and review shared Review Room documents via MCP. Use 
 The Review Room MCP server is configured via \`.mcp.json\` and exposes these tools:
 
 - \`review_room_get_state\` \\u2014 read a document (markdown, marks, revision, links)
+- \`review_room_list_review_requests\` \\u2014 list queued and historical review requests
+- \`review_room_claim_review_request\` \\u2014 claim queued work and receive a short-lived lease token
+- \`review_room_heartbeat_review_request\` \\u2014 start work or renew a lease
+- \`review_room_complete_review_request\` \\u2014 complete claimed work
+- \`review_room_fail_review_request\` \\u2014 fail claimed work with a safe explanation
+- \`review_room_release_review_request\` \\u2014 return claimed work to the queue
 - \`review_room_add_comment\` \\u2014 add an anchored human-review comment
 - \`review_room_reply_comment\` \\u2014 reply to an existing comment thread
 - \`review_room_resolve_comment\` \\u2014 resolve an existing comment thread
@@ -80,6 +86,10 @@ Pass the token per call as the \`token\` parameter on each MCP tool. The server 
 ## Read
 
 Call \`review_room_get_state\` with \`{ slug, token }\`. Returns \`markdown\`, \`marks\` (comments + suggestions keyed by id), \`revision\`, and \`_links\`.
+
+## Claim a requested review
+
+Review Room is BYO agent: it never runs a model or stores provider credentials. When the owner has queued a review, use the supplied request-scoped credential to list and claim that request; Review Room binds its stable agent identity. Heartbeat the lease and include \`requestId\` plus \`leaseToken\` with each comment or suggestion. Complete, fail, or release the request when finished. Never put either token in document content or logs.
 
 To see only the doc body without marks, the underlying public endpoint is also available:
 

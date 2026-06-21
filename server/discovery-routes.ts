@@ -332,6 +332,12 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
       url: mcpUrl,
       tools: [
         'review_room_get_state',
+        'review_room_list_review_requests',
+        'review_room_claim_review_request',
+        'review_room_heartbeat_review_request',
+        'review_room_complete_review_request',
+        'review_room_fail_review_request',
+        'review_room_release_review_request',
         'review_room_add_comment',
         'review_room_reply_comment',
         'review_room_resolve_comment',

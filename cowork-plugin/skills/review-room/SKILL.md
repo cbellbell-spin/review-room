@@ -16,6 +16,12 @@ Production endpoints:
 The MCP server exposes these tools:
 
 - `review_room_get_state` — read a document (markdown, marks, revision, links)
+- `review_room_list_review_requests` — list queued and historical review requests
+- `review_room_claim_review_request` — atomically claim queued work and receive a lease token
+- `review_room_heartbeat_review_request` — start work or renew an active lease
+- `review_room_complete_review_request` — complete claimed work
+- `review_room_fail_review_request` — fail claimed work with a safe explanation
+- `review_room_release_review_request` — return claimed work to the queue
 - `review_room_add_comment` — add an anchored human-review comment
 - `review_room_reply_comment` — reply to an existing comment thread
 - `review_room_resolve_comment` — resolve an existing comment thread
@@ -58,6 +64,10 @@ Treat share tokens as secrets. Do not paste them into comments, suggestions, pub
 ## Read
 
 Call `review_room_get_state` with `{ slug, token }`. Returns `markdown`, `marks` (comments + suggestions keyed by id), `revision`, and `_links`.
+
+## Claim a requested review
+
+Review Room is BYO agent: it never runs a model or stores provider credentials. When the owner has queued a review, use the supplied request-scoped credential to list and claim that request; Review Room binds its stable agent identity. Heartbeat the lease and include `requestId` plus `leaseToken` with each comment or suggestion. Complete, fail, or release the request when finished. Never put either token in document content or logs.
 
 Use the state before every review pass. Inspect:
 
