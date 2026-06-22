@@ -58,6 +58,7 @@ import {
   storeListReviewRoomHistoryEvents,
   storeListReviewRoomIdentities,
   storeResolveReviewRoomSession,
+  storeRemoveReviewRoomDocumentMember,
   storeRevokeReviewRoomSession,
   storeQueueAgentReviewRunRetry,
   storeUpdateAssignmentTaskStatus,
@@ -1784,6 +1785,47 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/members', async (re
     identityInvitePath: `/review-room/session/accept?invite=${encodeURIComponent(invitationSecret)}`,
     identityInviteExpiresAt: invitation.expires_at,
   });
+});
+
+reviewRoomRoutes.delete('/review-room/api/documents/:proofSlug/members/:identityId', async (req: Request, res: Response) => {
+  const proofSlug = String(req.params.proofSlug || '').trim();
+  const identityId = normalizeReviewRoomIdentityId(req.params.identityId);
+  if (!proofSlug || !identityId) {
+    res.status(400).json({ success: false, code: 'MEMBER_TARGET_REQUIRED', error: 'Document slug and collaborator identity are required.' });
+    return;
+  }
+  const access = await getReviewRoomDocumentAccess(req, proofSlug);
+  if (!access) {
+    sendDocumentMissing(res);
+    return;
+  }
+  if (access.member?.role !== 'owner') {
+    sendReviewRoomForbidden(res, 'REVIEW_ROOM_MEMBER_FORBIDDEN', 'Only the document owner can revoke collaborator access.');
+    return;
+  }
+  const member = await storeGetReviewRoomDocumentMemberForProofSlug(proofSlug, identityId);
+  if (!member) {
+    res.status(404).json({ success: false, code: 'REVIEW_ROOM_MEMBER_MISSING', error: 'That collaborator no longer has access.' });
+    return;
+  }
+  if (member.role === 'owner' || member.identity_id === access.identityId) {
+    res.status(409).json({ success: false, code: 'REVIEW_ROOM_OWNER_REQUIRED', error: 'Owner access cannot be revoked from this control.' });
+    return;
+  }
+  await storeRemoveReviewRoomDocumentMember({ proofSlug, identityId });
+  await storeCreateReviewRoomHistoryEvent({
+    workspaceId: access.document.workspace_id,
+    documentId: access.document.id,
+    actorId: access.identityId,
+    actorType: 'human',
+    eventType: 'member.revoked',
+    targetType: 'document_member',
+    targetId: identityId,
+    before: { role: member.role },
+    after: { status: 'revoked' },
+    metadata: { proofSlug },
+  });
+  res.json({ success: true, identityId, status: 'revoked' });
 });
 
 reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Response) => {

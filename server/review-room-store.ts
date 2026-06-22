@@ -880,6 +880,42 @@ export async function storeUpsertReviewRoomDocumentMember(input: {
   return row;
 }
 
+export async function storeRemoveReviewRoomDocumentMember(input: {
+  proofSlug: string;
+  identityId: string;
+}): Promise<ReviewRoomDocumentMemberRow | null> {
+  const previous = await storeGetReviewRoomDocumentMemberForProofSlug(input.proofSlug, input.identityId);
+  if (!previous) return null;
+  const now = new Date().toISOString();
+  const db = await ensureStore();
+  const statements = [
+    {
+      sql: `UPDATE review_room_identity_invitations
+            SET revoked_at = ?
+            WHERE identity_id = ?
+              AND review_room_document_id = ?
+              AND accepted_at IS NULL
+              AND revoked_at IS NULL`,
+      args: [now, input.identityId, previous.review_room_document_id],
+    },
+    ...(previous.proof_access_token_id ? [{
+      sql: `UPDATE document_access
+            SET revoked_at = ?
+            WHERE token_id = ?
+              AND document_slug = ?
+              AND revoked_at IS NULL`,
+      args: [now, previous.proof_access_token_id, input.proofSlug],
+    }] : []),
+    {
+      sql: `DELETE FROM review_room_document_members
+            WHERE review_room_document_id = ? AND identity_id = ?`,
+      args: [previous.review_room_document_id, input.identityId],
+    },
+  ];
+  await db.batch(statements);
+  return previous;
+}
+
 async function storeEnsureReviewRoomIdentity(input: {
   id: string;
   workspaceId: string;

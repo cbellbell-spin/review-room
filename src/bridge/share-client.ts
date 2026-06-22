@@ -254,6 +254,12 @@ export interface ReviewRoomUpsertMemberResponse {
   identityInviteExpiresAt?: string | null;
 }
 
+export interface ReviewRoomRevokeMemberResponse {
+  success: boolean;
+  identityId: string;
+  status: 'revoked';
+}
+
 export type ShareRequestError = {
   error: {
     status: number;
@@ -1344,6 +1350,24 @@ export class ShareClient {
       member,
       identityInvitePath: typeof payload?.identityInvitePath === 'string' ? payload.identityInvitePath : null,
       identityInviteExpiresAt: typeof payload?.identityInviteExpiresAt === 'string' ? payload.identityInviteExpiresAt : null,
+    };
+  }
+
+  async revokeReviewRoomMember(
+    identityId: string,
+    options?: { token?: string },
+  ): Promise<ReviewRoomRevokeMemberResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const response = await fetch(`${this.getOriginBase()}/review-room/api/documents/${encodeURIComponent(this.slug)}/members/${encodeURIComponent(identityId)}`, {
+      method: 'DELETE',
+      headers: this.getShareAuthHeaders(options?.token),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return {
+      success: payload?.success === true,
+      identityId: typeof payload?.identityId === 'string' ? payload.identityId : identityId,
+      status: 'revoked',
     };
   }
 

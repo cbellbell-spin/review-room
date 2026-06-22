@@ -875,7 +875,7 @@ async function resolveOpenContextAccess(
   }
   if (explicitSecret) {
     res.status(401).json({
-      error: 'Invalid share token',
+      error: 'This document link is invalid or has been revoked.',
       code: 'UNAUTHORIZED',
     });
     return null;
@@ -1393,7 +1393,7 @@ apiRoutes.get('/documents/:slug', async (req: Request, res: Response) => {
     const presentedSecret = getPresentedSecret(req);
     const access = presentedSecret ? await resolveHostedDocumentAccess(slug, presentedSecret) : null;
     if (presentedSecret && !access) {
-      res.status(401).json({ error: 'Invalid share token', code: 'UNAUTHORIZED' });
+      res.status(401).json({ error: 'This document link is invalid or has been revoked.', code: 'UNAUTHORIZED' });
       return;
     }
     const role = access?.role ?? 'editor';

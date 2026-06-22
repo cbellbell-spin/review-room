@@ -293,6 +293,40 @@ async function run(): Promise<void> {
     const listedEditor = members.members.find((member) => member.identityId === 'editor-alice');
     assert(listedEditor?.openPath?.includes('token='), 'Expected owner member list to expose tokenized collaborator open paths');
 
+    const viewerCannotRevoke = await fetch(`${base}/review-room/api/documents/${slug}/members/local-human`, {
+      method: 'DELETE',
+      headers: { ...CLIENT_HEADERS, 'x-share-token': viewerMember.member.accessToken },
+    });
+    assert(viewerCannotRevoke.status === 403, `Expected viewer member revoke status 403, got ${viewerCannotRevoke.status}`);
+
+    const ownerCannotRevokeSelf = await fetch(`${base}/review-room/api/documents/${slug}/members/local-human`, {
+      method: 'DELETE',
+      headers: CLIENT_HEADERS,
+    });
+    assert(ownerCannotRevokeSelf.status === 409, `Expected owner self-revoke status 409, got ${ownerCannotRevokeSelf.status}`);
+
+    const revokedViewer = await readJson<{ success: boolean; identityId: string; status: string }>(
+      await fetch(`${base}/review-room/api/documents/${slug}/members/editor-alice`, {
+        method: 'DELETE',
+        headers: CLIENT_HEADERS,
+      }),
+    );
+    assert(revokedViewer.success === true, 'Expected owner to revoke collaborator access');
+    assert(revokedViewer.status === 'revoked', 'Expected explicit revoked member status');
+
+    const revokedViewerState = await fetch(`${base}/api/documents/${slug}/open-context`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': viewerMember.member.accessToken },
+    });
+    assert(revokedViewerState.status === 401, `Expected revoked member token status 401, got ${revokedViewerState.status}`);
+
+    const membersAfterRevoke = await readJson<{ members: Array<{ identityId: string }> }>(
+      await fetch(`${base}/review-room/api/documents/${slug}/members`, { headers: CLIENT_HEADERS }),
+    );
+    assert(
+      !membersAfterRevoke.members.some((member) => member.identityId === 'editor-alice'),
+      'Expected revoked collaborator to be removed from the active member list',
+    );
+
     console.log('✓ Review Room Phase 2 permissions runway');
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

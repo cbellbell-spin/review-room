@@ -197,17 +197,29 @@ Implementation notes:
 - Rotating, completing, failing, releasing, cancelling, or lease-expiring the request revokes prior agent access.
 - The request UI and copied prompt show that access is scoped and when it expires.
 
-### Recommended Next Slice: Shared Document Access Clarity
+### Implemented Slice: Shared Document Access Clarity
 
 Goal: make current access and editability understandable without deciding the final top-bar-versus-floating-island chrome direction in the same slice.
 
-- Keep the floating island as the current implementation baseline.
-- State the visitor’s active role and what it permits in plain language.
-- Separate “Can I edit this document?” from collaborator/member management and link sharing.
-- Make owner actions for changing, rotating, or revoking human and agent access explicit.
-- Cover owner, editor, commenter, viewer, signed-out, expired-link, and revoked-link states in browser tests.
+- The existing document control surface now shows `Full access`, `Can edit`, `Comment only`, or `View only` alongside Share, with a plain-language capability summary in its menu.
+- “Your document access” is informational; human collaborator management is a separate action, and the modal explicitly separates human access from request-scoped BYO-agent access.
+- Owners can explicitly rotate a collaborator’s document link and unused identity invitation or revoke the collaborator entirely. Both actions revoke the prior document token; revoke also removes active membership.
+- Identity invitations name their expiry, replaced/used/expired invitations return an explicit terminal message, and revoked document links show an explicit invalid-or-revoked state.
+- `src/tests/review-room-access-clarity.playwright.ts` covers owner, editor, commenter, viewer, signed-out document-link identity, rotated invitation, and revoked document-link states.
+- The earlier control-placement reversal remains recorded: this slice does not decide the final fixed-bar-versus-floating-island direction.
 
 Out of scope: moving controls back into a fixed top bar, broad visual redesign, provider integrations, and account recovery.
+
+### Recommended Next Slice: Centralized Capability Enforcement
+
+Goal: close the permissions runway by making the server’s capability result the single source of truth for every document affordance.
+
+- Carry the complete capability set into typed open-context UI state instead of re-deriving permissions from role labels in each component.
+- Audit title editing, direct editing, comments/replies, resolve/reopen, suggestion decisions, baselines, tasks, human access, and agent-review actions.
+- Hide or disable each action consistently and pair disabled states with a short reason.
+- Add a role-by-action contract test proving that every enabled UI action succeeds server-side and every forbidden action is unavailable in the UI.
+
+Out of scope: account recovery, email invitation delivery, provider integrations, and control-placement redesign.
 
 ### Workspace And Permissions
 

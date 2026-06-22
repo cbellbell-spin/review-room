@@ -4548,9 +4548,20 @@ class ProofEditorImpl implements ProofEditor {
       this.reviewRoomCanManageMembers = canManageMembers;
 
       const summary = document.createElement('div');
-      summary.textContent = `Your access: ${this.formatReviewRoomRole(currentRole)}${canManageMembers ? ' - you can manage collaborator roles.' : ' - only owners can manage collaborator roles.'}`;
-      summary.style.cssText = 'padding:10px 12px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.06);font-size:12px;color:rgba(255,255,255,0.84);';
+      summary.dataset.reviewRoomAccessSummary = currentRole ?? 'unknown';
+      summary.style.cssText = 'display:grid;gap:3px;padding:11px 12px;border:1px solid rgba(255,255,255,0.14);border-radius:12px;background:rgba(255,255,255,0.07);font-size:12px;color:rgba(255,255,255,0.84);';
+      const summaryTitle = document.createElement('strong');
+      summaryTitle.textContent = `Your document access: ${this.formatReviewRoomRole(currentRole)} · ${this.shortReviewRoomAccess(currentRole)}`;
+      const summaryDetail = document.createElement('span');
+      summaryDetail.textContent = this.describeReviewRoomAccess(currentRole);
+      summaryDetail.style.color = 'rgba(255,255,255,0.68)';
+      summary.append(summaryTitle, summaryDetail);
       body.appendChild(summary);
+
+      const separation = document.createElement('div');
+      separation.textContent = 'Human access is controlled below. Agent access is separate, request-scoped, and managed from Add agent. Signing out does not revoke a document link.';
+      separation.style.cssText = 'font-size:11px;line-height:1.5;color:rgba(255,255,255,0.60);';
+      body.appendChild(separation);
 
       const listTitle = document.createElement('div');
       listTitle.textContent = `Members (${response.members.length})`;
@@ -4560,14 +4571,14 @@ class ProofEditorImpl implements ProofEditor {
       const list = document.createElement('div');
       list.style.cssText = 'display:grid;gap:8px;';
       for (const member of response.members) {
-        list.appendChild(this.createReviewRoomMemberRow(member));
+        list.appendChild(this.createReviewRoomMemberRow(member, canManageMembers, render, setStatus));
       }
       body.appendChild(list);
 
       if (!canManageMembers) return;
 
       const formTitle = document.createElement('div');
-      formTitle.textContent = 'Add or update collaborator';
+      formTitle.textContent = 'Add collaborator or change role';
       formTitle.style.cssText = 'padding-top:4px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;color:rgba(255,255,255,0.62);';
 
       const form = document.createElement('form');
@@ -4587,14 +4598,14 @@ class ProofEditorImpl implements ProofEditor {
       for (const optionRole of ['editor', 'commenter', 'viewer', 'owner'] as ReviewRoomRole[]) {
         const option = document.createElement('option');
         option.value = optionRole;
-        option.textContent = this.formatReviewRoomRole(optionRole);
+        option.textContent = `${this.formatReviewRoomRole(optionRole)} — ${this.shortReviewRoomAccess(optionRole)}`;
         role.appendChild(option);
       }
       const submitRow = document.createElement('div');
       submitRow.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;';
       const submit = document.createElement('button');
       submit.type = 'submit';
-      submit.textContent = 'Create collaborator link';
+      submit.textContent = 'Save access and create invitation';
       submit.style.cssText = 'border:0;background:#f9fafb;color:#111827;padding:8px 12px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;';
       const status = document.createElement('div');
       status.dataset.reviewRoomMembersStatus = '1';
@@ -4624,7 +4635,10 @@ class ProofEditorImpl implements ProofEditor {
           result.style.display = 'grid';
           result.replaceChildren();
           const linkText = document.createElement('div');
-          linkText.textContent = `${saved.member.displayName || saved.member.identityId} can accept this one-time identity invitation as ${this.formatReviewRoomRole(saved.member.role)}.`;
+          const expiry = saved.identityInviteExpiresAt
+            ? new Date(saved.identityInviteExpiresAt).toLocaleString()
+            : 'seven days';
+          linkText.textContent = `${saved.member.displayName || saved.member.identityId} can accept this one-time identity invitation as ${this.formatReviewRoomRole(saved.member.role)}. It expires ${expiry}. Saving again rotates the old document link and revokes any unused invitation.`;
           linkText.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.88);';
           const copy = document.createElement('button');
           copy.type = 'button';
@@ -4646,7 +4660,12 @@ class ProofEditorImpl implements ProofEditor {
     void render();
   }
 
-  private createReviewRoomMemberRow(member: ReviewRoomDocumentMember): HTMLElement {
+  private createReviewRoomMemberRow(
+    member: ReviewRoomDocumentMember,
+    canManageMembers: boolean,
+    refresh: () => Promise<void>,
+    setStatus: (text: string, tone?: 'neutral' | 'error' | 'success') => void,
+  ): HTMLElement {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.04);';
     const left = document.createElement('div');
@@ -4677,6 +4696,55 @@ class ProofEditorImpl implements ProofEditor {
         })();
       };
       actions.appendChild(copy);
+    }
+    if (canManageMembers && member.role !== 'owner') {
+      const rotate = document.createElement('button');
+      rotate.type = 'button';
+      rotate.textContent = 'Rotate access';
+      rotate.title = 'Revoke the current document link and unused invitation, then create a new invitation';
+      rotate.style.cssText = 'border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.88);border-radius:999px;padding:5px 8px;font-size:11px;font-weight:750;cursor:pointer;';
+      rotate.onclick = () => {
+        if (!window.confirm(`Rotate access for ${member.displayName || member.identityId}? Their current document link will stop working.`)) return;
+        void (async () => {
+          rotate.disabled = true;
+          setStatus('Rotating access...');
+          const saved = await shareClient.upsertReviewRoomMember({
+            identityId: member.identityId,
+            displayName: member.displayName,
+            role: member.role,
+          });
+          if (!saved || this.isShareRequestError(saved) || saved.success !== true) {
+            setStatus(this.isShareRequestError(saved) ? saved.error.message : 'Could not rotate access.', 'error');
+            rotate.disabled = false;
+            return;
+          }
+          const inviteUrl = this.absoluteReviewRoomOpenUrl(saved.identityInvitePath || saved.member.openPath);
+          const copied = await this.copyLinkWithFallback(inviteUrl);
+          await refresh();
+          setStatus(copied ? 'Access rotated. New identity invitation copied.' : 'Access rotated. Copy the new invitation from the refreshed member list.', 'success');
+        })();
+      };
+      const revoke = document.createElement('button');
+      revoke.type = 'button';
+      revoke.textContent = 'Revoke';
+      revoke.title = 'Remove this collaborator and revoke their document link and unused invitation';
+      revoke.style.cssText = 'border:1px solid rgba(248,113,113,0.38);background:rgba(127,29,29,0.22);color:#fecaca;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:750;cursor:pointer;';
+      revoke.onclick = () => {
+        if (!window.confirm(`Revoke all document access for ${member.displayName || member.identityId}?`)) return;
+        void (async () => {
+          revoke.disabled = true;
+          setStatus('Revoking access...');
+          const revoked = await shareClient.revokeReviewRoomMember(member.identityId);
+          if (!revoked || this.isShareRequestError(revoked) || revoked.success !== true) {
+            setStatus(this.isShareRequestError(revoked) ? revoked.error.message : 'Could not revoke access.', 'error');
+            revoke.disabled = false;
+            return;
+          }
+          await refresh();
+          setStatus(`${member.displayName || member.identityId} no longer has document access.`, 'success');
+        })();
+      };
+      actions.append(rotate, revoke);
     }
     row.append(left, actions);
     return row;
@@ -4929,6 +4997,22 @@ class ProofEditorImpl implements ProofEditor {
   private formatReviewRoomRole(role: ReviewRoomRole | null): string {
     if (!role) return 'Unknown access';
     return role.charAt(0).toUpperCase() + role.slice(1);
+  }
+
+  private describeReviewRoomAccess(role: ReviewRoomRole | null): string {
+    if (role === 'owner') return 'Can edit, comment, share, and manage human and agent access.';
+    if (role === 'editor') return 'Can edit and comment. Only owners manage human and agent access.';
+    if (role === 'commenter') return 'Can comment, but cannot edit the document or manage access.';
+    if (role === 'viewer') return 'View only. Editing, commenting, and access management are disabled.';
+    return 'Access could not be determined.';
+  }
+
+  private shortReviewRoomAccess(role: ReviewRoomRole | null): string {
+    if (role === 'owner') return 'Full access';
+    if (role === 'editor') return 'Can edit';
+    if (role === 'commenter') return 'Comment only';
+    if (role === 'viewer') return 'View only';
+    return 'Unknown';
   }
 
   private copyWithPromptFallback(text: string, promptLabel = 'Copy link:'): boolean {
@@ -5939,7 +6023,13 @@ class ProofEditorImpl implements ProofEditor {
     `;
 
     const label = document.createElement('span');
-    label.textContent = 'Share';
+    label.textContent = this.isReviewRoomRuntime()
+      ? `Share · ${this.shortReviewRoomAccess(this.reviewRoomCurrentRole)}`
+      : 'Share';
+    if (this.isReviewRoomRuntime()) {
+      btn.dataset.reviewRoomAccess = this.reviewRoomCurrentRole ?? 'unknown';
+      btn.setAttribute('aria-label', `Share options. Your document access is ${this.formatReviewRoomRole(this.reviewRoomCurrentRole)}: ${this.describeReviewRoomAccess(this.reviewRoomCurrentRole)}`);
+    }
     const caret = document.createElement('span');
     caret.textContent = '▾';
     caret.style.cssText = 'font-size:10px;opacity:0.7';
@@ -6051,9 +6141,26 @@ class ProofEditorImpl implements ProofEditor {
         menu.appendChild(hr);
       };
 
+      const addInfo = (title: string, detail: string) => {
+        const info = document.createElement('div');
+        info.dataset.reviewRoomAccessMenu = '1';
+        info.style.cssText = 'display:grid;gap:3px;padding:10px 12px;color:rgba(255,255,255,0.92);font-size:12px;line-height:1.4;';
+        const heading = document.createElement('strong');
+        heading.textContent = title;
+        const copy = document.createElement('span');
+        copy.textContent = detail;
+        copy.style.cssText = 'font-size:11px;font-weight:500;color:rgba(255,255,255,0.62);';
+        info.append(heading, copy);
+        menu.appendChild(info);
+      };
+
       if (this.isReviewRoomRuntime()) {
-        addActionItem(`Your access: ${this.formatReviewRoomRole(this.reviewRoomCurrentRole)}`, () => this.openReviewRoomMembersModal(), { subtle: true });
-        addActionItem(this.reviewRoomCanManageMembers ? 'Manage collaborators' : 'View collaborators', () => this.openReviewRoomMembersModal());
+        addInfo(
+          `Your document access: ${this.formatReviewRoomRole(this.reviewRoomCurrentRole)} · ${this.shortReviewRoomAccess(this.reviewRoomCurrentRole)}`,
+          this.describeReviewRoomAccess(this.reviewRoomCurrentRole),
+        );
+        addDivider();
+        addActionItem(this.reviewRoomCanManageMembers ? 'Manage human access' : 'View collaborators', () => this.openReviewRoomMembersModal());
       } else {
         addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
       }
