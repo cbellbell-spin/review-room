@@ -6,7 +6,9 @@ import { fileURLToPath } from 'url';
 import {
   noteDocumentLiveCollabLease,
   canMutateByOwnerIdentity,
+  deriveReviewRoomCapabilities,
   resolveDocumentAccessRole,
+  shareRoleToReviewRoomRole,
   upsertActiveCollabConnection,
 } from './db.js';
 import type { ShareRole } from './share-types.js';
@@ -114,15 +116,8 @@ function getPublicOrigin(req: Request): string {
   return `${isSecureRequest(req) ? 'https' : 'http'}://${host}`;
 }
 
-function deriveShareCapabilities(role: ShareRole, shareState: string): { canRead: boolean; canComment: boolean; canEdit: boolean } {
-  const isOwner = role === 'owner_bot';
-  // Product decision: non-owners cannot access paused/revoked shares at all.
-  const canRead = shareState === 'ACTIVE' || (isOwner && shareState !== 'DELETED');
-  const canEdit = isOwner
-    ? (shareState === 'ACTIVE' || shareState === 'PAUSED')
-    : (role === 'editor' && shareState === 'ACTIVE');
-  const canComment = shareState === 'ACTIVE' && (role === 'commenter' || role === 'editor' || isOwner);
-  return { canRead, canComment, canEdit };
+function deriveShareCapabilities(role: ShareRole, shareState: string): ReturnType<typeof deriveReviewRoomCapabilities> {
+  return deriveReviewRoomCapabilities(shareRoleToReviewRoomRole(role), shareState);
 }
 
 // SPA fallback: serve index.html for /d/:slug routes

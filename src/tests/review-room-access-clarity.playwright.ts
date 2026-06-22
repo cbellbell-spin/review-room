@@ -42,6 +42,12 @@ async function expectAccess(
   const access = page.locator(`[data-review-room-access="${role}"]`);
   await expect(access).toContainText(label);
   await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', editable ? 'true' : 'false');
+  const title = page.locator('.share-pill-title');
+  if (editable) {
+    await expect(title).toHaveAttribute('role', 'textbox');
+  } else {
+    await expect(title).not.toHaveAttribute('role', 'textbox');
+  }
   await access.click();
   await expect(page.locator('[data-review-room-access-menu="1"]')).toBeVisible();
   if (role === 'owner') {
@@ -49,6 +55,31 @@ async function expectAccess(
   } else {
     await expect(page.getByRole('menuitem', { name: /View collaborators/ })).toBeVisible();
   }
+  await page.keyboard.press('Escape');
+
+  const agentOptions = page.getByRole('button', { name: 'Agent options' });
+  await expect(agentOptions).toBeVisible();
+  await agentOptions.click();
+  if (role === 'owner') {
+    await expect(page.getByRole('menuitem', { name: /Request document review/ })).toBeEnabled();
+  } else {
+    const unavailable = page.getByRole('menuitem', { name: /Only the owner can request a review/ });
+    await expect(unavailable).toBeVisible();
+    await expect(unavailable).toBeDisabled();
+  }
+  await page.keyboard.press('Escape');
+
+  await page.getByRole('button', { name: 'Open review items' }).click();
+  await page.getByRole('tab', { name: 'Publish' }).click();
+  const baseline = page.getByRole('button', { name: /Create(?: new)? baseline/ });
+  await expect(baseline).toBeVisible();
+  if (editable) {
+    await expect(baseline).toBeEnabled();
+  } else {
+    await expect(baseline).toBeDisabled();
+    await expect(baseline).toHaveAttribute('title', 'Only editors and owners can create baselines.');
+  }
+  await page.getByRole('button', { name: 'Open review items' }).click();
 }
 
 async function run(): Promise<void> {

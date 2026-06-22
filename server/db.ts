@@ -1094,16 +1094,39 @@ export function deriveReviewRoomCapabilities(
   canEdit: boolean;
   canShare: boolean;
   canManageAgents: boolean;
+  canEditTitle: boolean;
+  canEditContent: boolean;
+  canReply: boolean;
+  canResolve: boolean;
+  canDecideSuggestions: boolean;
+  canCreateBaseline: boolean;
+  canUpdateTasks: boolean;
+  canManageMembers: boolean;
+  canRequestAgentReview: boolean;
 } {
   const shareRole = role ? reviewRoomRoleToShareRole(role) : 'viewer';
   const isOwner = shareRole === 'owner_bot';
   const active = shareState === 'ACTIVE';
+  const canComment = active && (role === 'owner' || role === 'editor' || role === 'commenter');
+  const canEdit = (active && (role === 'owner' || role === 'editor'))
+    || (role === 'owner' && shareState === 'PAUSED');
   return {
-    canRead: active || (isOwner && shareState !== 'DELETED'),
-    canComment: active && (role === 'owner' || role === 'editor' || role === 'commenter'),
-    canEdit: active && (role === 'owner' || role === 'editor'),
+    canRead: Boolean(role) && (active || (isOwner && shareState !== 'DELETED')),
+    canComment,
+    canEdit,
+    // Keep aggregate fields for older clients while newer surfaces consume the
+    // action-specific contract instead of inferring permissions from role names.
     canShare: active && (role === 'owner' || role === 'editor'),
     canManageAgents: active && (role === 'owner' || role === 'editor'),
+    canEditTitle: canEdit,
+    canEditContent: canEdit,
+    canReply: canComment,
+    canResolve: canComment,
+    canDecideSuggestions: canEdit,
+    canCreateBaseline: canEdit,
+    canUpdateTasks: canComment,
+    canManageMembers: active && role === 'owner',
+    canRequestAgentReview: active && role === 'owner',
   };
 }
 

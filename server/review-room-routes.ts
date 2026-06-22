@@ -299,7 +299,7 @@ async function getReviewRoomDocumentAccess(req: Request, proofSlug: string): Pro
     member,
     capabilities: member
       ? deriveReviewRoomCapabilities(member.role, document.share_state)
-      : { canRead: false, canComment: false, canEdit: false, canShare: false, canManageAgents: false },
+      : deriveReviewRoomCapabilities(null, document.share_state),
   };
 }
 
@@ -1243,7 +1243,7 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/review-runs', async 
   const runs = await storeListAgentReviewRuns(access.document.id, Number.isFinite(limit) ? limit : 20);
   res.json({
     success: true,
-    canStart: access.member?.role === 'owner',
+    canStart: access.capabilities.canRequestAgentReview,
     runs: await Promise.all(runs.map(async (run) => (
       serializeAgentReviewRun(run, await storeGetLatestReviewRoomAgentCredential(run.id))
     ))),
@@ -1257,7 +1257,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs', async
     sendDocumentMissing(res);
     return;
   }
-  if (access.member?.role !== 'owner') {
+  if (!access.capabilities.canRequestAgentReview) {
     sendReviewRoomForbidden(res, 'REVIEW_ROOM_AGENT_REVIEW_FORBIDDEN', 'Only the document owner can start an agent review.');
     return;
   }
@@ -1303,7 +1303,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/
     sendDocumentMissing(res);
     return;
   }
-  if (access.member?.role !== 'owner') {
+  if (!access.capabilities.canRequestAgentReview) {
     sendReviewRoomForbidden(res, 'REVIEW_ROOM_AGENT_REVIEW_FORBIDDEN', 'Only the document owner can retry an agent review.');
     return;
   }
@@ -1338,7 +1338,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/
     sendDocumentMissing(res);
     return;
   }
-  if (access.member?.role !== 'owner') {
+  if (!access.capabilities.canRequestAgentReview) {
     sendReviewRoomForbidden(res, 'REVIEW_ROOM_AGENT_CREDENTIAL_FORBIDDEN', 'Only the document owner can create agent access.');
     return;
   }
@@ -1396,7 +1396,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/
     sendDocumentMissing(res);
     return;
   }
-  if (access.member?.role !== 'owner') {
+  if (!access.capabilities.canRequestAgentReview) {
     sendReviewRoomForbidden(res, 'REVIEW_ROOM_AGENT_REVIEW_FORBIDDEN', 'Only the document owner can cancel a review request.');
     return;
   }
@@ -1552,7 +1552,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/baselines', async (
     sendDocumentMissing(res);
     return;
   }
-  if (!access.capabilities.canEdit) {
+  if (!access.capabilities.canCreateBaseline) {
     sendReviewRoomForbidden(res, 'REVIEW_ROOM_BASELINE_FORBIDDEN', 'Your Review Room role cannot create baselines for this document.');
     return;
   }
@@ -1652,7 +1652,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/tasks/:taskId/statu
     sendDocumentMissing(res);
     return;
   }
-  if (!access.capabilities.canComment) {
+  if (!access.capabilities.canUpdateTasks) {
     sendReviewRoomForbidden(res, 'REVIEW_ROOM_TASK_FORBIDDEN', 'Your Review Room role cannot update tasks for this document.');
     return;
   }
@@ -1713,7 +1713,7 @@ reviewRoomRoutes.get('/review-room/api/documents/:proofSlug/members', async (req
       .filter((identity): identity is NonNullable<typeof identity> => Boolean(identity))
       .map((identity) => [identity.id, identity]),
   );
-  const canManageMembers = access.member?.role === 'owner';
+  const canManageMembers = access.capabilities.canManageMembers;
   res.json({
     success: true,
     document: serializeDocument(access.document, access.member),
@@ -1743,7 +1743,7 @@ reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/members', async (re
     sendDocumentMissing(res);
     return;
   }
-  if (access.member?.role !== 'owner') {
+  if (!access.capabilities.canManageMembers) {
     sendReviewRoomForbidden(res, 'REVIEW_ROOM_MEMBER_FORBIDDEN', 'Only the Review Room document owner can manage collaborator roles.');
     return;
   }
@@ -1799,7 +1799,7 @@ reviewRoomRoutes.delete('/review-room/api/documents/:proofSlug/members/:identity
     sendDocumentMissing(res);
     return;
   }
-  if (access.member?.role !== 'owner') {
+  if (!access.capabilities.canManageMembers) {
     sendReviewRoomForbidden(res, 'REVIEW_ROOM_MEMBER_FORBIDDEN', 'Only the document owner can revoke collaborator access.');
     return;
   }

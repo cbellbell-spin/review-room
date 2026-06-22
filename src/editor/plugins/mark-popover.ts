@@ -33,7 +33,13 @@ import {
   getViewportOffset,
 } from './mark-popover-viewport';
 import { isMobileTouch } from './mobile-detect';
-import { canCommentInRuntime, canEditInRuntime } from './share-permissions';
+import {
+  canCommentInRuntime,
+  canDecideSuggestionsInRuntime,
+  canEditInRuntime,
+  canReplyInRuntime,
+  canResolveInRuntime,
+} from './share-permissions';
 import { resolveQuoteRange } from '../utils/text-range';
 
 const markPopoverKey = new PluginKey('mark-popover');
@@ -1064,6 +1070,8 @@ class MarkPopoverController {
 
     const thread = getThread(marks, threadId);
     const canComment = canCommentInRuntime();
+    const canReply = canReplyInRuntime();
+    const canResolve = canResolveInRuntime();
     this.lastThreadLength = thread.length;
     this.popover.innerHTML = '';
 
@@ -1096,7 +1104,7 @@ class MarkPopoverController {
     actions.className = 'mark-popover-actions';
     let replyBox: HTMLTextAreaElement | null = null;
 
-    if (canComment) {
+    if (canReply) {
       replyBox = document.createElement('textarea');
       replyBox.className = 'mark-popover-textarea';
       replyBox.placeholder = 'Reply...';
@@ -1198,7 +1206,7 @@ class MarkPopoverController {
       });
 
       actions.appendChild(replyButton);
-      actions.appendChild(resolveButton);
+      if (canResolve) actions.appendChild(resolveButton);
       actions.appendChild(deleteButton);
     }
 
@@ -1267,7 +1275,7 @@ class MarkPopoverController {
 
     const actions = document.createElement('div');
     actions.className = 'mark-popover-actions';
-    const canEdit = canEditInRuntime();
+    const canEdit = canDecideSuggestionsInRuntime();
 
     const applyButton = document.createElement('button');
     applyButton.type = 'button';
@@ -1869,7 +1877,7 @@ class MarkPopoverController {
   }
 
   private resolveFromStrip(markId: string): void {
-    if (!canCommentInRuntime()) return;
+    if (!canResolveInRuntime()) return;
     const resolved = resolveComment(this.view, markId);
     if (resolved) {
       this.showUndoToast(markId);

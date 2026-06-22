@@ -27,12 +27,14 @@ import {
   createDocument,
   createDocumentAccessToken,
   deleteDocument,
+  deriveReviewRoomCapabilities,
   getDocument,
   getDocumentBySlug,
   getStoredIdempotencyRecord,
   pauseDocument,
   resolveDocumentAccess,
   resolveDocumentAccessRole,
+  shareRoleToReviewRoomRole,
   rebuildDocumentBlocks,
   resumeDocument,
   revokeDocument,
@@ -885,24 +887,8 @@ async function resolveOpenContextAccess(
   return { role: 'editor', tokenId: null, ownerAuthorized: false };
 }
 
-function deriveShareCapabilities(role: ShareRole, shareState: string): {
-  canRead: boolean;
-  canComment: boolean;
-  canEdit: boolean;
-} {
-  const isOwner = role === 'owner_bot';
-  // Product decision: non-owners cannot access paused/revoked shares at all.
-  const canRead = shareState === 'ACTIVE' || (isOwner && shareState !== 'DELETED');
-  const canEdit = isOwner
-    ? (shareState === 'ACTIVE' || shareState === 'PAUSED')
-    : (role === 'editor' && shareState === 'ACTIVE');
-  const canComment = shareState === 'ACTIVE'
-    && (role === 'commenter' || role === 'editor' || isOwner);
-  return {
-    canRead,
-    canComment,
-    canEdit,
-  };
+function deriveShareCapabilities(role: ShareRole, shareState: string): ReturnType<typeof deriveReviewRoomCapabilities> {
+  return deriveReviewRoomCapabilities(shareRoleToReviewRoomRole(role), shareState);
 }
 
 async function buildReviewRoomOpenPayload(slug: string, presentedSecret: string | null): Promise<{
@@ -912,11 +898,14 @@ async function buildReviewRoomOpenPayload(slug: string, presentedSecret: string 
   actorLabels: Record<string, string>;
   currentRole: string;
   currentShareRole: ShareRole;
+  capabilities: ReturnType<typeof deriveReviewRoomCapabilities>;
 } | null> {
   const member = presentedSecret
     ? await storeGetReviewRoomDocumentMemberForProofSlugAndToken(slug, presentedSecret)
     : null;
   if (!member) return null;
+  const reviewRoomDocument = await storeGetReviewRoomDocumentByProofSlug(slug);
+  if (!reviewRoomDocument) return null;
   const members = await storeListReviewRoomDocumentMembersForProofSlug(slug);
   const identities = await Promise.all(members.map((entry) => storeGetReviewRoomIdentity(entry.identity_id)));
   const actorLabels: Record<string, string> = {};
@@ -936,6 +925,7 @@ async function buildReviewRoomOpenPayload(slug: string, presentedSecret: string 
     actorLabels,
     currentRole: member.role,
     currentShareRole: member.role === 'owner' ? 'owner_bot' : member.role,
+    capabilities: deriveReviewRoomCapabilities(member.role, reviewRoomDocument.share_state),
   };
 }
 
@@ -2457,8 +2447,8 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
   }
 
   const role = access.role;
-  const capabilities = deriveShareCapabilities(role, doc.share_state);
   const reviewRoom = await buildReviewRoomOpenPayload(slug, getPresentedSecret(req));
+  const capabilities = reviewRoom?.capabilities ?? deriveShareCapabilities(role, doc.share_state);
   const collabRuntime = getCollabRuntime();
   if (!collabRuntime.enabled) {
     const snapshotUrl = doc.share_state === 'ACTIVE' ? getSnapshotPublicUrl(doc.slug) : null;

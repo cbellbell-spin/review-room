@@ -210,7 +210,7 @@ Goal: make current access and editability understandable without deciding the fi
 
 Out of scope: moving controls back into a fixed top bar, broad visual redesign, provider integrations, and account recovery.
 
-### Recommended Next Slice: Centralized Capability Enforcement
+### Implemented Slice: Centralized Capability Enforcement
 
 Goal: close the permissions runway by making the server’s capability result the single source of truth for every document affordance.
 
@@ -219,7 +219,27 @@ Goal: close the permissions runway by making the server’s capability result th
 - Hide or disable each action consistently and pair disabled states with a short reason.
 - Add a role-by-action contract test proving that every enabled UI action succeeds server-side and every forbidden action is unavailable in the UI.
 
+Shipped implementation notes:
+
+- The server now returns one typed, action-specific capability contract for title/content editing, comments, replies, resolve/reopen, suggestion decisions, baselines, tasks, human access, connected-agent management, and BYO agent-review requests.
+- Review Room authorization routes consume the same capability result instead of checking role labels independently.
+- The editor retains legacy aggregate flags only for compatibility and drives action surfaces from the action-specific fields, with conservative fallbacks for older servers.
+- The server role matrix exercises enabled actions against their endpoints, while the Playwright access contract verifies owner, editor, commenter, and viewer affordances and disabled-state reasons.
+
 Out of scope: account recovery, email invitation delivery, provider integrations, and control-placement redesign.
+
+### Recommended Next Slice: Additional-Device Enrollment
+
+Goal: let an already authenticated person carry the same stable Review Room identity to another browser without asking a document owner to issue a new collaborator invitation.
+
+- Let an authenticated browser create a short-lived, single-use enrollment link for its own identity.
+- Accepting the link on a second browser creates a normal server session for the same stable identity; it does not mint new document authority or change memberships.
+- Show the identity's active device sessions with creation/last-used metadata and allow individual session revocation.
+- Make expiry, replay, revocation, and already-enrolled states explicit and cover them with independent-browser tests.
+- Keep the owner-issued collaborator invitation as a fallback and keep manual link delivery; no email provider is required.
+- State clearly that this handles an additional device while one authenticated device remains. Recovery after losing every authenticated device remains a separate product/security decision.
+
+Out of scope: password accounts, email/SMS delivery, zero-device account recovery, social login, provider integrations, and changes to document-role authority.
 
 ### Workspace And Permissions
 

@@ -23,6 +23,23 @@ export type ShareRole = 'viewer' | 'commenter' | 'editor' | 'owner_bot';
 export type ShareState = 'ACTIVE' | 'PAUSED' | 'REVOKED' | 'DELETED';
 export type AccessLinkRole = 'viewer' | 'commenter' | 'editor';
 
+export interface ShareCapabilities {
+  canRead: boolean;
+  canComment: boolean;
+  canEdit: boolean;
+  canShare: boolean;
+  canManageAgents: boolean;
+  canEditTitle: boolean;
+  canEditContent: boolean;
+  canReply: boolean;
+  canResolve: boolean;
+  canDecideSuggestions: boolean;
+  canCreateBaseline: boolean;
+  canUpdateTasks: boolean;
+  canManageMembers: boolean;
+  canRequestAgentReview: boolean;
+}
+
 export interface CollabSessionInfo {
   docId: string;
   slug: string;
@@ -52,7 +69,7 @@ export interface ShareOpenContext {
     active?: boolean;
   };
   session?: CollabSessionInfo;
-  capabilities: { canRead: boolean; canComment: boolean; canEdit: boolean };
+  capabilities: ShareCapabilities;
   reviewRoom?: {
     documentId: string;
     identityId: string;
@@ -60,6 +77,7 @@ export interface ShareOpenContext {
     actorLabels: Record<string, string>;
     currentRole: 'owner' | 'editor' | 'commenter' | 'viewer';
     currentShareRole: ShareRole;
+    capabilities: ShareCapabilities;
   };
   links: { webUrl: string; snapshotUrl: string | null };
 }
@@ -272,7 +290,7 @@ export type ShareRequestError = {
 
 type CollabSessionPayload = {
   session: CollabSessionInfo;
-  capabilities: { canRead: boolean; canComment: boolean; canEdit: boolean };
+  capabilities: ShareCapabilities;
 };
 
 type CollabUnavailablePayload = {
@@ -853,7 +871,7 @@ export class ShareClient {
     if (!response.ok) return this.parseRequestError(response);
     const payload = await response.json() as {
       session?: CollabSessionInfo;
-      capabilities?: { canRead: boolean; canComment: boolean; canEdit: boolean };
+      capabilities?: ShareCapabilities;
       collabAvailable?: boolean;
       snapshotUrl?: string | null;
     };
@@ -1381,7 +1399,7 @@ export class ShareClient {
     if (!response.ok) return this.parseRequestError(response);
     const payload = await response.json() as {
       session?: CollabSessionInfo;
-      capabilities?: { canRead: boolean; canComment: boolean; canEdit: boolean };
+      capabilities?: ShareCapabilities;
       collabAvailable?: boolean;
       snapshotUrl?: string | null;
     };
@@ -1399,7 +1417,7 @@ export class ShareClient {
     if (!this.isCollabSessionInfo(payload.session) || !payload.capabilities) return null;
     return payload as {
       session: CollabSessionInfo;
-      capabilities: { canRead: boolean; canComment: boolean; canEdit: boolean };
+      capabilities: ShareCapabilities;
     };
   }
 

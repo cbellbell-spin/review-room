@@ -152,6 +152,7 @@ import {
   type ReviewRoomAgentReviewRun,
   type ReviewRoomDocumentMember,
   type ReviewRoomRole,
+  type ShareCapabilities,
   type SharePendingEvent,
 } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
@@ -1051,6 +1052,22 @@ class ProofEditorImpl implements ProofEditor {
   private collabEnabled: boolean = false;
   private collabCanComment: boolean = false;
   private collabCanEdit: boolean = false;
+  private documentCapabilities: ShareCapabilities = {
+    canRead: false,
+    canComment: false,
+    canEdit: false,
+    canShare: false,
+    canManageAgents: false,
+    canEditTitle: false,
+    canEditContent: false,
+    canReply: false,
+    canResolve: false,
+    canDecideSuggestions: false,
+    canCreateBaseline: false,
+    canUpdateTasks: false,
+    canManageMembers: false,
+    canRequestAgentReview: false,
+  };
   private reviewRoomCurrentRole: ReviewRoomRole | null = null;
   private reviewRoomCanManageMembers: boolean = false;
   private reviewRoomActorLabels: Record<string, string> = {};
@@ -1455,12 +1472,12 @@ class ProofEditorImpl implements ProofEditor {
         ? contextResponse
         : null;
       const wantsNamePrompt = options?.promptForName ?? true;
-      const canActInDocument = Boolean(context?.capabilities?.canComment || context?.capabilities?.canEdit);
-      this.collabCanComment = Boolean(context?.capabilities?.canComment);
-      this.collabCanEdit = Boolean(context?.capabilities?.canEdit);
+      this.applyDocumentCapabilities(context?.reviewRoom?.capabilities ?? context?.capabilities);
+      const canActInDocument = this.documentCapabilities.canComment || this.documentCapabilities.canEditContent;
       const reviewRoomRole = this.parseReviewRoomRole(context?.reviewRoom?.currentRole);
       this.reviewRoomCurrentRole = reviewRoomRole;
-      this.reviewRoomCanManageMembers = reviewRoomRole === 'owner';
+      this.reviewRoomCanManageMembers = this.documentCapabilities.canManageMembers;
+      this.reviewRoomAgentReviewCanStart = this.documentCapabilities.canRequestAgentReview;
       const reviewRoomIdentityId = typeof context?.reviewRoom?.identityId === 'string' && context.reviewRoom.identityId.trim()
         ? context.reviewRoom.identityId.trim()
         : null;
@@ -1537,7 +1554,7 @@ class ProofEditorImpl implements ProofEditor {
       }
       const shareCapabilities = context?.capabilities
         ?? (collabSession && 'capabilities' in collabSession ? collabSession.capabilities : null);
-      this.collabCanComment = Boolean(shareCapabilities?.canComment);
+      this.applyDocumentCapabilities(shareCapabilities);
       this.showShareWelcomeToastOnce(shareCapabilities);
 
       if (collabSession && 'session' in collabSession && collabSession.session) {
@@ -1552,8 +1569,7 @@ class ProofEditorImpl implements ProofEditor {
         this.collabEnabled = true;
         this.reviewRoomRestSaveMode = false;
         this.resetReviewRoomAutosaveState();
-        this.collabCanComment = Boolean(collabSession.capabilities.canComment);
-        this.collabCanEdit = Boolean(collabSession.capabilities.canEdit);
+        this.applyDocumentCapabilities(collabSession.capabilities);
         this.activeCollabSession = collabSession.session;
         this.collabConnectionStatus = 'connecting';
         this.collabIsSynced = false;
@@ -1703,10 +1719,8 @@ class ProofEditorImpl implements ProofEditor {
         collabClient.connect(collabSession.session);
         this.startCollabRefreshLoop();
       } else {
-        const reviewRoomRestSaveMode = this.isReviewRoomRuntime() && Boolean(shareCapabilities?.canEdit);
+        const reviewRoomRestSaveMode = this.isReviewRoomRuntime() && this.documentCapabilities.canEditContent;
         this.collabEnabled = false;
-        this.collabCanComment = Boolean(shareCapabilities?.canComment);
-        this.collabCanEdit = Boolean(shareCapabilities?.canEdit);
         this.reviewRoomRestSaveMode = reviewRoomRestSaveMode;
         this.activeCollabSession = null;
         this.collabConnectionStatus = 'disconnected';
@@ -1807,9 +1821,14 @@ class ProofEditorImpl implements ProofEditor {
     const hasShareConfig = shareClient.refreshRuntimeConfig();
     this.isShareMode = hasShareConfig;
     if (!hasShareConfig) return false;
-    this.collabCanComment = false;
-    this.collabCanEdit = false;
-    setShareRuntimeCapabilities({ canComment: false, canEdit: false });
+    this.applyDocumentCapabilities(null);
+    setShareRuntimeCapabilities({
+      canComment: false,
+      canEdit: false,
+      canReply: false,
+      canResolve: false,
+      canDecideSuggestions: false,
+    });
 
     this.shareRuntimeActivationInFlight = true;
     void this.initFromShare(options)
@@ -1822,8 +1841,7 @@ class ProofEditorImpl implements ProofEditor {
   deactivateShareRuntime(): void {
     this.isShareMode = false;
     this.collabEnabled = false;
-    this.collabCanComment = false;
-    this.collabCanEdit = false;
+    this.applyDocumentCapabilities(null);
     this.activeCollabSession = null;
     this.collabIsSynced = false;
     this.collabConnectionStatus = 'disconnected';
@@ -2666,8 +2684,7 @@ class ProofEditorImpl implements ProofEditor {
         if (refreshed.error.status === 401 || refreshed.error.status === 403 || refreshed.error.status === 404 || refreshed.error.status === 410) {
           this.teardownCollabRuntimeAfterTerminalRefreshFailure();
           this.collabEnabled = false;
-          this.collabCanComment = false;
-          this.collabCanEdit = false;
+          this.applyDocumentCapabilities(null);
           this.collabConnectionStatus = 'disconnected';
           this.collabIsSynced = false;
           this.collabUnsyncedChanges = 0;
@@ -2685,8 +2702,7 @@ class ProofEditorImpl implements ProofEditor {
       }
       if (refreshed && 'collabAvailable' in refreshed && refreshed.collabAvailable === false) {
         this.collabEnabled = false;
-        this.collabCanComment = false;
-        this.collabCanEdit = false;
+        this.applyDocumentCapabilities(null);
         this.collabConnectionStatus = 'disconnected';
         this.collabIsSynced = false;
         this.collabUnsyncedChanges = 0;
@@ -2700,8 +2716,7 @@ class ProofEditorImpl implements ProofEditor {
       if (!refreshed || !('session' in refreshed) || !refreshed.session) return;
       const canEditBefore = this.collabCanEdit;
       this.activeCollabSession = refreshed.session;
-      this.collabCanComment = Boolean(refreshed.capabilities.canComment);
-      this.collabCanEdit = Boolean(refreshed.capabilities.canEdit);
+      this.applyDocumentCapabilities(refreshed.capabilities);
       this.resetShareMarksSyncState();
       const shouldPreserveLocalState = preserveLocalState && this.shouldPreservePendingLocalCollabState();
       let reconnectTemplate: string | null = null;
@@ -2852,6 +2867,9 @@ class ProofEditorImpl implements ProofEditor {
     setShareRuntimeCapabilities({
       canComment: this.collabCanComment,
       canEdit: this.collabCanEdit,
+      canReply: this.documentCapabilities.canReply,
+      canResolve: this.documentCapabilities.canResolve,
+      canDecideSuggestions: this.documentCapabilities.canDecideSuggestions,
     });
     this.updateEditableState();
     this.updateShareBannerTitleDisplay();
@@ -3756,7 +3774,7 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private setupTitleEditing(titleEl: HTMLElement): void {
-    if (!this.collabCanEdit) {
+    if (!this.documentCapabilities.canEditTitle) {
       titleEl.style.cursor = '';
       titleEl.removeAttribute('role');
       titleEl.removeAttribute('tabindex');
@@ -3873,7 +3891,7 @@ class ProofEditorImpl implements ProofEditor {
       this.clearShareAgentPresenceExpiryTimer();
       return;
     }
-    if (!this.collabCanEdit) {
+    if (!this.documentCapabilities.canManageAgents && !this.isReviewRoomRuntime()) {
       this.closeAgentMenu();
       this.clearShareAgentPresenceExpiryTimer();
       this.shareBannerAgentSlotEl.replaceChildren();
@@ -4543,7 +4561,7 @@ class ProofEditorImpl implements ProofEditor {
       }
 
       const currentRole = response.currentMember?.role ?? this.reviewRoomCurrentRole;
-      const canManageMembers = currentRole === 'owner';
+      const canManageMembers = this.documentCapabilities.canManageMembers;
       this.reviewRoomCurrentRole = currentRole;
       this.reviewRoomCanManageMembers = canManageMembers;
 
@@ -4986,6 +5004,30 @@ class ProofEditorImpl implements ProofEditor {
     } catch {
       return window.location.href;
     }
+  }
+
+  private applyDocumentCapabilities(value: Partial<ShareCapabilities> | null | undefined): void {
+    const canRead = Boolean(value?.canRead);
+    const canComment = Boolean(value?.canComment);
+    const canEdit = Boolean(value?.canEdit);
+    this.documentCapabilities = {
+      canRead,
+      canComment,
+      canEdit,
+      canShare: value?.canShare ?? canEdit,
+      canManageAgents: value?.canManageAgents ?? canEdit,
+      canEditTitle: value?.canEditTitle ?? canEdit,
+      canEditContent: value?.canEditContent ?? canEdit,
+      canReply: value?.canReply ?? canComment,
+      canResolve: value?.canResolve ?? canComment,
+      canDecideSuggestions: value?.canDecideSuggestions ?? canEdit,
+      canCreateBaseline: value?.canCreateBaseline ?? canEdit,
+      canUpdateTasks: value?.canUpdateTasks ?? canComment,
+      canManageMembers: value?.canManageMembers ?? false,
+      canRequestAgentReview: value?.canRequestAgentReview ?? false,
+    };
+    this.collabCanComment = this.documentCapabilities.canComment;
+    this.collabCanEdit = this.documentCapabilities.canEditContent;
   }
 
   private parseReviewRoomRole(value: unknown): ReviewRoomRole | null {
@@ -5819,8 +5861,8 @@ class ProofEditorImpl implements ProofEditor {
         }
         return false;
       },
-      canCreateBaseline: () => this.collabCanEdit,
-      canUpdateTasks: () => this.collabCanComment,
+      canCreateBaseline: () => this.documentCapabilities.canCreateBaseline,
+      canUpdateTasks: () => this.documentCapabilities.canUpdateTasks,
       isRealtimeAvailable: () => !this.reviewRoomRestSaveMode,
       getSuggestionFinalizeBlockReason: () => this.getReviewRoomSuggestionFinalizeBlockReason(),
       getActorLabel: (actorId) => formatActorLabel(actorId, this.reviewRoomActorLabels),
