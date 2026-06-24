@@ -4,6 +4,7 @@ import {
   bumpDocumentAccessEpoch,
   deleteMarkTombstone,
   getDocumentBySlug,
+  getDocumentProjectionBySlug,
   getMarkTombstone,
   listMarkTombstonesForDocument,
   removeResurrectedMarksFromPayload,
@@ -228,15 +229,29 @@ function preferLatestFinalizedDecisionRow(
     (tombstone.status === 'accepted' || tombstone.status === 'rejected')
     && tombstone.resolved_revision === row.revision);
   if (!latestDecisionIsDurable) return doc;
+  const projection = getDocumentProjectionBySlug(slug);
+  const projectionMatchesCanonical = Boolean(
+    projection
+    && projection.health === 'healthy'
+    && projection.revision === row.revision
+    && projection.y_state_version === row.y_state_version
+    && projection.markdown === row.markdown
+    && stableMarksKey(projection.marks_json) === stableMarksKey(row.marks),
+  );
   return {
     ...doc,
     ...row,
     plain_text: stripAllProofSpanTags(row.markdown),
-    projection_fresh: false,
+    projection_health: projection?.health ?? ('projection_health' in doc ? doc.projection_health : 'projection_stale'),
+    projection_health_reason: projection?.health_reason ?? ('projection_health_reason' in doc ? doc.projection_health_reason : null),
+    projection_revision: projection?.revision ?? ('projection_revision' in doc ? doc.projection_revision : null),
+    projection_y_state_version: projection?.y_state_version ?? ('projection_y_state_version' in doc ? doc.projection_y_state_version : null),
+    projection_updated_at: projection?.updated_at ?? ('projection_updated_at' in doc ? doc.projection_updated_at : null),
+    projection_fresh: projectionMatchesCanonical,
     mutation_ready: true,
-    repair_pending: true,
+    repair_pending: !projectionMatchesCanonical,
     read_source: 'canonical_row',
-    read_fallback_reason: 'finalized_decision_ahead_of_live',
+    read_fallback_reason: projectionMatchesCanonical ? null : 'finalized_decision_ahead_of_live',
     yjs_source: 'yjs_source' in doc ? doc.yjs_source : null,
   } as MutationReadyDocument;
 }
@@ -439,6 +454,11 @@ function parseMarks(raw: string): Record<string, StoredMark> {
   } catch {
     return {};
   }
+}
+
+function stableMarksKey(raw: string): string {
+  const parsed = parseMarks(raw);
+  return JSON.stringify(Object.fromEntries(Object.entries(parsed).sort(([left], [right]) => left.localeCompare(right))));
 }
 
 function normalizeQuote(value: unknown): string {

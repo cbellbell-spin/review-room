@@ -13,9 +13,10 @@ async function run(): Promise<void> {
   const dbPath = path.join(os.tmpdir(), `proof-canonical-repair-y-state-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
   process.env.DATABASE_PATH = dbPath;
 
-  const [db, canonical] = await Promise.all([
+  const [db, canonical, documentEngine] = await Promise.all([
     import('../../server/db.js'),
     import('../../server/canonical-document.js'),
+    import('../../server/document-engine.js'),
   ]);
 
   try {
@@ -52,6 +53,38 @@ async function run(): Promise<void> {
       db.getDocumentProjectionBySlug(slug)?.markdown.includes('Recovered from authoritative Yjs.') === true,
       'Expected projection content to be rebuilt from authoritative Yjs',
     );
+
+    const finalizedSlug = `finalized-row-${Math.random().toString(36).slice(2, 10)}`;
+    const finalizedMarkdown = '# Finalized row\n\nThe accepted result is durable.';
+    db.createDocument(finalizedSlug, finalizedMarkdown, {}, 'Finalized row');
+
+    const staleLiveMarkdown = '# Finalized row\n\nThe live doc still has pre-decision text.';
+    const staleLiveYdoc = new Y.Doc();
+    staleLiveYdoc.getText('markdown').insert(0, staleLiveMarkdown);
+    prosemirrorToYXmlFragment(parser.parseMarkdown(staleLiveMarkdown) as any, staleLiveYdoc.getXmlFragment('prosemirror') as any);
+    db.saveYSnapshot(finalizedSlug, 1, Y.encodeStateAsUpdate(staleLiveYdoc));
+    db.getDb().prepare(`
+      UPDATE documents
+      SET y_state_version = 1
+      WHERE slug = ?
+    `).run(finalizedSlug);
+    db.replaceDocumentProjection(finalizedSlug, finalizedMarkdown, {}, 1);
+    db.upsertMarkTombstone(finalizedSlug, 'accepted-old-generation', 'accepted', 1);
+
+    const finalizedState = await documentEngine.executeDocumentOperationAsync(finalizedSlug, 'GET', '/state');
+    assert(finalizedState.status === 200, `Expected finalized state read to succeed, got ${finalizedState.status}`);
+    const finalizedBody = finalizedState.body as {
+      markdown?: string;
+      projectionFresh?: boolean;
+      repairPending?: boolean;
+      mutationReady?: boolean;
+      warning?: unknown;
+    };
+    assert(finalizedBody.markdown === finalizedMarkdown, 'Expected finalized state to prefer the durable canonical row');
+    assert(finalizedBody.projectionFresh === true, 'Expected matching projection to clear finalized-decision stale state');
+    assert(finalizedBody.repairPending === false, 'Expected matching projection not to remain repair-pending');
+    assert(finalizedBody.mutationReady === true, 'Expected durable finalized row to remain mutation-ready');
+    assert(finalizedBody.warning === undefined, 'Expected no projection stale warning after finalized row projection catches up');
 
     console.log('✓ canonical repair preserves document y_state_version while syncing stale projections');
   } finally {
