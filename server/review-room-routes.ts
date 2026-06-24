@@ -33,15 +33,18 @@ import {
 import {
   storeCreatePublishedVersion,
   storeCreateAgentReviewRun,
+  storeCreateReviewRoomDeviceEnrollment,
   storeCreateReviewRoomDocumentRecord,
   storeCreateReviewRoomHistoryEvent,
   storeCreateReviewRoomIdentityInvitation,
   storeCreateReviewRoomSession,
   storeCreateReviewRoomAgentCredential,
   storeCancelAgentReviewRun,
+  storeConsumeReviewRoomDeviceEnrollment,
   storeConsumeReviewRoomIdentityInvitation,
   storeGetAssignmentTask,
   storeGetAgentReviewRun,
+  storeGetReviewRoomDeviceEnrollmentBySecret,
   storeGetLatestPublishedVersion,
   storeGetReviewRoomDocumentByProofSlug,
   storeGetReviewRoomDocumentMemberForProofSlug,
@@ -57,8 +60,10 @@ import {
   storeListReviewRoomDocuments,
   storeListReviewRoomHistoryEvents,
   storeListReviewRoomIdentities,
+  storeListReviewRoomSessions,
   storeResolveReviewRoomSession,
   storeRemoveReviewRoomDocumentMember,
+  storeRevokeReviewRoomSessionById,
   storeRevokeReviewRoomSession,
   storeQueueAgentReviewRunRetry,
   storeUpdateAssignmentTaskStatus,
@@ -90,6 +95,10 @@ function buildReviewRoomOpenPath(slug: string): string {
 function appendTokenToPath(path: string, token: string | null): string {
   if (!token) return path;
   return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+}
+
+function buildReviewRoomEnrollmentPath(secret: string): string {
+  return `/review-room/session/enroll?enroll=${encodeURIComponent(secret)}`;
 }
 
 function getExplicitReviewRoomIdentityId(req: Request): string | null {
@@ -593,6 +602,39 @@ function renderReviewRoomHome(): string {
       cursor: pointer;
       font-weight: 650;
     }
+    .profile-device-link {
+      justify-self: start;
+      min-height: 32px;
+      border-radius: 999px;
+      border: 1px solid var(--rr-control-border);
+      background: #fff;
+      color: var(--rr-accent);
+      padding: 6px 10px;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .profile-device-result {
+      display: none;
+      gap: 6px;
+      padding: 9px;
+      border: 1px solid var(--rr-border-soft);
+      border-radius: 8px;
+      color: var(--rr-muted);
+    }
+    .profile-device-result[data-open="true"] { display: grid; }
+    .profile-sessions { display: grid; gap: 7px; }
+    .profile-session-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      border: 1px solid var(--rr-border-soft);
+      border-radius: 8px;
+    }
+    .profile-session-row strong { color: var(--rr-ink); }
+    .profile-session-meta { color: var(--rr-muted); overflow-wrap: anywhere; }
     main {
       width: min(860px, 100%);
       margin: 0 auto;
@@ -771,7 +813,10 @@ function renderReviewRoomHome(): string {
             </form>
             <div class="profile-guidance">
               <p id="profile-continuity-copy"></p>
-              <p>To use this identity on another device, ask the document owner for a fresh invitation. Account recovery and email delivery are not available yet.</p>
+              <p id="profile-device-copy"></p>
+              <button id="profile-enrollment" class="profile-device-link" type="button">Create device enrollment link</button>
+              <div id="profile-enrollment-result" class="profile-device-result"></div>
+              <div id="profile-sessions" class="profile-sessions"></div>
               <button id="profile-signout" class="profile-signout" type="button">Sign out this device</button>
             </div>
           </section>
@@ -864,6 +909,10 @@ function renderReviewRoomHome(): string {
     const profileSave = document.getElementById('profile-save');
     const profileStatus = document.getElementById('profile-status');
     const profileContinuityCopy = document.getElementById('profile-continuity-copy');
+    const profileDeviceCopy = document.getElementById('profile-device-copy');
+    const profileEnrollment = document.getElementById('profile-enrollment');
+    const profileEnrollmentResult = document.getElementById('profile-enrollment-result');
+    const profileSessions = document.getElementById('profile-sessions');
     const profileSignout = document.getElementById('profile-signout');
     const newDocumentButton = document.getElementById('new-document-button');
     const importForm = document.getElementById('import-form');
@@ -908,6 +957,21 @@ function renderReviewRoomHome(): string {
       catch { return value || ''; }
     }
 
+    function absoluteReviewRoomUrl(path) {
+      try { return new URL(path, window.location.origin).toString(); }
+      catch { return String(path || ''); }
+    }
+
+    async function copyText(value) {
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(value);
+          return true;
+        }
+      } catch {}
+      return false;
+    }
+
     function renderDocuments(docs) {
       if (!docs.length) {
         documentsEl.innerHTML = '<div class="empty">No Review Room documents yet.</div>';
@@ -938,6 +1002,54 @@ function renderReviewRoomHome(): string {
       profileContinuityCopy.textContent = sessionActive
         ? 'A one-time invitation linked this identity to this browser. Signing out ends that identity session here; shared document links can still grant document access.'
         : 'This identity currently lives only in this browser. Accepting an owner invitation links a stable collaborator identity here.';
+      profileDeviceCopy.textContent = sessionActive
+        ? 'Create a short-lived one-use enrollment link to carry this same identity to another browser. Losing every authenticated device remains a separate recovery decision.'
+        : 'Device enrollment is available after this browser has an authenticated Review Room session.';
+      profileEnrollment.hidden = !sessionActive;
+      profileEnrollmentResult.dataset.open = 'false';
+      profileEnrollmentResult.textContent = '';
+      profileSessions.innerHTML = '';
+      const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+      if (sessionActive && sessions.length) {
+        const heading = document.createElement('strong');
+        heading.textContent = 'Active devices';
+        profileSessions.appendChild(heading);
+        for (const deviceSession of sessions) {
+          if (!deviceSession.id) continue;
+          const row = document.createElement('div');
+          row.className = 'profile-session-row';
+          const details = document.createElement('div');
+          const title = document.createElement('strong');
+          title.textContent = deviceSession.current ? 'This browser' : 'Enrolled browser';
+          const meta = document.createElement('div');
+          meta.className = 'profile-session-meta';
+          meta.textContent = 'Last used ' + formatDate(deviceSession.lastSeenAt) + '; created ' + formatDate(deviceSession.createdAt);
+          details.append(title, meta);
+          const revoke = document.createElement('button');
+          revoke.type = 'button';
+          revoke.className = 'profile-signout';
+          revoke.textContent = deviceSession.current ? 'Sign out' : 'Revoke';
+          revoke.addEventListener('click', async () => {
+            revoke.disabled = true;
+            profileStatus.textContent = deviceSession.current ? 'Signing out…' : 'Revoking device…';
+            try {
+              const response = await fetch('/review-room/api/sessions/' + encodeURIComponent(deviceSession.id), {
+                method: 'DELETE',
+                headers: reviewRoomHeaders(),
+              });
+              if (!response.ok) throw new Error('Could not revoke that device session.');
+              if (deviceSession.current) window.location.href = '/review-room';
+              await load();
+              profileStatus.textContent = 'Device revoked.';
+            } catch (error) {
+              profileStatus.textContent = error instanceof Error ? error.message : String(error);
+              revoke.disabled = false;
+            }
+          });
+          row.append(details, revoke);
+          profileSessions.appendChild(row);
+        }
+      }
       profileSignout.hidden = !sessionActive;
     }
 
@@ -1003,6 +1115,40 @@ function renderReviewRoomHome(): string {
         profileStatus.textContent = error instanceof Error ? error.message : String(error);
       } finally {
         profileSave.disabled = false;
+      }
+    });
+
+    profileEnrollment.addEventListener('click', async () => {
+      profileEnrollment.disabled = true;
+      profileStatus.textContent = 'Creating enrollment link…';
+      try {
+        const response = await fetch('/review-room/api/session/enrollments', {
+          method: 'POST',
+          headers: reviewRoomHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({}),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.enrollmentPath) throw new Error(payload.error || 'Could not create enrollment link.');
+        const url = absoluteReviewRoomUrl(payload.enrollmentPath);
+        const copied = await copyText(url);
+        profileEnrollmentResult.dataset.open = 'true';
+        profileEnrollmentResult.innerHTML = '';
+        const copyButton = document.createElement('button');
+        copyButton.type = 'button';
+        copyButton.className = 'profile-device-link';
+        copyButton.textContent = 'Copy enrollment link';
+        copyButton.addEventListener('click', async () => {
+          const didCopy = await copyText(url);
+          profileStatus.textContent = didCopy ? 'Enrollment link copied.' : url;
+        });
+        const note = document.createElement('span');
+        note.textContent = 'Expires ' + formatDate(payload.enrollmentExpiresAt) + ' and can be used once. Creating another link revokes the previous unused one.';
+        profileEnrollmentResult.append(copyButton, note);
+        profileStatus.textContent = copied ? 'Enrollment link copied.' : 'Enrollment link created.';
+      } catch (error) {
+        profileStatus.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        profileEnrollment.disabled = false;
       }
     });
 
@@ -1129,6 +1275,7 @@ reviewRoomRoutes.get('/review-room/claude-plugin.zip', (_req: Request, res: Resp
 reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Response) => {
   const identityId = await getCurrentReviewRoomIdentityId(req);
   const session = await getReviewRoomSession(req);
+  const sessions = session ? await storeListReviewRoomSessions(session.identity_id) : [];
   res.json({
     success: true,
     workspace: {
@@ -1137,6 +1284,14 @@ reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Resp
     },
     currentIdentity: await storeGetReviewRoomIdentity(identityId),
     session: session ? { active: true, expiresAt: session.expires_at } : { active: false },
+    sessions: sessions.map((row) => ({
+      id: row.id,
+      identityId: row.identity_id,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      current: row.id === session?.id,
+    })),
     identities: await storeListReviewRoomIdentities(REVIEW_ROOM_DEFAULT_WORKSPACE_ID),
   });
 });
@@ -1176,12 +1331,125 @@ reviewRoomRoutes.get('/review-room/session/accept', async (req: Request, res: Re
   res.redirect(303, openPath);
 });
 
+reviewRoomRoutes.post('/review-room/api/session/enrollments', async (req: Request, res: Response) => {
+  const session = await getReviewRoomSession(req);
+  if (!session) {
+    res.status(401).json({
+      success: false,
+      code: 'SESSION_REQUIRED',
+      error: 'Create a device enrollment link from an authenticated Review Room browser.',
+    });
+    return;
+  }
+  const { enrollment, secret } = await storeCreateReviewRoomDeviceEnrollment({
+    identityId: session.identity_id,
+    createdBySessionId: session.id,
+  });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    enrollment: {
+      id: enrollment.id,
+      identityId: enrollment.identity_id,
+      expiresAt: enrollment.expires_at,
+      createdAt: enrollment.created_at,
+    },
+    enrollmentPath: buildReviewRoomEnrollmentPath(secret),
+    enrollmentExpiresAt: enrollment.expires_at,
+  });
+});
+
+reviewRoomRoutes.get('/review-room/session/enroll', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  const secret = typeof req.query.enroll === 'string' ? req.query.enroll.trim() : '';
+  if (!secret) {
+    res.status(400).type('text/plain').send('This device enrollment link is invalid.');
+    return;
+  }
+  const enrollment = await storeGetReviewRoomDeviceEnrollmentBySecret(secret);
+  if (!enrollment) {
+    res.status(400).type('text/plain').send('This device enrollment link is invalid.');
+    return;
+  }
+  const existingSession = await getReviewRoomSession(req);
+  if (existingSession?.identity_id === enrollment.identity_id) {
+    if (req.accepts(['html', 'json']) === 'json') {
+      res.status(409).json({
+        success: false,
+        code: 'ALREADY_ENROLLED',
+        error: 'This browser is already enrolled for this Review Room identity.',
+        session: { active: true, expiresAt: existingSession.expires_at },
+      });
+      return;
+    }
+    res.status(409).type('text/plain').send('This browser is already enrolled for this Review Room identity.');
+    return;
+  }
+  const nowMs = Date.now();
+  if (enrollment.revoked_at) {
+    res.status(410).type('text/plain').send('This device enrollment link was revoked.');
+    return;
+  }
+  if (enrollment.accepted_at) {
+    res.status(410).type('text/plain').send('This device enrollment link was already used.');
+    return;
+  }
+  if (Date.parse(enrollment.expires_at) <= nowMs) {
+    res.status(410).type('text/plain').send('This device enrollment link has expired.');
+    return;
+  }
+  const consumed = await storeConsumeReviewRoomDeviceEnrollment(secret);
+  if (!consumed) {
+    res.status(410).type('text/plain').send('This device enrollment link has expired, was revoked, or was already used.');
+    return;
+  }
+  const identity = await storeGetReviewRoomIdentity(consumed.identity_id);
+  if (!identity) {
+    res.status(409).type('text/plain').send('This device enrollment link no longer has a matching Review Room identity.');
+    return;
+  }
+  const { session, secret: sessionSecret } = await storeCreateReviewRoomSession(consumed.identity_id);
+  const maxAgeSec = Math.max(1, Math.floor((Date.parse(session.expires_at) - Date.now()) / 1000));
+  setReviewRoomSessionCookie(req, res, sessionSecret, maxAgeSec);
+  if (req.accepts(['html', 'json']) === 'json') {
+    res.json({
+      success: true,
+      identity: { id: identity.id, displayName: identity.display_name },
+      session: { active: true, id: session.id, expiresAt: session.expires_at },
+    });
+    return;
+  }
+  res.redirect(303, '/review-room');
+});
+
 reviewRoomRoutes.post('/review-room/api/session/logout', async (req: Request, res: Response) => {
   const secret = getReviewRoomSessionCookie(req);
   await storeRevokeReviewRoomSession(secret);
   clearReviewRoomSessionCookie(req, res);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ success: true });
+});
+
+reviewRoomRoutes.delete('/review-room/api/sessions/:sessionId', async (req: Request, res: Response) => {
+  const session = await getReviewRoomSession(req);
+  if (!session) {
+    res.status(401).json({ success: false, code: 'SESSION_REQUIRED', error: 'A Review Room session is required.' });
+    return;
+  }
+  const sessionId = typeof req.params.sessionId === 'string' ? req.params.sessionId.trim() : '';
+  if (!sessionId) {
+    res.status(400).json({ success: false, code: 'SESSION_ID_REQUIRED', error: 'Session id is required.' });
+    return;
+  }
+  const revoked = await storeRevokeReviewRoomSessionById({ sessionId, identityId: session.identity_id });
+  if (!revoked) {
+    res.status(404).json({ success: false, code: 'SESSION_NOT_FOUND', error: 'That device session was not found.' });
+    return;
+  }
+  if (sessionId === session.id) clearReviewRoomSessionCookie(req, res);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, sessionId, revoked: true, current: sessionId === session.id });
 });
 
 reviewRoomRoutes.patch('/review-room/api/identity', async (req: Request, res: Response) => {

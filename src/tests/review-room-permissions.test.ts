@@ -186,6 +186,7 @@ async function run(): Promise<void> {
     const sessionIdentity = await readJson<{
       currentIdentity: { id: string; display_name: string };
       session: { active: boolean };
+      sessions: Array<{ id: string; current: boolean; createdAt: string; lastSeenAt: string; expiresAt: string }>;
     }>(await fetch(`${base}/review-room/api/identity`, {
       headers: {
         ...CLIENT_HEADERS,
@@ -195,6 +196,101 @@ async function run(): Promise<void> {
     }));
     assert(sessionIdentity.currentIdentity.id === 'session-sam', 'Expected session identity to override a legacy identity header');
     assert(sessionIdentity.session.active === true, 'Expected identity endpoint to report the active session');
+    assert(sessionIdentity.sessions.length === 1, 'Expected identity endpoint to list the active browser session');
+    assert(sessionIdentity.sessions[0]?.current === true, 'Expected session list to mark the current browser session');
+    assert(typeof sessionIdentity.sessions[0]?.createdAt === 'string', 'Expected session creation metadata');
+    assert(typeof sessionIdentity.sessions[0]?.lastSeenAt === 'string', 'Expected session last-used metadata');
+
+    const firstEnrollment = await readJson<{
+      enrollmentPath: string;
+      enrollmentExpiresAt: string;
+    }>(await postJson(base, '/review-room/api/session/enrollments', {}, { Cookie: sessionCookie }));
+    assert(firstEnrollment.enrollmentPath.includes('/review-room/session/enroll?enroll='), 'Expected manual device enrollment link');
+    assert(typeof firstEnrollment.enrollmentExpiresAt === 'string', 'Expected enrollment expiry metadata');
+
+    const replacementEnrollment = await readJson<{ enrollmentPath: string }>(
+      await postJson(base, '/review-room/api/session/enrollments', {}, { Cookie: sessionCookie }),
+    );
+    assert(
+      replacementEnrollment.enrollmentPath !== firstEnrollment.enrollmentPath,
+      'Expected a replacement enrollment to mint a new single-use secret',
+    );
+    const revokedEnrollment = await fetch(`${base}${firstEnrollment.enrollmentPath}`, {
+      headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
+    });
+    assert(revokedEnrollment.status === 410, `Expected revoked enrollment link status 410, got ${revokedEnrollment.status}`);
+    assert(
+      (await revokedEnrollment.text()).includes('was revoked'),
+      'Expected revoked enrollment link to explain the terminal state',
+    );
+
+    const alreadyEnrolled = await fetch(`${base}${replacementEnrollment.enrollmentPath}`, {
+      headers: { ...CLIENT_HEADERS, Accept: 'application/json', Cookie: sessionCookie },
+    });
+    assert(alreadyEnrolled.status === 409, `Expected already-enrolled status 409, got ${alreadyEnrolled.status}`);
+    const alreadyEnrolledPayload = await alreadyEnrolled.json() as { code?: string };
+    assert(alreadyEnrolledPayload.code === 'ALREADY_ENROLLED', 'Expected already-enrolled code');
+
+    const enrolledSecondBrowser = await fetch(`${base}${replacementEnrollment.enrollmentPath}`, {
+      headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
+    });
+    const enrolledPayload = await readJson<{
+      identity: { id: string; displayName: string };
+      session: { active: boolean; id: string };
+    }>(enrolledSecondBrowser);
+    assert(enrolledPayload.identity.id === 'session-sam', 'Expected enrollment to carry the same stable identity');
+    assert(enrolledPayload.session.active === true, 'Expected enrollment to create a normal session');
+    const secondSessionCookie = enrolledSecondBrowser.headers.get('set-cookie')?.split(';', 1)[0] ?? '';
+    assert(
+      secondSessionCookie.startsWith('proof_review_room_session=') && secondSessionCookie !== sessionCookie,
+      'Expected independent browser to receive its own session cookie',
+    );
+
+    const replayedEnrollment = await fetch(`${base}${replacementEnrollment.enrollmentPath}`, {
+      headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
+    });
+    assert(replayedEnrollment.status === 410, `Expected enrollment replay status 410, got ${replayedEnrollment.status}`);
+    assert(
+      (await replayedEnrollment.text()).includes('already used'),
+      'Expected replayed enrollment link to explain the terminal state',
+    );
+
+    const { storeCreateReviewRoomDeviceEnrollment } = await import('../../server/review-room-store.js');
+    const expired = await storeCreateReviewRoomDeviceEnrollment({
+      identityId: 'session-sam',
+      createdBySessionId: sessionIdentity.sessions[0]!.id,
+      ttlMs: -1000,
+    });
+    const expiredResponse = await fetch(`${base}/review-room/session/enroll?enroll=${encodeURIComponent(expired.secret)}`, {
+      headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
+    });
+    assert(expiredResponse.status === 410, `Expected expired enrollment status 410, got ${expiredResponse.status}`);
+    assert((await expiredResponse.text()).includes('has expired'), 'Expected expired enrollment message');
+
+    const sessionsAfterEnrollment = await readJson<{
+      sessions: Array<{ id: string; current: boolean }>;
+    }>(await fetch(`${base}/review-room/api/identity`, {
+      headers: { ...CLIENT_HEADERS, Cookie: sessionCookie },
+    }));
+    assert(sessionsAfterEnrollment.sessions.length === 2, 'Expected both browser sessions to be listed for the identity');
+    assert(
+      sessionsAfterEnrollment.sessions.some((listed) => listed.id === enrolledPayload.session.id && listed.current === false),
+      'Expected session list to include the independently enrolled browser',
+    );
+
+    const revokedSecondSession = await fetch(`${base}/review-room/api/sessions/${encodeURIComponent(enrolledPayload.session.id)}`, {
+      method: 'DELETE',
+      headers: { ...CLIENT_HEADERS, Cookie: sessionCookie },
+    });
+    assert(revokedSecondSession.ok, `Expected individual session revocation success, got ${revokedSecondSession.status}`);
+    const secondBrowserAfterRevoke = await readJson<{
+      currentIdentity: { id: string };
+      session: { active: boolean };
+    }>(await fetch(`${base}/review-room/api/identity`, {
+      headers: { ...CLIENT_HEADERS, Cookie: secondSessionCookie },
+    }));
+    assert(secondBrowserAfterRevoke.currentIdentity.id === 'local-human', 'Expected revoked second browser to lose the enrolled identity');
+    assert(secondBrowserAfterRevoke.session.active === false, 'Expected revoked second browser session to be inactive');
 
     const renamedIdentity = await readJson<{
       currentIdentity: { id: string; display_name: string };

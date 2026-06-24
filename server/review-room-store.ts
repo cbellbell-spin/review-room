@@ -236,6 +236,17 @@ const REVIEW_ROOM_TABLE_DDL = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_review_room_identity_invites_identity ON review_room_identity_invitations(identity_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS review_room_device_enrollments (
+    id TEXT PRIMARY KEY,
+    identity_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_by_session_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    accepted_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_review_room_device_enrollments_identity ON review_room_device_enrollments(identity_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS review_room_sessions (
     id TEXT PRIMARY KEY,
     identity_id TEXT NOT NULL,
@@ -470,6 +481,16 @@ export type ReviewRoomSession = {
   last_seen_at: string;
 };
 
+export type ReviewRoomDeviceEnrollment = {
+  id: string;
+  identity_id: string;
+  created_by_session_id: string;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+};
+
 export async function storeCreateReviewRoomIdentityInvitation(input: {
   identityId: string;
   reviewRoomDocumentId: string;
@@ -532,6 +553,70 @@ export async function storeConsumeReviewRoomIdentityInvitation(secret: string): 
   `, [now, hashSecret(secret), now]);
 }
 
+export async function storeCreateReviewRoomDeviceEnrollment(input: {
+  identityId: string;
+  createdBySessionId: string;
+  ttlMs?: number;
+}): Promise<{ enrollment: ReviewRoomDeviceEnrollment; secret: string }> {
+  const now = new Date();
+  const id = randomUUID();
+  const secret = `${randomUUID()}${randomUUID()}`.replace(/-/g, '');
+  const expiresAt = new Date(now.getTime() + (input.ttlMs ?? 15 * 60 * 1000)).toISOString();
+  const db = await ensureStore();
+  await db.batch([
+    {
+      sql: `UPDATE review_room_device_enrollments
+            SET revoked_at = ?
+            WHERE identity_id = ?
+              AND accepted_at IS NULL
+              AND revoked_at IS NULL`,
+      args: [now.toISOString(), input.identityId],
+    },
+    {
+      sql: `INSERT INTO review_room_device_enrollments (
+              id, identity_id, token_hash, created_by_session_id,
+              expires_at, accepted_at, revoked_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`,
+      args: [
+        id,
+        input.identityId,
+        hashSecret(secret),
+        input.createdBySessionId,
+        expiresAt,
+        now.toISOString(),
+      ],
+    },
+  ]);
+  const enrollment = await execute<ReviewRoomDeviceEnrollment>(`
+    SELECT id, identity_id, created_by_session_id, expires_at, accepted_at, revoked_at, created_at
+    FROM review_room_device_enrollments WHERE id = ? LIMIT 1
+  `, [id]);
+  if (!enrollment) throw new Error('Review Room device enrollment was not persisted.');
+  return { enrollment, secret };
+}
+
+export async function storeGetReviewRoomDeviceEnrollmentBySecret(secret: string): Promise<ReviewRoomDeviceEnrollment | null> {
+  const trimmed = secret.trim();
+  if (!trimmed) return null;
+  return execute<ReviewRoomDeviceEnrollment>(`
+    SELECT id, identity_id, created_by_session_id, expires_at, accepted_at, revoked_at, created_at
+    FROM review_room_device_enrollments WHERE token_hash = ? LIMIT 1
+  `, [hashSecret(trimmed)]);
+}
+
+export async function storeConsumeReviewRoomDeviceEnrollment(secret: string): Promise<ReviewRoomDeviceEnrollment | null> {
+  const now = new Date().toISOString();
+  return execute<ReviewRoomDeviceEnrollment>(`
+    UPDATE review_room_device_enrollments
+    SET accepted_at = ?
+    WHERE token_hash = ?
+      AND accepted_at IS NULL
+      AND revoked_at IS NULL
+      AND expires_at > ?
+    RETURNING id, identity_id, created_by_session_id, expires_at, accepted_at, revoked_at, created_at
+  `, [now, hashSecret(secret), now]);
+}
+
 export async function storeCreateReviewRoomSession(identityId: string, ttlMs: number = 30 * 24 * 60 * 60 * 1000): Promise<{
   session: ReviewRoomSession;
   secret: string;
@@ -559,11 +644,21 @@ export async function storeResolveReviewRoomSession(secret: string | null | unde
   if (!trimmed) return null;
   const now = new Date().toISOString();
   return execute<ReviewRoomSession>(`
+    UPDATE review_room_sessions
+    SET last_seen_at = ?
+    WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
+    RETURNING id, identity_id, expires_at, revoked_at, created_at, last_seen_at
+  `, [now, hashSecret(trimmed), now]);
+}
+
+export async function storeListReviewRoomSessions(identityId: string): Promise<ReviewRoomSession[]> {
+  const now = new Date().toISOString();
+  return executeAll<ReviewRoomSession>(`
     SELECT id, identity_id, expires_at, revoked_at, created_at, last_seen_at
     FROM review_room_sessions
-    WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
-    LIMIT 1
-  `, [hashSecret(trimmed), now]);
+    WHERE identity_id = ? AND revoked_at IS NULL AND expires_at > ?
+    ORDER BY last_seen_at DESC, created_at DESC
+  `, [identityId, now]);
 }
 
 export async function storeRevokeReviewRoomSession(secret: string | null | undefined): Promise<boolean> {
@@ -572,6 +667,19 @@ export async function storeRevokeReviewRoomSession(secret: string | null | undef
   const result = await (await ensureStore()).execute({
     sql: `UPDATE review_room_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`,
     args: [new Date().toISOString(), hashSecret(trimmed)],
+  });
+  return result.rowsAffected > 0;
+}
+
+export async function storeRevokeReviewRoomSessionById(input: {
+  sessionId: string;
+  identityId: string;
+}): Promise<boolean> {
+  const result = await (await ensureStore()).execute({
+    sql: `UPDATE review_room_sessions
+          SET revoked_at = ?
+          WHERE id = ? AND identity_id = ? AND revoked_at IS NULL`,
+    args: [new Date().toISOString(), input.sessionId, input.identityId],
   });
   return result.rowsAffected > 0;
 }

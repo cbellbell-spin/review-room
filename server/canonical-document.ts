@@ -1594,7 +1594,7 @@ export async function repairCanonicalProjection(
         }
       }
     }
-    const yStateVersion = getLatestYStateVersion(slug);
+    const yStateVersion = Math.max(getLatestYStateVersion(slug), doc.y_state_version ?? 0);
     const replaced = replaceDocumentProjection(slug, derived.markdown, derived.marks, yStateVersion);
     if (!replaced) {
       return { ok: false, status: 500, code: 'REPAIR_RELOAD_FAILED', error: 'Projection missing after projection repair' };

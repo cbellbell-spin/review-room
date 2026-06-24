@@ -4164,6 +4164,23 @@ async function handleAcceptSuggestionRoute(req: Request, res: Response): Promise
 agentRoutes.post('/:slug/marks/accept', handleAcceptSuggestionRoute);
 agentRoutes.post('/marks/accept', handleAcceptSuggestionRoute);
 
+function sendMarkMutationMethodMismatch(req: Request, res: Response, action: 'accept' | 'reject'): void {
+  const slug = getSlug(req);
+  const expectedPath = slug ? `/api/agent/${slug}/marks/${action}` : `/api/agent/:slug/marks/${action}`;
+  res.set('Allow', 'POST').status(405).json({
+    success: false,
+    code: 'MUTATION_METHOD_REQUIRED',
+    error: `Suggestion ${action} requires POST ${expectedPath}`,
+    expected: {
+      method: 'POST',
+      path: expectedPath,
+    },
+  });
+}
+
+agentRoutes.all('/:slug/marks/accept', (req: Request, res: Response) => sendMarkMutationMethodMismatch(req, res, 'accept'));
+agentRoutes.all('/marks/accept', (req: Request, res: Response) => sendMarkMutationMethodMismatch(req, res, 'accept'));
+
 async function handleRejectSuggestionRoute(req: Request, res: Response): Promise<void> {
   const mutationRoute = 'POST /marks/reject';
   const slug = getSlug(req);
@@ -4205,6 +4222,8 @@ async function handleRejectSuggestionRoute(req: Request, res: Response): Promise
 
 agentRoutes.post('/:slug/marks/reject', handleRejectSuggestionRoute);
 agentRoutes.post('/marks/reject', handleRejectSuggestionRoute);
+agentRoutes.all('/:slug/marks/reject', (req: Request, res: Response) => sendMarkMutationMethodMismatch(req, res, 'reject'));
+agentRoutes.all('/marks/reject', (req: Request, res: Response) => sendMarkMutationMethodMismatch(req, res, 'reject'));
 
 agentRoutes.post('/:slug/marks/reply', async (req: Request, res: Response) => {
   const mutationRoute = 'POST /marks/reply';

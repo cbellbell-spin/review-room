@@ -3021,9 +3021,17 @@ class ProofEditorImpl implements ProofEditor {
       || event.type.startsWith('suggestion.');
   }
 
+  private isSuggestionDecisionPendingShareEvent(event: SharePendingEvent): boolean {
+    return event.type === 'suggestion.accepted'
+      || event.type === 'suggestion.rejected';
+  }
+
   private handlePendingShareEvent(event: SharePendingEvent): void {
     if (this.isMarksPendingShareEvent(event)) {
       this.scheduleShareMarksRefresh();
+      if (this.isSuggestionDecisionPendingShareEvent(event) && this.collabEnabled) {
+        void this.refreshCollabSessionAndReconnect(this.shouldPreservePendingLocalCollabState());
+      }
       return;
     }
     if (!this.shouldForceCollabRefreshFromPendingEvent(event)) return;
@@ -4356,6 +4364,13 @@ class ProofEditorImpl implements ProofEditor {
         const payload = await response.json() as {
           currentIdentity?: { id?: string; display_name?: string; displayName?: string };
           session?: { active?: boolean; expiresAt?: string };
+          sessions?: Array<{
+            id?: string;
+            current?: boolean;
+            createdAt?: string;
+            lastSeenAt?: string;
+            expiresAt?: string;
+          }>;
           error?: string;
         };
         if (!response.ok) throw new Error(payload.error || 'Could not load profile.');
@@ -4443,9 +4458,129 @@ class ProofEditorImpl implements ProofEditor {
           : 'This document currently identifies you through its collaborator link. A one-time owner invitation can link the same identity across Review Room on this browser.';
         const devices = document.createElement('p');
         devices.style.margin = '0';
-        devices.textContent = 'To use this identity on another device, ask the document owner for a fresh invitation. Account recovery and email delivery are not available yet.';
+        devices.textContent = sessionActive
+          ? 'Create a short-lived one-use enrollment link to use this same identity in another browser. Losing every authenticated device remains a separate recovery decision.'
+          : 'This browser is not session-linked yet. A one-time owner invitation or an already enrolled device can link this identity here.';
         guidance.append(continuity, devices);
         if (sessionActive) {
+          const enrollRow = document.createElement('div');
+          enrollRow.style.cssText = 'display:grid;gap:7px;';
+          const enrollButton = document.createElement('button');
+          enrollButton.type = 'button';
+          enrollButton.textContent = 'Create device enrollment link';
+          enrollButton.style.cssText = 'justify-self:start;border:0;background:rgba(255,255,255,0.12);color:white;padding:8px 11px;border-radius:999px;font:inherit;font-weight:700;cursor:pointer;';
+          const enrollResult = document.createElement('div');
+          enrollResult.style.cssText = 'display:none;gap:6px;padding:9px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;background:rgba(255,255,255,0.06);';
+          enrollButton.onclick = () => {
+            void (async () => {
+              enrollButton.disabled = true;
+              status.textContent = 'Creating enrollment link…';
+              try {
+                const enrollmentResponse = await fetch('/review-room/api/session/enrollments', {
+                  method: 'POST',
+                  headers: this.getReviewRoomIdentityHeaders({ 'Content-Type': 'application/json' }),
+                  body: JSON.stringify({}),
+                });
+                const enrollment = await enrollmentResponse.json() as {
+                  enrollmentPath?: string;
+                  enrollmentExpiresAt?: string;
+                  error?: string;
+                };
+                if (!enrollmentResponse.ok || !enrollment.enrollmentPath) {
+                  throw new Error(enrollment.error || 'Could not create enrollment link.');
+                }
+                const url = this.absoluteReviewRoomOpenUrl(enrollment.enrollmentPath);
+                const expiry = enrollment.enrollmentExpiresAt
+                  ? new Date(enrollment.enrollmentExpiresAt).toLocaleString()
+                  : 'soon';
+                enrollResult.replaceChildren();
+                const copy = document.createElement('button');
+                copy.type = 'button';
+                copy.textContent = 'Copy enrollment link';
+                copy.style.cssText = 'justify-self:start;border:0;background:#f9fafb;color:#111827;padding:7px 10px;border-radius:999px;font:inherit;font-weight:750;cursor:pointer;';
+                copy.onclick = () => {
+                  void (async () => {
+                    const copied = await this.copyTextToClipboard(url);
+                    status.textContent = copied ? 'Enrollment link copied.' : url;
+                  })();
+                };
+                const note = document.createElement('p');
+                note.style.margin = '0';
+                note.textContent = `This link expires ${expiry} and can be used once. Creating another link revokes the previous unused one.`;
+                enrollResult.style.display = 'grid';
+                enrollResult.append(copy, note);
+                const copied = await this.copyTextToClipboard(url);
+                status.textContent = copied ? 'Enrollment link copied.' : 'Enrollment link created.';
+              } catch (error) {
+                status.textContent = error instanceof Error ? error.message : String(error);
+                status.style.color = '#fecaca';
+              } finally {
+                enrollButton.disabled = false;
+              }
+            })();
+          };
+          enrollRow.append(enrollButton, enrollResult);
+          guidance.appendChild(enrollRow);
+
+          const sessionList = Array.isArray(payload.sessions) ? payload.sessions : [];
+          if (sessionList.length > 0) {
+            const sessionSection = document.createElement('div');
+            sessionSection.style.cssText = 'display:grid;gap:8px;padding-top:8px;';
+            const sessionTitle = document.createElement('div');
+            sessionTitle.textContent = 'Active devices';
+            sessionTitle.style.cssText = 'font-weight:750;color:rgba(255,255,255,0.86);';
+            const list = document.createElement('div');
+            list.style.cssText = 'display:grid;gap:7px;';
+            for (const deviceSession of sessionList) {
+              if (!deviceSession.id) continue;
+              const row = document.createElement('div');
+              row.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px;border:1px solid rgba(255,255,255,0.10);border-radius:8px;background:rgba(255,255,255,0.04);';
+              const details = document.createElement('div');
+              details.style.cssText = 'display:grid;gap:2px;min-width:0;';
+              const labelText = deviceSession.current ? 'This browser' : 'Enrolled browser';
+              const label = document.createElement('div');
+              label.textContent = labelText;
+              label.style.cssText = 'font-weight:700;color:rgba(255,255,255,0.86);';
+              const seen = document.createElement('div');
+              const lastSeen = deviceSession.lastSeenAt ? new Date(deviceSession.lastSeenAt).toLocaleString() : 'Unknown';
+              const createdAt = deviceSession.createdAt ? new Date(deviceSession.createdAt).toLocaleString() : 'unknown';
+              seen.textContent = `Last used ${lastSeen}; created ${createdAt}`;
+              seen.style.cssText = 'color:rgba(255,255,255,0.58);overflow-wrap:anywhere;';
+              details.append(label, seen);
+              const revoke = document.createElement('button');
+              revoke.type = 'button';
+              revoke.textContent = deviceSession.current ? 'Sign out' : 'Revoke';
+              revoke.style.cssText = 'border:0;background:transparent;color:#fca5a5;padding:4px 0;font:inherit;font-weight:750;cursor:pointer;';
+              revoke.onclick = () => {
+                void (async () => {
+                  revoke.disabled = true;
+                  status.textContent = deviceSession.current ? 'Signing out…' : 'Revoking device…';
+                  try {
+                    const revokeResponse = await fetch(`/review-room/api/sessions/${encodeURIComponent(deviceSession.id || '')}`, {
+                      method: 'DELETE',
+                      headers: this.getReviewRoomIdentityHeaders(),
+                    });
+                    if (!revokeResponse.ok) throw new Error('Could not revoke that device session.');
+                    if (deviceSession.current) {
+                      window.location.href = '/review-room';
+                    } else {
+                      cleanup();
+                      this.openReviewRoomProfilePanel();
+                    }
+                  } catch (error) {
+                    status.textContent = error instanceof Error ? error.message : String(error);
+                    status.style.color = '#fecaca';
+                    revoke.disabled = false;
+                  }
+                })();
+              };
+              row.append(details, revoke);
+              list.appendChild(row);
+            }
+            sessionSection.append(sessionTitle, list);
+            guidance.appendChild(sessionSection);
+          }
+
           const signout = document.createElement('button');
           signout.type = 'button';
           signout.textContent = 'Sign out this device';

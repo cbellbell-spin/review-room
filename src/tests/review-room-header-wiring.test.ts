@@ -68,8 +68,11 @@ assert(
     && editorSource.includes("method: 'PATCH'")
     && editorSource.includes("fetch('/review-room/api/session/logout'")
     && editorSource.includes('shared document links can still grant document access')
-    && editorSource.includes('Account recovery and email delivery are not available yet.'),
-  'Expected Review Room document chrome to expose identity continuity, rename, and current-device sign-out controls',
+    && editorSource.includes("fetch('/review-room/api/session/enrollments'")
+    && editorSource.includes('Create device enrollment link')
+    && editorSource.includes('Losing every authenticated device remains a separate recovery decision.')
+    && editorSource.includes("fetch(`/review-room/api/sessions/${encodeURIComponent(deviceSession.id || '')}`"),
+  'Expected Review Room document chrome to expose identity continuity, rename, device enrollment, and session revocation controls',
 );
 assert(
   reviewRoomRoutesSource.includes('id="profile-button"')
@@ -77,8 +80,11 @@ assert(
     && reviewRoomRoutesSource.includes("profileForm.addEventListener('submit'")
     && reviewRoomRoutesSource.includes("profileSignout.addEventListener('click'")
     && reviewRoomRoutesSource.includes('shared document links can still grant document access')
-    && reviewRoomRoutesSource.includes('Account recovery and email delivery are not available yet.'),
-  'Expected the Review Room dashboard to expose the same identity continuity controls and guidance',
+    && reviewRoomRoutesSource.includes("profileEnrollment.addEventListener('click'")
+    && reviewRoomRoutesSource.includes('/review-room/api/session/enrollments')
+    && reviewRoomRoutesSource.includes('/review-room/api/sessions/')
+    && reviewRoomRoutesSource.includes('Losing every authenticated device remains a separate recovery decision.'),
+  'Expected the Review Room dashboard to expose the same identity continuity, enrollment, and device revocation controls',
 );
 assert(
   reviewRoomRoutesSource.includes('@media (max-width: 560px)')
@@ -353,6 +359,14 @@ assert(
     && editorSource.includes('collabClient.lastAuthenticationFailureReason')
     && editorSource.includes('this.refreshCollabSessionAndReconnect(this.shouldPreservePendingLocalCollabState())'),
   'Expected expired collab session tokens to trigger a state-preserving session refresh/reconnect',
+);
+assert(
+  editorSource.includes('private isSuggestionDecisionPendingShareEvent(event: SharePendingEvent): boolean')
+    && editorSource.includes("event.type === 'suggestion.accepted'")
+    && editorSource.includes("|| event.type === 'suggestion.rejected'")
+    && editorSource.includes('if (this.isSuggestionDecisionPendingShareEvent(event) && this.collabEnabled) {')
+    && editorSource.includes('void this.refreshCollabSessionAndReconnect(this.shouldPreservePendingLocalCollabState());'),
+  'Expected accepted/rejected suggestion events to refresh the live collab session after access-epoch rotation',
 );
 assert(
   !editorSource.includes('if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) return;\n    if (this.hasRecentLocalEditorInput()) return;')

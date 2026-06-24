@@ -2100,6 +2100,28 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(!('viewers' in payload), 'Expected viewers to be omitted from public info');
     });
 
+    await test('D2: GET marks accept/reject routes return method contract errors', async () => {
+      const cases = [
+        `/api/agent/${slug}/marks/accept`,
+        `/api/agent/${slug}/marks/reject`,
+        `/documents/${slug}/marks/accept`,
+        `/documents/${slug}/marks/reject`,
+      ];
+      for (const route of cases) {
+        const response = await get(baseUrl, route, { 'x-share-token': accessToken });
+        assert(response.status === 405, `Expected ${route} to return 405, got ${response.status}`);
+        assertEqual(response.headers.get('allow'), 'POST', `Expected ${route} to advertise POST`);
+        const payload = await response.json();
+        assertEqual(payload.success, false, `Expected ${route} to fail`);
+        assertEqual(payload.code, 'MUTATION_METHOD_REQUIRED', `Expected ${route} method contract code`);
+        assert(
+          typeof payload.error === 'string' && !payload.error.includes('Unsupported document operation'),
+          `Expected ${route} to avoid document-engine fallback errors`,
+        );
+        assertEqual(payload.expected?.method, 'POST', `Expected ${route} to describe POST`);
+      }
+    });
+
     await test('D2: agent accept suggestion updates markdown content (not metadata-only)', async () => {
       const suggestionResponse = await post(baseUrl, `/api/agent/${slug}/marks/suggest-replace`, {
         quote: 'Hello',
