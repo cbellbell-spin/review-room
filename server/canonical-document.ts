@@ -13,6 +13,7 @@ import {
   getAccumulatedYUpdateBytesAfter,
   getLatestYSnapshot,
   getLatestYStateVersion,
+  listMarkTombstonesForDocument,
   pruneObsoleteYHistory,
   getYUpdatesAtOrAfter,
   getYUpdatesAfter,
@@ -1569,9 +1570,23 @@ export async function repairCanonicalProjection(
       ? projectionBeforeRepair.health_reason
       : null;
     const derived = await deriveProjectionFromCanonicalDoc(handle.ydoc);
+    const latestDecisionIsDurable = listMarkTombstonesForDocument(slug).some((tombstone) =>
+      (tombstone.status === 'accepted' || tombstone.status === 'rejected')
+      && tombstone.resolved_revision === doc.revision);
+    const docMarks = parseMarks(doc.marks);
+    const canonicalRowProjectionIsAuthoritative =
+      latestDecisionIsDurable
+      && (
+        stripEphemeralCollabSpans(doc.markdown ?? '') !== derived.markdown
+        || stableStringify(docMarks) !== stableStringify(derived.marks)
+      );
+    const projectionMarkdown = canonicalRowProjectionIsAuthoritative
+      ? stripEphemeralCollabSpans(doc.markdown ?? '')
+      : derived.markdown;
+    const projectionMarks = canonicalRowProjectionIsAuthoritative ? docMarks : derived.marks;
     const enforceProjectionGuard = options?.enforceProjectionGuard !== false;
     if (enforceProjectionGuard) {
-      const safety = evaluateProjectionSafety(stripEphemeralCollabSpans(doc.markdown ?? ''), derived.markdown, handle.ydoc);
+      const safety = evaluateProjectionSafety(stripEphemeralCollabSpans(doc.markdown ?? ''), projectionMarkdown, handle.ydoc);
       if (!safety.safe) {
         const allowGrowth =
           options?.allowAuthoritativeGrowth === true
@@ -1595,14 +1610,14 @@ export async function repairCanonicalProjection(
       }
     }
     const yStateVersion = Math.max(getLatestYStateVersion(slug), doc.y_state_version ?? 0);
-    const replaced = replaceDocumentProjection(slug, derived.markdown, derived.marks, yStateVersion);
+    const replaced = replaceDocumentProjection(slug, projectionMarkdown, projectionMarks, yStateVersion);
     if (!replaced) {
       return { ok: false, status: 500, code: 'REPAIR_RELOAD_FAILED', error: 'Projection missing after projection repair' };
     }
     persistCanonicalProjectionRow(
       slug,
-      derived.markdown,
-      derived.marks,
+      projectionMarkdown,
+      projectionMarks,
       doc.revision,
       yStateVersion,
       doc.updated_at,
@@ -1613,12 +1628,12 @@ export async function repairCanonicalProjection(
     if (!updated) {
       return { ok: false, status: 500, code: 'REPAIR_RELOAD_FAILED', error: 'Document missing after projection repair' };
     }
-    await rebuildDocumentBlocks(updated, derived.markdown, updated.revision);
+    await rebuildDocumentBlocks(updated, projectionMarkdown, updated.revision);
     refreshSnapshotForSlug(slug);
     return {
       ok: true,
       document: updated,
-      markdown: derived.markdown,
+      markdown: projectionMarkdown,
       yStateVersion,
     };
   } catch (error) {

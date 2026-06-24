@@ -68,8 +68,19 @@ async function run(): Promise<void> {
       SET y_state_version = 1
       WHERE slug = ?
     `).run(finalizedSlug);
-    db.replaceDocumentProjection(finalizedSlug, finalizedMarkdown, {}, 1);
+    db.replaceDocumentProjection(finalizedSlug, staleLiveMarkdown, {}, 1);
     db.upsertMarkTombstone(finalizedSlug, 'accepted-old-generation', 'accepted', 1);
+
+    const finalizedRepair = await canonical.repairCanonicalProjection(finalizedSlug, {
+      enforceProjectionGuard: true,
+      allowAuthoritativeGrowth: true,
+    });
+    assert(finalizedRepair.ok === true, `Expected finalized repair success, got ${finalizedRepair.ok === false ? finalizedRepair.code : 'ok'}`);
+    assert(finalizedRepair.markdown === finalizedMarkdown, 'Expected repair to materialize the durable finalized canonical row');
+    assert(
+      db.getDocumentProjectionBySlug(finalizedSlug)?.markdown === finalizedMarkdown,
+      'Expected finalized repair to update the projection from the canonical row instead of stale Yjs',
+    );
 
     const finalizedState = await documentEngine.executeDocumentOperationAsync(finalizedSlug, 'GET', '/state');
     assert(finalizedState.status === 200, `Expected finalized state read to succeed, got ${finalizedState.status}`);
