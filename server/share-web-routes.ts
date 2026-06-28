@@ -358,6 +358,35 @@ function renderUnavailableHtml(preview: SharePreviewModel, message: string): str
 </html>`;
 }
 
+function buildUnavailableShareCopy(shareState: string): { code: string; error: string; htmlMessage: string } {
+  switch (shareState) {
+    case 'PAUSED':
+      return {
+        code: 'DOCUMENT_PAUSED',
+        error: 'Document is paused',
+        htmlMessage: 'This shared document is paused. Ask the owner to resume access, or open it with an owner link.',
+      };
+    case 'REVOKED':
+      return {
+        code: 'DOCUMENT_REVOKED',
+        error: 'Document access has been revoked',
+        htmlMessage: 'Access to this shared document has been revoked. Ask the owner for a new link.',
+      };
+    case 'DELETED':
+      return {
+        code: 'DOCUMENT_DELETED',
+        error: 'Document has been deleted',
+        htmlMessage: 'This document has been deleted.',
+      };
+    default:
+      return {
+        code: 'DOCUMENT_UNAVAILABLE',
+        error: 'Document unavailable',
+        htmlMessage: 'This shared document is not currently accessible.',
+      };
+  }
+}
+
 shareWebRoutes.get('/og/share/:slug.png', async (req: Request, res: Response) => {
   const slug = Array.isArray(req.params.slug) ? (req.params.slug[0] ?? '') : (req.params.slug ?? '');
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
@@ -428,6 +457,7 @@ shareWebRoutes.get('/d/:slug', async (req: Request, res: Response) => {
     const role = roleFromToken ?? 'editor';
     const capabilities = deriveShareCapabilities(role, doc.share_state);
     const status = doc.share_state === 'DELETED' ? 410 : 404;
+    const unavailable = buildUnavailableShareCopy(doc.share_state);
     const preview = buildSharePreviewModel({
       slug,
       origin,
@@ -446,12 +476,13 @@ shareWebRoutes.get('/d/:slug', async (req: Request, res: Response) => {
         shareState: doc.share_state,
         role,
         capabilities,
-        error: 'Document unavailable',
+        code: unavailable.code,
+        error: unavailable.error,
       });
       return;
     }
     if (doc.share_state === 'DELETED') {
-      res.status(status).type('html').send(renderUnavailableHtml(preview, 'This document has been deleted.'));
+      res.status(status).type('html').send(renderUnavailableHtml(preview, unavailable.htmlMessage));
       return;
     }
     const snapshot = slug ? getSnapshotHtml(slug) : null;
@@ -467,7 +498,7 @@ shareWebRoutes.get('/d/:slug', async (req: Request, res: Response) => {
       res.redirect(302, publicUrl);
       return;
     }
-    res.status(status).type('html').send(renderUnavailableHtml(preview, 'This shared document is not currently accessible.'));
+    res.status(status).type('html').send(renderUnavailableHtml(preview, unavailable.htmlMessage));
     return;
   }
 

@@ -1993,7 +1993,7 @@ export function buildHostedOpenContextBody(input: {
       slug: doc.slug,
       docId: doc.doc_id,
       title: doc.title,
-      markdown: doc.markdown,
+      markdown: stripAllProofSpanTags(doc.markdown),
       marks: parseMarks(doc.marks),
       shareState: doc.share_state,
       active: doc.share_state === 'ACTIVE',

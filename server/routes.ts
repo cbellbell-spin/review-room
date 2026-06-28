@@ -123,6 +123,7 @@ import {
   storeUpdateReviewRoomDocumentTitleByProofSlug,
 } from './review-room-store.js';
 import { safeCreateAssignmentTasksFromCommentMentions } from './mention-tasks.js';
+import { stripProofSpanTags } from './proof-span-strip.js';
 
 export const apiRoutes = Router();
 
@@ -2460,7 +2461,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
         slug: doc.slug,
         docId: doc.doc_id,
         title: doc.title,
-        markdown: doc.markdown,
+        markdown: stripProofSpanTags(doc.markdown),
         marks: parseJson(doc.marks),
         shareState: doc.share_state,
         active: doc.share_state === 'ACTIVE',
@@ -2495,7 +2496,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
       slug: doc.slug,
       docId: doc.doc_id,
       title: doc.title,
-      markdown: doc.markdown,
+      markdown: stripProofSpanTags(doc.markdown),
       marks: parseJson(doc.marks),
       shareState: doc.share_state,
       // Legacy compatibility for <=0.28 clients.

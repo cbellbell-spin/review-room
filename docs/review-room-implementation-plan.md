@@ -76,6 +76,11 @@ These observations are recorded for a later UX slice and do not block the curren
 - The document controls were reverted from the fixed Review Room bar at the top back to the floating island. Treat the floating island as the current implementation state; do not assume the earlier top-bar consolidation is still the active direction.
 - The editability and access controls on shared Review Room documents are unclear. A later pass should make the visitor's current access explicit, distinguish document editability from sharing/member management, and make owner actions for changing or revoking access understandable.
 
+### Deferred Import UX (Non-P0)
+
+- Bug: the `Choose File` button in `Create or Import File` does not open the macOS Finder file picker. A later import-UX slice should trace the button-to-file-input activation path and restore the native picker.
+- Feature request: make the `Create or Import File` area a file drop target so a user can drag a supported file into Review Room to import it. The drop path should share validation, errors, and import behavior with `Choose File`.
+
 ## Phase 2 Permissions Runway
 
 Goal: make the owner-plus-collaborator flow real without reopening Phase 1.5 cockpit polish.
@@ -123,9 +128,17 @@ Identity continuity UI completed on June 20, 2026:
 - Document authority, stable mark identity, role resolution, and live-collab transport remain unchanged.
 - Focused Playwright coverage pins invitation acceptance, identity visibility, rename persistence across editor/dashboard chrome, current-device sign-out, and 390px overflow behavior.
 
+Additional-device enrollment completed on June 24, 2026:
+
+- Authenticated users can create a short-lived, single-use enrollment link for their own stable identity.
+- Accepting the link in another browser creates a normal Review Room session for that identity without changing document authority or memberships.
+- The profile menu lists active device sessions with creation/last-used metadata and supports individual session revocation.
+- Expired, revoked, replayed, and already-enrolled links return explicit terminal states.
+- Focused coverage lives in `src/tests/review-room-permissions.test.ts` and `src/tests/review-room-header-wiring.test.ts`.
+
 Remaining permissions work:
 
-- Define account recovery and additional-device enrollment before enabling self-service invitation email.
+- Define account recovery after losing every authenticated device before enabling self-service invitation email.
 - Re-check every affordance against capabilities as new controls are added; permission behavior should stay centralized rather than inferred from display state.
 
 ## Phase 2 Fly.io Migration Closeout
@@ -151,7 +164,7 @@ Migration closeout is complete:
 
 ### Completed Slice: Identity Continuity UI
 
-The identity continuity UI is implemented and verified as of June 20, 2026. Account recovery, additional-device enrollment without a fresh owner invitation, and email delivery remain intentionally deferred.
+The identity continuity UI is implemented and verified as of June 20, 2026. Account recovery and email delivery remain intentionally deferred.
 
 ### Removed Experiment: Provider-Bound Agent Review
 
@@ -228,18 +241,21 @@ Shipped implementation notes:
 
 Out of scope: account recovery, email invitation delivery, provider integrations, and control-placement redesign.
 
-### Recommended Next Slice: Additional-Device Enrollment
+### Completed Slice: Additional-Device Enrollment
 
-Goal: let an already authenticated person carry the same stable Review Room identity to another browser without asking a document owner to issue a new collaborator invitation.
+Additional-device enrollment is implemented and shipped on `main` as of June 24, 2026. It lets an authenticated browser create a one-use enrollment link, establishes the same stable identity on a second browser, lists active device sessions, and supports session revocation. Recovery after losing every authenticated device remains a separate product/security decision.
 
-- Let an authenticated browser create a short-lived, single-use enrollment link for its own identity.
-- Accepting the link on a second browser creates a normal server session for the same stable identity; it does not mint new document authority or change memberships.
-- Show the identity's active device sessions with creation/last-used metadata and allow individual session revocation.
-- Make expiry, replay, revocation, and already-enrolled states explicit and cover them with independent-browser tests.
-- Keep the owner-issued collaborator invitation as a fallback and keep manual link delivery; no email provider is required.
-- State clearly that this handles an additional device while one authenticated device remains. Recovery after losing every authenticated device remains a separate product/security decision.
+### Recommended Next Slice: Paused And Unavailable Access Clarity
 
-Out of scope: password accounts, email/SMS delivery, zero-device account recovery, social login, provider integrations, and changes to document-role authority.
+Goal: make deliberate access states feel different from network or collaboration failures.
+
+- Keep paused/revoked/deleted links privacy-preserving: do not reveal hidden document title or content to non-owner access.
+- Make paused, revoked, deleted, missing, and permission-denied states explicit in JSON, HTML fallback pages, and Review Room chrome.
+- Give owner-capable links a clear resume/reopen path when a document is paused.
+- Ensure collaborator, owner, request-scoped agent, and tokenless links each render the right capability state.
+- Cover paused owner access, paused non-owner access, revoked links, and missing slugs with focused route and browser tests.
+
+Out of scope: collaboration/Yjs refactors, provider integrations, account recovery, and broad visual redesign.
 
 ### Workspace And Permissions
 

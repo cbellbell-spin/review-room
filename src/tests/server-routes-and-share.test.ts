@@ -1609,6 +1609,15 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         ownerSecret: pausedOwnerSecret,
       });
       assert(pauseResponse.status === 200, `Expected pause status 200, got ${pauseResponse.status}`);
+      const jsonResponse = await get(baseUrl, `/d/${encodeURIComponent(pausedSlug)}`, {
+        Accept: 'application/json',
+      });
+      assert(jsonResponse.status === 404, `Expected paused JSON response status 404, got ${jsonResponse.status}`);
+      const pausedJson = JSON.parse(jsonResponse.body || '{}') as Record<string, unknown>;
+      assertEqual(pausedJson.shareState, 'PAUSED', 'Expected paused JSON shareState');
+      assertEqual(pausedJson.code, 'DOCUMENT_PAUSED', 'Expected paused JSON error code');
+      assertEqual(pausedJson.error, 'Document is paused', 'Expected paused JSON error message');
+      assertEqual(pausedJson.title, null, 'Expected paused JSON to avoid leaking the document title');
       const response = await get(baseUrl, `/d/${encodeURIComponent(pausedSlug)}`, {
         Accept: 'text/html',
       });
@@ -2003,6 +2012,27 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(response.status === 200, `Expected status 200, got ${response.status}`);
       const payload = await response.json();
       assert(payload?.doc?.slug === slug, 'Expected open-context payload for requested slug');
+    });
+
+    await test('D2: open-context strips embedded Proof spans from markdown payload', async () => {
+      const spanCreate = await post(baseUrl, '/api/documents', {
+        markdown: '# Span open context\n\nBefore <span data-proof="authored" data-proof-id="authored:test" data-by="ai:codex">visible text</span> after.',
+        marks: {},
+        title: 'Span open context',
+      });
+      assert(spanCreate.status === 200, `Expected create status 200, got ${spanCreate.status}`);
+      const spanPayload = await spanCreate.json();
+      const spanSlug = spanPayload.slug as string;
+      const spanToken = spanPayload.accessToken as string;
+      const response = await get(baseUrl, `/api/documents/${encodeURIComponent(spanSlug)}/open-context`, {
+        'x-share-token': spanToken,
+      });
+      assert(response.status === 200, `Expected status 200, got ${response.status}`);
+      const payload = await response.json();
+      const markdown = String(payload?.doc?.markdown ?? '');
+      assertIncludes(markdown, 'Before visible text after.', 'Expected open-context markdown to preserve visible text');
+      assert(!markdown.includes('data-proof'), 'Expected open-context markdown to strip Proof span attributes');
+      assert(!markdown.includes('<span'), 'Expected open-context markdown to strip Proof span tags');
     });
 
     await test('D2: tokenless open-context defaults to editor permissions', async () => {
