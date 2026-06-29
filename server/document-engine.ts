@@ -928,6 +928,65 @@ type QuoteAnchor = {
   strippedEnd: number;
 };
 
+type SourceSpan = {
+  start: number;
+  end: number;
+};
+
+function findWhitespaceNormalizedSourceSpan(source: string, quote: string): SourceSpan | 'ambiguous' | null {
+  const normalizedQuote = normalizeQuote(quote);
+  if (!normalizedQuote) return null;
+
+  const textChars: string[] = [];
+  const startMap: number[] = [];
+  const endMap: number[] = [];
+  let index = 0;
+
+  while (index < source.length) {
+    const ch = source[index];
+    if (/\s/.test(ch)) {
+      const start = index;
+      while (index < source.length && /\s/.test(source[index])) index += 1;
+      if (textChars.length === 0) continue;
+      textChars.push(' ');
+      startMap.push(start);
+      endMap.push(index);
+      continue;
+    }
+
+    textChars.push(ch);
+    startMap.push(index);
+    endMap.push(index + 1);
+    index += 1;
+  }
+
+  if (textChars[textChars.length - 1] === ' ') {
+    textChars.pop();
+    startMap.pop();
+    endMap.pop();
+  }
+
+  const normalizedSource = textChars.join('');
+  const first = normalizedSource.indexOf(normalizedQuote);
+  if (first < 0) return null;
+  if (normalizedSource.indexOf(normalizedQuote, first + 1) >= 0) return 'ambiguous';
+  const endIndex = first + normalizedQuote.length - 1;
+  if (endIndex < first || endIndex >= endMap.length) return null;
+  return {
+    start: startMap[first],
+    end: endMap[endIndex],
+  };
+}
+
+function findRawMarkdownQuoteSpan(markdown: string, quote: string): SourceSpan | 'ambiguous' | null {
+  const exact = markdown.indexOf(quote);
+  if (exact >= 0) {
+    if (markdown.indexOf(quote, exact + 1) >= 0) return 'ambiguous';
+    return { start: exact, end: exact + quote.length };
+  }
+  return findWhitespaceNormalizedSourceSpan(markdown, quote);
+}
+
 function findQuoteAnchorInMarkdown(markdown: string, quote: string): QuoteAnchor | null {
   if (!quote) return null;
   const { stripped, map } = stripMarkdownWithMapping(markdown);
@@ -2728,6 +2787,102 @@ async function updateSuggestionStatusAsync(
     };
   };
 
+  const acceptRawMarkdownSuggestionWithoutHydration = async (): Promise<EngineExecutionResult | null> => {
+    if (
+      status !== 'accepted'
+      || (existing.kind !== 'insert' && existing.kind !== 'delete' && existing.kind !== 'replace')
+    ) {
+      return null;
+    }
+
+    const quote = typeof existing.quote === 'string' ? existing.quote : '';
+    if (!quote.trim()) return null;
+    const span = findRawMarkdownQuoteSpan(doc.markdown, quote);
+    if (!span) return null;
+    if (span === 'ambiguous') {
+      return {
+        status: 409,
+        body: {
+          success: false,
+          code: 'ANCHOR_AMBIGUOUS',
+          error: 'Suggestion anchor is ambiguous in current markdown',
+        },
+      };
+    }
+
+    const content = typeof existing.content === 'string' ? existing.content : '';
+    const nextMarkdown = existing.kind === 'insert'
+      ? `${doc.markdown.slice(0, span.end)}${content}${doc.markdown.slice(span.end)}`
+      : existing.kind === 'delete'
+        ? `${doc.markdown.slice(0, span.start)}${doc.markdown.slice(span.end)}`
+        : `${doc.markdown.slice(0, span.start)}${content}${doc.markdown.slice(span.end)}`;
+    const nextMarks = { ...marks };
+    delete nextMarks[markId];
+    const mutation = await mutateCanonicalDocument({
+      slug,
+      nextMarkdown: applyMutationCleanup('POST /marks/accept', nextMarkdown, [span.start]),
+      nextMarks: nextMarks as unknown as Record<string, unknown>,
+      source: `engine:${status}:${actor}:raw-markdown-fallback`,
+      baseRevision: doc.revision,
+      strictLiveDoc: true,
+      guardPathologicalGrowth: true,
+    });
+    if (!mutation.ok) {
+      return {
+        status: mutation.status,
+        body: {
+          success: false,
+          code: mutation.code,
+          error: mutation.error,
+          ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}),
+        },
+      };
+    }
+
+    const eventId = addDocumentEvent(
+      slug,
+      `suggestion.${status}`,
+      { markId, status, by: actor },
+      actor,
+      mutationContextIdempotencyKey(context),
+      mutationContextIdempotencyRoute(context),
+    );
+    upsertMarkTombstone(slug, markId, status, mutation.document.revision);
+    await recordReviewRoomSuggestionDecisionHistory({
+      slug,
+      markId,
+      status,
+      actor,
+      mark: existing,
+      beforeRevision: doc.revision,
+      afterRevision: mutation.document.revision,
+      eventId,
+    });
+    if ((mutation.document.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
+      bumpDocumentAccessEpoch(slug);
+    }
+    invalidateCollabDocument(slug);
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        eventId,
+        shareState: mutation.document.share_state,
+        updatedAt: mutation.document.updated_at,
+        content: mutation.document.markdown,
+        markdown: mutation.document.markdown,
+        marks: {
+          ...parseMarks(mutation.document.marks),
+          [markId]: {
+            ...existing,
+            status,
+          },
+        },
+      },
+    };
+  };
+
   const structuredResult = await finalizeSuggestionThroughRehydration({
     markdown: doc.markdown,
     marks: marksForRehydration,
@@ -2735,11 +2890,14 @@ async function updateSuggestionStatusAsync(
     action: status === 'accepted' ? 'accept' : 'reject',
   });
   if (!structuredResult.ok) {
-    const visibleInsertAccepted = await acceptInsertedSuggestionWithoutHydration();
-    if (visibleInsertAccepted) return visibleInsertAccepted;
-
     const onlyTargetMarkMissing = structuredResult.missingRequiredMarkIds.length > 0
       && structuredResult.missingRequiredMarkIds.every((missingMarkId) => missingMarkId === markId);
+    const visibleInsertAccepted = await acceptInsertedSuggestionWithoutHydration();
+    if (visibleInsertAccepted) return visibleInsertAccepted;
+    if (structuredResult.code === 'MARK_NOT_HYDRATED' || onlyTargetMarkMissing) {
+      const rawMarkdownAccepted = await acceptRawMarkdownSuggestionWithoutHydration();
+      if (rawMarkdownAccepted) return rawMarkdownAccepted;
+    }
     if (
       status === 'rejected'
       && (structuredResult.code === 'MARK_NOT_HYDRATED' || onlyTargetMarkMissing)

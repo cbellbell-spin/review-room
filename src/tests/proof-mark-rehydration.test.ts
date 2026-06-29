@@ -231,6 +231,56 @@ async function run(): Promise<void> {
       'Expected accepted long quote suggestion.add to use structured finalization',
     );
 
+    const rawMarkdownSectionSlug = `rehydrate-raw-markdown-section-${Math.random().toString(36).slice(2, 10)}`;
+    const rawMarkdownSectionMarkId = 'legacy-raw-markdown-section-replace';
+    const rawMarkdownSection = [
+      '### Recommended Next Slice: Existing Document Opening Clarity',
+      '',
+      'Goal: make every dashboard entry path explain what happened before expanding native-app or sync workflows.',
+      '',
+      '* Distinguish created, imported, and registered documents in the dashboard list and empty/error states.',
+      '',
+      '* Make `Add and open` validate slugs, /d/... links, and optional tokens with clear messages.',
+    ].join('\n');
+    const rawMarkdownSectionQuote = rawMarkdownSection.replace(/\s+/g, ' ').trim();
+    const rawMarkdownSectionReplacement = [
+      '### Implemented Slice: Existing Document Opening Clarity',
+      '',
+      'Goal: make every dashboard entry path explain what happened before expanding native-app or sync workflows.',
+      '',
+      '* Shipped and verified.',
+    ].join('\n');
+    db.createDocument(
+      rawMarkdownSectionSlug,
+      `# Plan\n\n${rawMarkdownSection}\n\n### Workspace And Permissions\n\n* Keep going.`,
+      canonicalizeStoredMarks({
+        [rawMarkdownSectionMarkId]: {
+          kind: 'replace',
+          by: 'ai:test',
+          createdAt,
+          quote: rawMarkdownSectionQuote,
+          content: rawMarkdownSectionReplacement,
+          status: 'pending',
+        } satisfies StoredMark,
+      }),
+      'Raw markdown section fallback accept',
+    );
+
+    const rawMarkdownSectionAccept = await executeDocumentOperationAsync(rawMarkdownSectionSlug, 'POST', '/marks/accept', {
+      markId: rawMarkdownSectionMarkId,
+      by: 'human:test',
+    });
+    assertEqual(
+      rawMarkdownSectionAccept.status,
+      200,
+      `Expected collapsed raw-markdown section accept to succeed, got ${rawMarkdownSectionAccept.status}: ${JSON.stringify(rawMarkdownSectionAccept.body).slice(0, 300)}`,
+    );
+    const rawMarkdownSectionDoc = db.getDocumentBySlug(rawMarkdownSectionSlug);
+    assert(rawMarkdownSectionDoc?.markdown.includes(rawMarkdownSectionReplacement), 'Expected raw Markdown section replacement to be applied');
+    assert(!rawMarkdownSectionDoc?.markdown.includes('Recommended Next Slice'), 'Expected old raw Markdown section to be removed');
+    assert(rawMarkdownSectionDoc?.markdown.includes('### Workspace And Permissions'), 'Expected following section to remain');
+    assert(!(rawMarkdownSectionMarkId in parseStoredMarks(rawMarkdownSectionDoc?.marks)), 'Expected accepted raw Markdown section metadata to be removed');
+
     const inertCommentSlug = `rehydrate-inert-comment-${Math.random().toString(36).slice(2, 10)}`;
     const inertCommentBase = '# Hello there';
     const inertCommentAnchors = buildRelativeAnchors(inertCommentBase, 'Hello');
