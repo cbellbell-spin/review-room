@@ -24,8 +24,8 @@ const BRIDGE_ROUTE_POLICIES: BridgeRoutePolicy[] = [
   { method: 'POST', path: '/marks/resolve', auth: 'bridge-token', required: ['markId'] },
   { method: 'POST', path: '/comments/reply', auth: 'bridge-token', required: ['markId', 'by', 'text'] },
   { method: 'POST', path: '/comments/resolve', auth: 'bridge-token', required: ['markId'] },
-  // Native bridge accepts content OR changes and defaults by to ai:unknown.
-  { method: 'POST', path: '/rewrite', auth: 'none' },
+  // Direct rewrites bypass human suggestion review and require owner-bot authorization.
+  { method: 'POST', path: '/rewrite', auth: 'bridge-token' },
   { method: 'POST', path: '/presence', auth: 'bridge-token', required: ['status'] },
 ];
 

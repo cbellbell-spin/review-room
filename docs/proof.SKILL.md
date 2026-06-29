@@ -111,7 +111,7 @@ GET  /documents/<slug>/events
 POST /documents/<slug>/events/ack
 ```
 
-For bridge-compatible review flows, use `/bridge/suggestions`. `/bridge/rewrite` is a direct apply endpoint, not a proposed-edit endpoint.
+For bridge-compatible review flows, use `/bridge/suggestions`. `/bridge/rewrite` is a direct apply endpoint, not a proposed-edit endpoint, and requires owner-bot direct-write authorization rather than request-scoped Review Room agent credentials.
 
 ### Legacy GET-only fallback
 

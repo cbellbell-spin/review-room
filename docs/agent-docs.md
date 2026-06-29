@@ -101,6 +101,8 @@ Review Room has three editing approaches. **Pick one — don't mix them.**
 
 If the human asked for revisions, proposed edits, review, or anything they should accept/reject, use `suggestion.add`. Do not use `rewrite.apply` or `/bridge/rewrite` for that flow: rewrite applies content directly and the human will see it as an agent-authored document update, not as pending proposed edits.
 
+Request-scoped Review Room agent credentials are review-only: they can read, claim work, comment, suggest, heartbeat, complete, fail, and release. They cannot use direct-write endpoints such as `/edit`, `/edit/v2`, `rewrite.apply`, `/bridge/rewrite`, title updates, baselines, or member management.
+
 **Start with `suggestion.add`** for proposed edits the human should review. Use Edit V2 for direct-apply tasks only; it uses stable block refs, handles concurrent edits cleanly, and returns clean markdown without internal HTML annotations.
 
 `suggestion.add` now matches against annotated documents correctly and preserves stable anchors. Use `edit/v2` only for direct-apply changes the human explicitly requested, not for reviewable proposed edits.

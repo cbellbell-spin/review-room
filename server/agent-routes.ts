@@ -148,6 +148,10 @@ import {
   storeHostedGetActionDraftChunk,
 } from './hosted-review-room-db.js';
 import { safeCreateAssignmentTasksFromCommentMentions } from './mention-tasks.js';
+import {
+  auditMutationFields,
+  recordReviewRoomDirectMutationAudit,
+} from './review-room-audit.js';
 
 export const agentRoutes = Router({ mergeParams: true });
 
@@ -2794,6 +2798,7 @@ agentRoutes.post('/:slug/edit/v2', async (req: Request, res: Response) => {
     return;
   }
   if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;
+  const beforeDoc = getDocumentBySlug(slug);
   const editV2Body = isRecord(req.body) ? req.body : {};
   ensureAgentPresenceForAuthenticatedCall(req, slug, editV2Body, 'edit.v2');
 
@@ -2911,6 +2916,33 @@ agentRoutes.post('/:slug/edit/v2', async (req: Request, res: Response) => {
     storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   } else {
     releaseIdempotentMutationResult(replay, mutationRoute, slug, 'invalid_result_body');
+  }
+
+  if (result.status >= 200 && result.status < 300 && beforeDoc) {
+    const updatedDoc = getDocumentBySlug(slug);
+    if (updatedDoc) {
+      await recordReviewRoomDirectMutationAudit({
+        slug,
+        actor: typeof editV2Body.by === 'string' && editV2Body.by.trim() ? editV2Body.by.trim() : 'ai:unknown',
+        route: 'POST /api/agent/:slug/edit/v2',
+        source: 'agent-edit-v2',
+        changedFields: auditMutationFields({ markdown: true, marks: true, title: false }),
+        before: {
+          title: beforeDoc.title,
+          markdown: beforeDoc.markdown,
+          marks: parseCanonicalMarks(beforeDoc.marks),
+          revision: beforeDoc.revision,
+          updatedAt: beforeDoc.updated_at,
+        },
+        after: {
+          title: updatedDoc.title,
+          markdown: updatedDoc.markdown,
+          marks: parseCanonicalMarks(updatedDoc.marks),
+          revision: updatedDoc.revision,
+          updatedAt: updatedDoc.updated_at,
+        },
+      });
+    }
   }
 
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
@@ -3509,6 +3541,28 @@ agentRoutes.post('/:slug/edit', async (req: Request, res: Response) => {
     slug,
   });
 
+  await recordReviewRoomDirectMutationAudit({
+    slug,
+    actor: by,
+    route: 'POST /api/agent/:slug/edit',
+    source: 'agent-edit',
+    changedFields: auditMutationFields({ markdown: true, marks: true, title: false }),
+    before: {
+      title: doc.title,
+      markdown: doc.markdown,
+      marks: parseCanonicalMarks(doc.marks),
+      revision: doc.revision,
+      updatedAt: doc.updated_at,
+    },
+    after: {
+      title: updated.title,
+      markdown: updated.markdown,
+      marks: parseCanonicalMarks(updated.marks),
+      revision: updated.revision,
+      updatedAt: updated.updated_at,
+    },
+  });
+
   storeIdempotentMutationResult(replay, mutationRoute, slug, 200, responseBody);
   sendMutationResponse(res, 200, responseBody, { route: mutationRoute, slug });
 });
@@ -3937,6 +3991,32 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
       }),
       { verify: false, apply: false },
     );
+  }
+  if (result.status >= 200 && result.status < 300 && op === 'rewrite.apply') {
+    const updatedDoc = getDocumentBySlug(slug);
+    if (updatedDoc) {
+      await recordReviewRoomDirectMutationAudit({
+        slug,
+        actor: typeof payload.by === 'string' && payload.by.trim() ? payload.by.trim() : 'ai:unknown',
+        route: 'POST /api/agent/:slug/ops',
+        source: 'agent-ops-rewrite',
+        changedFields: auditMutationFields({ markdown: true, marks: true, title: false }),
+        before: {
+          title: doc.title,
+          markdown: doc.markdown,
+          marks: parseCanonicalMarks(doc.marks),
+          revision: doc.revision,
+          updatedAt: doc.updated_at,
+        },
+        after: {
+          title: updatedDoc.title,
+          markdown: updatedDoc.markdown,
+          marks: parseCanonicalMarks(updatedDoc.marks),
+          revision: updatedDoc.revision,
+          updatedAt: updatedDoc.updated_at,
+        },
+      });
+    }
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });
@@ -4487,6 +4567,30 @@ agentRoutes.post('/:slug/rewrite', async (req: Request, res: Response) => {
   let responseBody: Record<string, unknown> = result.body;
   if (result.status >= 200 && result.status < 300) {
     responseBody = annotateRewriteDisruptionMetadata(responseBody, rewriteGate);
+    const updatedDoc = getDocumentBySlug(slug);
+    if (updatedDoc) {
+      await recordReviewRoomDirectMutationAudit({
+        slug,
+        actor: typeof payload.by === 'string' && payload.by.trim() ? payload.by.trim() : 'ai:unknown',
+        route: 'POST /api/agent/:slug/rewrite',
+        source: 'agent-rewrite',
+        changedFields: auditMutationFields({ markdown: true, marks: true, title: false }),
+        before: {
+          title: doc.title,
+          markdown: doc.markdown,
+          marks: parseCanonicalMarks(doc.marks),
+          revision: doc.revision,
+          updatedAt: doc.updated_at,
+        },
+        after: {
+          title: updatedDoc.title,
+          markdown: updatedDoc.markdown,
+          marks: parseCanonicalMarks(updatedDoc.marks),
+          revision: updatedDoc.revision,
+          updatedAt: updatedDoc.updated_at,
+        },
+      });
+    }
   }
   storeIdempotentMutationResult(replay, mutationRoute, slug, responseStatus, responseBody);
   sendMutationResponse(res, responseStatus, responseBody, { route: mutationRoute, slug });

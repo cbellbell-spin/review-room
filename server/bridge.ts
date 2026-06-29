@@ -40,6 +40,10 @@ import {
   resolveHostedDocumentAccessRole,
 } from './hosted-review-room-db.js';
 import { authorizeDocumentOp, type DocumentOpType } from './document-ops.js';
+import {
+  auditMutationFields,
+  recordReviewRoomDirectMutationAudit,
+} from './review-room-audit.js';
 
 export const bridgeRouter = Router({ mergeParams: true });
 export function createBridgeMountRouter(middleware?: RequestHandler): Router {
@@ -61,6 +65,16 @@ const REWRITE_BARRIER_TIMEOUT_MS = parsePositiveIntEnv('PROOF_REWRITE_BARRIER_TI
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseMarks(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function parsePositiveIntEnv(name: string, fallback: number): number {
@@ -650,6 +664,7 @@ bridgeRouter.use(async (req: Request, res: Response) => {
     return;
   }
 
+  let directRewriteBefore: ReturnType<typeof getDocument> | null = null;
   if (method === 'POST' && canonicalBridgePath === '/rewrite') {
     const rewriteValidationError = validateRewriteApplyPayload(requestBody);
     if (rewriteValidationError) {
@@ -661,6 +676,7 @@ bridgeRouter.use(async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Document not found' });
       return;
     }
+    directRewriteBefore = rewriteDoc;
     const rewriteStage = getMutationContractStage();
     const preBarrierMutationBase = await resolveBridgeMutationBase(slug);
     const rewritePrecondition = validateOpPrecondition(
@@ -807,6 +823,34 @@ bridgeRouter.use(async (req: Request, res: Response) => {
       requestId: readRequestId(req),
     });
     serverResult.body = annotateRewriteDisruptionMetadata(serverResult.body, rewriteGate);
+    const updatedDoc = getDocument(slug);
+    if (directRewriteBefore && updatedDoc) {
+      await recordReviewRoomDirectMutationAudit({
+        slug,
+        actor: typeof requestBody.by === 'string' && requestBody.by.trim()
+          ? requestBody.by.trim()
+          : typeof agentId === 'string' && agentId.trim()
+            ? agentId.trim()
+            : 'ai:bridge',
+        route: 'POST /d/:slug/bridge/rewrite',
+        source: 'bridge-rewrite',
+        changedFields: auditMutationFields({ markdown: true, marks: true, title: false }),
+        before: {
+          title: directRewriteBefore.title,
+          markdown: directRewriteBefore.markdown,
+          marks: parseMarks(directRewriteBefore.marks),
+          revision: directRewriteBefore.revision,
+          updatedAt: directRewriteBefore.updated_at,
+        },
+        after: {
+          title: updatedDoc.title,
+          markdown: updatedDoc.markdown,
+          marks: parseMarks(updatedDoc.marks),
+          revision: updatedDoc.revision,
+          updatedAt: updatedDoc.updated_at,
+        },
+      });
+    }
   }
   if (serverResult.status !== 404) {
     if (serverResult.status >= 200 && serverResult.status < 300 && method === 'POST') {

@@ -287,6 +287,10 @@ function shapeAuditHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistory
   const afterMarkdownLength = readHistoryNumber(event.after, ['markdownLength']);
   const beforeTitle = readHistoryText(event.before, ['title']);
   const afterTitle = readHistoryText(event.after, ['title']);
+  const beforeChangedPreview = readHistoryText(event.before, ['markdownChangedPreview']);
+  const afterChangedPreview = readHistoryText(event.after, ['markdownChangedPreview']);
+  const beforeMarkdownPreview = readHistoryText(event.before, ['markdownPreview']);
+  const afterMarkdownPreview = readHistoryText(event.after, ['markdownPreview']);
   const details: ReviewHistoryRow['details'] = [];
   if (changedFields.length > 0) {
     details.push({ label: 'Changed fields', text: changedFields.join(', '), tone: 'neutral' });
@@ -308,6 +312,13 @@ function shapeAuditHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistory
       tone: beforeTitle === afterTitle ? 'neutral' : 'added',
     });
   }
+  if (beforeChangedPreview || afterChangedPreview) {
+    if (beforeChangedPreview) details.push({ label: 'Changed from', text: beforeChangedPreview, tone: 'removed' });
+    if (afterChangedPreview) details.push({ label: 'Changed to', text: afterChangedPreview, tone: 'added' });
+  } else if (beforeMarkdownPreview || afterMarkdownPreview) {
+    if (beforeMarkdownPreview) details.push({ label: 'Before preview', text: beforeMarkdownPreview, tone: 'removed' });
+    if (afterMarkdownPreview) details.push({ label: 'After preview', text: afterMarkdownPreview, tone: 'added' });
+  }
   if (beforeMarkdownLength !== null || afterMarkdownLength !== null) {
     details.push({
       label: 'Markdown length',
@@ -325,8 +336,11 @@ function shapeAuditHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewHistory
     });
   }
   const fields = changedFields.length > 0 ? changedFields.join(', ') : 'document state';
+  const summaryPreview = afterChangedPreview || afterMarkdownPreview;
   return {
-    summary: `Direct ${fields} change${route ? ` through ${route}` : ''}.`,
+    summary: summaryPreview
+      ? `Direct ${fields} change${route ? ` through ${route}` : ''}: ${previewHistoryText(summaryPreview)}`
+      : `Direct ${fields} change${route ? ` through ${route}` : ''}.`,
     changeKind: 'audit',
     details,
   };

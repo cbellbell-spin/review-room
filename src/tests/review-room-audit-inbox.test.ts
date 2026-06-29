@@ -106,6 +106,16 @@ async function run(): Promise<void> {
     assert((audit.after?.changedFields as unknown[]).includes('markdown'), 'Expected markdown to be listed as changed');
     assert(typeof audit.before?.markdownHash === 'string', 'Expected before markdown hash');
     assert(typeof audit.after?.markdownHash === 'string', 'Expected after markdown hash');
+    assert(
+      typeof audit.before?.markdownChangedPreview === 'string'
+        && audit.before.markdownChangedPreview.includes('Original paragraph'),
+      'Expected audit event to include a readable before change preview',
+    );
+    assert(
+      typeof audit.after?.markdownChangedPreview === 'string'
+        && audit.after.markdownChangedPreview.includes('Directly changed paragraph'),
+      'Expected audit event to include a readable after change preview',
+    );
 
     const reviewed = await readJson<{
       success: boolean;

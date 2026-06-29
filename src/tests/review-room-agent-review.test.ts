@@ -4,6 +4,12 @@ import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
+const CLIENT_HEADERS = {
+  'X-Proof-Client-Version': '0.31.0',
+  'X-Proof-Client-Build': 'tests',
+  'X-Proof-Client-Protocol': '3',
+};
+
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -205,10 +211,62 @@ async function run(): Promise<void> {
     assert(!forbiddenDecision.success && forbiddenDecision.code === 'AGENT_CAPABILITY_FORBIDDEN', 'Agent credentials must not accept human-controlled suggestions');
     const forbiddenRewrite = await fetch(`${base}/documents/${slug}/ops`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-share-token': agentToken },
+      headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json', 'x-share-token': agentToken },
       body: JSON.stringify({ type: 'rewrite.apply', by: firstCredential.credential.agentId, content: '# forbidden' }),
     });
     assert(forbiddenRewrite.status === 401 || forbiddenRewrite.status === 403, 'Agent credentials must be useless on direct document mutation routes');
+    const probeState = await json<{ revision: number }>(
+      await fetch(`${base}/documents/${slug}/state`, { headers: { ...CLIENT_HEADERS, 'x-share-token': ownerToken } }),
+    );
+    const directMutationProbes: Array<{ label: string; path: string; method: string; body: Record<string, unknown> }> = [
+      {
+        label: 'document content PUT',
+        path: `/api/documents/${slug}`,
+        method: 'PUT',
+        body: { markdown: '# forbidden direct put', actor: firstCredential.credential.agentId },
+      },
+      {
+        label: 'document title PUT',
+        path: `/api/documents/${slug}/title`,
+        method: 'PUT',
+        body: { title: 'Forbidden title', actor: firstCredential.credential.agentId },
+      },
+      {
+        label: 'agent edit v2',
+        path: `/api/agent/${slug}/edit/v2`,
+        method: 'POST',
+        body: { operations: [{ op: 'insert', after: alpha, content: ' forbidden' }], by: firstCredential.credential.agentId },
+      },
+      {
+        label: 'legacy agent edit',
+        path: `/api/agent/${slug}/edit`,
+        method: 'POST',
+        body: { operations: [{ op: 'insert', after: alpha, content: ' forbidden' }], by: firstCredential.credential.agentId },
+      },
+      {
+        label: 'agent rewrite',
+        path: `/api/agent/${slug}/rewrite`,
+        method: 'POST',
+        body: { content: '# forbidden agent rewrite', baseRevision: probeState.revision, by: firstCredential.credential.agentId },
+      },
+      {
+        label: 'bridge rewrite',
+        path: `/d/${slug}/bridge/rewrite`,
+        method: 'POST',
+        body: { content: '# forbidden bridge rewrite', baseRevision: probeState.revision, by: firstCredential.credential.agentId },
+      },
+    ];
+    for (const probe of directMutationProbes) {
+      const response = await fetch(`${base}${probe.path}`, {
+        method: probe.method,
+        headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json', 'x-share-token': agentToken },
+        body: JSON.stringify(probe.body),
+      });
+      assert(
+        response.status === 401 || response.status === 403,
+        `Request-scoped agent credential must not access ${probe.label}; got ${response.status}`,
+      );
+    }
     const otherDocument = await json<{ document: { proofSlug: string } }>(await fetch(`${base}/review-room/api/documents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-review-room-identity-id': 'review-owner' },
