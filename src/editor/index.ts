@@ -154,6 +154,7 @@ import {
   type ReviewRoomRole,
   type ShareCapabilities,
   type SharePendingEvent,
+  type ShareRequestError,
 } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
@@ -1466,11 +1467,16 @@ class ProofEditorImpl implements ProofEditor {
       const preserveCurrentDocument = options?.preserveCurrentDocument === true;
       const contextResponse = await shareClient.fetchOpenContext();
       if (this.isShareRequestError(contextResponse)) {
+        if (this.renderShareUnavailableState(contextResponse, options)) {
+          this.resetShareInitRetryState();
+          return;
+        }
         throw new Error(contextResponse.error.message);
       }
       const context = contextResponse && 'doc' in contextResponse
         ? contextResponse
         : null;
+      document.body.removeAttribute('data-share-unavailable');
       const wantsNamePrompt = options?.promptForName ?? true;
       this.applyDocumentCapabilities(context?.reviewRoom?.capabilities ?? context?.capabilities);
       const canActInDocument = this.documentCapabilities.canComment || this.documentCapabilities.canEditContent;
@@ -1530,6 +1536,7 @@ class ProofEditorImpl implements ProofEditor {
       this.shareDocTitle = typeof doc.title === 'string' && doc.title.trim().length > 0
         ? doc.title.trim()
         : 'Untitled';
+      this.updatePausedOwnerNotice(doc.shareState === 'PAUSED' && this.documentCapabilities.canEdit, options);
 
       let collabTemplateMarkdown: string | null = null;
 
@@ -1805,6 +1812,195 @@ class ProofEditorImpl implements ProofEditor {
         void this.initFromShare(options);
       }, delayMs);
     }
+  }
+
+  private renderShareUnavailableState(
+    error: ShareRequestError,
+    options?: ShareRuntimeActivationOptions,
+  ): boolean {
+    const code = error.error.code;
+    const deliberateCodes = new Set([
+      'DOCUMENT_PAUSED',
+      'DOCUMENT_REVOKED',
+      'DOCUMENT_DELETED',
+      'DOCUMENT_NOT_FOUND',
+      'UNAUTHORIZED',
+    ]);
+    if (!deliberateCodes.has(code) && ![401, 403, 404, 410].includes(error.error.status)) {
+      return false;
+    }
+
+    const root = document.getElementById('editor');
+    if (!root) return false;
+    this.clearErrorBanner();
+    this.removePausedOwnerNotice();
+    this.applyDocumentCapabilities(error.error.capabilities ?? null);
+
+    const state = error.error.shareState ?? (code === 'DOCUMENT_NOT_FOUND' ? 'MISSING' : 'UNKNOWN');
+    const role = error.error.role ?? null;
+    const copy = this.getUnavailableCopy(code, state);
+    document.title = `${copy.title} - Review Room`;
+    document.body.setAttribute('data-share-unavailable', String(state).toLowerCase());
+    root.innerHTML = '';
+
+    const shell = document.createElement('section');
+    shell.setAttribute('data-review-room-unavailable', String(state).toLowerCase());
+    shell.style.cssText = `
+      min-height: min(620px, calc(100vh - 96px));
+      display: grid;
+      place-items: center;
+      padding: 40px 20px;
+      color: var(--rr-ink, #172033);
+    `;
+
+    const panel = document.createElement('div');
+    panel.style.cssText = `
+      width: min(620px, 100%);
+      border: 1px solid var(--rr-border, #d7dde8);
+      border-radius: 8px;
+      background: var(--rr-surface, #fff);
+      box-shadow: 0 16px 40px rgba(23,32,51,0.12);
+      padding: 28px;
+    `;
+
+    const label = document.createElement('div');
+    label.textContent = copy.label;
+    label.style.cssText = 'font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0;color:var(--rr-muted,#64748b);margin-bottom:10px;';
+
+    const title = document.createElement('h1');
+    title.textContent = copy.title;
+    title.style.cssText = 'margin:0 0 10px;font-size:26px;line-height:1.15;letter-spacing:0;color:var(--rr-ink,#172033);';
+
+    const message = document.createElement('p');
+    message.textContent = copy.message;
+    message.style.cssText = 'margin:0;color:var(--rr-muted,#64748b);font-size:15px;line-height:1.5;';
+
+    const meta = document.createElement('p');
+    meta.textContent = role
+      ? `Current link role: ${this.formatUnavailableRole(role)}.`
+      : 'This link does not currently grant document access.';
+    meta.style.cssText = 'margin:14px 0 0;color:var(--rr-muted,#64748b);font-size:13px;line-height:1.45;';
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin-top:22px;';
+
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Retry';
+    retry.style.cssText = this.unavailableButtonStyle('secondary');
+    retry.onclick = () => {
+      this.resetShareInitRetryState();
+      void this.initFromShare(options);
+    };
+    actions.appendChild(retry);
+
+    panel.append(label, title, message, meta, actions);
+    shell.appendChild(panel);
+    root.appendChild(shell);
+    this.scheduleBannerLayoutUpdate();
+    return true;
+  }
+
+  private getUnavailableCopy(code: string, state: string): { label: string; title: string; message: string } {
+    if (code === 'DOCUMENT_PAUSED' || state === 'PAUSED') {
+      return {
+        label: 'Paused',
+        title: 'This document is paused',
+        message: 'The owner has paused shared access. Ask the owner to resume the document or send a fresh owner-capable link.',
+      };
+    }
+    if (code === 'DOCUMENT_REVOKED' || state === 'REVOKED' || code === 'UNAUTHORIZED') {
+      return {
+        label: 'Access revoked',
+        title: 'This document link no longer works',
+        message: 'This link is invalid, expired, or revoked. Ask the owner for a new Review Room link.',
+      };
+    }
+    if (code === 'DOCUMENT_DELETED' || state === 'DELETED') {
+      return {
+        label: 'Deleted',
+        title: 'This document was deleted',
+        message: 'The document is no longer available in Review Room.',
+      };
+    }
+    return {
+      label: 'Unavailable',
+      title: 'This document could not be found',
+      message: 'Check the link and try again. The document may have been moved, deleted, or never existed.',
+    };
+  }
+
+  private formatUnavailableRole(role: string): string {
+    if (role === 'owner_bot') return 'owner';
+    return role;
+  }
+
+  private unavailableButtonStyle(kind: 'primary' | 'secondary'): string {
+    if (kind === 'primary') {
+      return 'border:1px solid var(--rr-accent,#245c54);background:var(--rr-accent,#245c54);color:white;border-radius:6px;padding:8px 12px;font-size:13px;font-weight:750;cursor:pointer;';
+    }
+    return 'border:1px solid var(--rr-border,#d7dde8);background:white;color:var(--rr-ink,#172033);border-radius:6px;padding:8px 12px;font-size:13px;font-weight:750;cursor:pointer;';
+  }
+
+  private updatePausedOwnerNotice(visible: boolean, options?: ShareRuntimeActivationOptions): void {
+    if (!visible) {
+      this.removePausedOwnerNotice();
+      return;
+    }
+    if (document.getElementById('share-paused-owner-banner')) return;
+    const banner = document.createElement('div');
+    banner.id = 'share-paused-owner-banner';
+    banner.setAttribute('data-review-room-paused-owner', '1');
+    banner.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 1000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 8px 16px;
+      background: #fff7ed;
+      color: #7c2d12;
+      border-bottom: 1px solid #fed7aa;
+      font-size: 14px;
+      font-weight: 650;
+    `;
+    const text = document.createElement('span');
+    text.textContent = 'Document paused. Owner access can still edit, but collaborators cannot open it until sharing resumes.';
+    const resume = document.createElement('button');
+    resume.type = 'button';
+    resume.textContent = 'Resume sharing';
+    resume.style.cssText = 'border:1px solid #9a3412;background:#9a3412;color:white;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:750;cursor:pointer;';
+    resume.onclick = () => {
+      void (async () => {
+        resume.disabled = true;
+        resume.textContent = 'Resuming...';
+        const result = await shareClient.resumeDocument();
+        if (!result || this.isShareRequestError(result) || result.success !== true) {
+          resume.disabled = false;
+          resume.textContent = 'Resume sharing';
+          this.showErrorBanner(this.isShareRequestError(result) ? result.error.message : 'Could not resume sharing.');
+          return;
+        }
+        this.removePausedOwnerNotice();
+        this.resetShareInitRetryState();
+        void this.initFromShare({ ...options, promptForName: false });
+      })();
+    };
+    banner.append(text, resume);
+    document.body.prepend(banner);
+    this.scheduleBannerLayoutUpdate();
+  }
+
+  private removePausedOwnerNotice(): void {
+    const banner = document.getElementById('share-paused-owner-banner');
+    if (!banner) return;
+    banner.remove();
+    this.scheduleBannerLayoutUpdate();
   }
 
   private deriveDefaultShareViewerName(): string {
@@ -7285,6 +7481,10 @@ class ProofEditorImpl implements ProofEditor {
     const banners: HTMLElement[] = [];
     const shareBanner = document.getElementById('share-banner');
     if (shareBanner) banners.push(shareBanner);
+    const errorBanner = document.getElementById('error-banner') as HTMLElement | null;
+    if (errorBanner) banners.push(errorBanner);
+    const pausedOwnerBanner = document.getElementById('share-paused-owner-banner') as HTMLElement | null;
+    if (pausedOwnerBanner) banners.push(pausedOwnerBanner);
     if (this.readOnlyBanner) banners.push(this.readOnlyBanner);
     if (this.reviewLockBanner) banners.push(this.reviewLockBanner);
 

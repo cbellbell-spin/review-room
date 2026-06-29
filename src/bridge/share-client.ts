@@ -285,6 +285,11 @@ export type ShareRequestError = {
     message: string;
     retryAfterMs?: number | null;
     requestId?: string | null;
+    slug?: string | null;
+    title?: string | null;
+    shareState?: ShareState | 'MISSING' | 'UNKNOWN' | null;
+    role?: ShareRole | null;
+    capabilities?: ShareCapabilities | null;
   };
 };
 
@@ -563,6 +568,11 @@ export class ShareClient {
       error?: unknown;
       code?: unknown;
       retryAfterMs?: unknown;
+      slug?: unknown;
+      title?: unknown;
+      shareState?: unknown;
+      role?: unknown;
+      capabilities?: unknown;
     }));
     const code = typeof body.code === 'string' && body.code.trim().length > 0
       ? body.code
@@ -580,6 +590,13 @@ export class ShareClient {
         message,
         retryAfterMs,
         requestId,
+        slug: typeof body.slug === 'string' ? body.slug : null,
+        title: typeof body.title === 'string' ? body.title : null,
+        shareState: typeof body.shareState === 'string'
+          ? body.shareState as ShareState | 'MISSING' | 'UNKNOWN'
+          : null,
+        role: this.isShareRole(body.role) ? body.role : null,
+        capabilities: this.isShareCapabilities(body.capabilities) ? body.capabilities : null,
       },
     };
   }
@@ -593,6 +610,14 @@ export class ShareClient {
     return {
       error: { status, code, message, retryAfterMs: null },
     };
+  }
+
+  private isShareCapabilities(value: unknown): value is ShareCapabilities {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const candidate = value as Partial<Record<keyof ShareCapabilities, unknown>>;
+    return typeof candidate.canRead === 'boolean'
+      && typeof candidate.canComment === 'boolean'
+      && typeof candidate.canEdit === 'boolean';
   }
 
   private setConnectionState(state: ShareSocketState): void {
@@ -858,6 +883,23 @@ export class ShareClient {
       title: typeof payload.title === 'string' ? payload.title : null,
       updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : undefined,
     };
+  }
+
+  async resumeDocument(
+    options?: { token?: string },
+  ): Promise<{ success: boolean; shareState: ShareState; snapshotUrl?: string | null } | ShareRequestError | null> {
+    if (!this.slug) return null;
+    const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/resume`, {
+      method: 'POST',
+      headers: {
+        ...this.getShareAuthHeaders(options?.token),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+    this.lastRequestId = this.readRequestId(response);
+    if (!response.ok) return this.parseRequestError(response);
+    return response.json() as Promise<{ success: boolean; shareState: ShareState; snapshotUrl?: string | null }>;
   }
 
   async fetchCollabSession(

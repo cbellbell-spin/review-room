@@ -245,17 +245,26 @@ Out of scope: account recovery, email invitation delivery, provider integrations
 
 Additional-device enrollment is implemented and shipped on `main` as of June 24, 2026. It lets an authenticated browser create a one-use enrollment link, establishes the same stable identity on a second browser, lists active device sessions, and supports session revocation. Recovery after losing every authenticated device remains a separate product/security decision.
 
-### Recommended Next Slice: Paused And Unavailable Access Clarity
+### Implemented Slice: Paused And Unavailable Access Clarity
 
 Goal: make deliberate access states feel different from network or collaboration failures.
 
-- Keep paused/revoked/deleted links privacy-preserving: do not reveal hidden document title or content to non-owner access.
-- Make paused, revoked, deleted, missing, and permission-denied states explicit in JSON, HTML fallback pages, and Review Room chrome.
-- Give owner-capable links a clear resume/reopen path when a document is paused.
-- Ensure collaborator, owner, request-scoped agent, and tokenless links each render the right capability state.
-- Cover paused owner access, paused non-owner access, revoked links, and missing slugs with focused route and browser tests.
+- Paused/revoked/deleted links stay privacy-preserving: unavailable responses avoid hidden document title and content for non-owner access.
+- Open-context failures now return explicit JSON codes, share state, role, title-null, and capability shape for missing, paused, revoked, deleted, and invalid-link states.
+- Owner-capable Review Room links show a paused-document banner with a Resume sharing action; the resume endpoint accepts owner-scoped document credentials as well as the original owner secret.
+- The editor renders deliberate unavailable access as a Review Room state panel instead of treating it as a transient collaboration/network failure.
+- Focused coverage lives in `src/tests/review-room-unavailable-access.playwright.ts` and is exposed as `npm run test:review-room-unavailable-access`.
 
 Out of scope: collaboration/Yjs refactors, provider integrations, account recovery, and broad visual redesign.
+
+### Recommended Next Slice: Import UX Repair
+
+Goal: make local file import feel reliable before expanding native-app or sync workflows.
+
+- Restore the `Choose File` button so it reliably opens the native macOS file picker.
+- Add a drag-and-drop target to `Create or Import File`.
+- Share validation, supported-file errors, and import behavior between click and drop paths.
+- Keep this scoped to import UX; do not start the Tauri/native sync work in the same slice.
 
 ### Workspace And Permissions
 

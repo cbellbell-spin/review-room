@@ -38,6 +38,7 @@
     "test:review-room-create-flow": "npm run build && tsx src/tests/review-room-create-flow.playwright.ts",
     "test:review-room-identity-continuity": "npm run build && tsx src/tests/review-room-identity-continuity.playwright.ts",
     "test:review-room-access-clarity": "npm run build && tsx src/tests/review-room-access-clarity.playwright.ts",
+    "test:review-room-unavailable-access": "npm run build && tsx src/tests/review-room-unavailable-access.playwright.ts",
     "test:review-room-agent-review-ui": "npm run build && tsx src/tests/review-room-agent-review.playwright.ts",
     "test:review-room-single-editor-typed-accept": "npm run build && tsx src/tests/review-room-single-editor-typed-insert-accept.playwright.ts",
     "test:review-room-accept-race": "npm run build && tsx src/tests/review-room-accept-live-collab-race.playwright.ts",

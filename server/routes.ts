@@ -2270,7 +2270,8 @@ apiRoutes.post('/documents/:slug/pause', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Document not found' });
     return;
   }
-  if (!canOwnerMutate(req, doc)) {
+  const accessRole = getAccessRole(req, slug);
+  if (!canOwnerMutate(req, doc) && accessRole !== 'owner_bot') {
     res.status(403).json({ error: 'Not authorized to pause document' });
     return;
   }
@@ -2293,7 +2294,8 @@ apiRoutes.post('/documents/:slug/resume', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Document not found' });
     return;
   }
-  if (!canOwnerMutate(req, doc)) {
+  const accessRole = getAccessRole(req, slug);
+  if (!canOwnerMutate(req, doc) && accessRole !== 'owner_bot') {
     res.status(403).json({ error: 'Not authorized to resume document' });
     return;
   }
@@ -2389,32 +2391,50 @@ apiRoutes.get('/documents/:slug/info', (req: Request, res: Response) => {
 apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
-    res.status(400).json({ error: 'Invalid slug' });
+    res.status(400).json({ error: 'Invalid slug', code: 'INVALID_SLUG' });
     return;
   }
+  const unavailablePayload = (
+    status: number,
+    code: string,
+    error: string,
+    shareState: string,
+    role: ShareRole | null = null,
+  ) => {
+    res.status(status).json({
+      success: false,
+      slug,
+      title: null,
+      shareState,
+      role,
+      capabilities: deriveShareCapabilities(role ?? 'viewer', shareState),
+      code,
+      error,
+    });
+  };
   if (isHostedReviewRoomDbEnabled()) {
     const doc = await getHostedDocumentBySlug(slug);
     if (!doc) {
-      res.status(404).json({ error: 'Document not found' });
+      unavailablePayload(404, 'DOCUMENT_NOT_FOUND', 'Document not found', 'MISSING');
       return;
     }
     if (doc.share_state === 'DELETED') {
-      res.status(410).json({ error: 'Document deleted' });
+      unavailablePayload(410, 'DOCUMENT_DELETED', 'Document deleted', 'DELETED');
       return;
     }
     const presentedSecret = getPresentedSecret(req);
     const access = presentedSecret ? await resolveHostedDocumentAccess(slug, presentedSecret) : null;
     if (presentedSecret && !access) {
-      res.status(401).json({ error: 'Invalid share token', code: 'UNAUTHORIZED' });
+      unavailablePayload(401, 'UNAUTHORIZED', 'This document link is invalid or has been revoked.', doc.share_state);
       return;
     }
     const role = access?.role ?? 'editor';
     if (doc.share_state === 'REVOKED' && role !== 'owner_bot') {
-      res.status(403).json({ error: 'Document access has been revoked' });
+      unavailablePayload(403, 'DOCUMENT_REVOKED', 'Document access has been revoked', doc.share_state, role);
       return;
     }
     if (doc.share_state === 'PAUSED' && role !== 'owner_bot') {
-      res.status(403).json({ error: 'Document is not currently accessible' });
+      unavailablePayload(403, 'DOCUMENT_PAUSED', 'Document is paused', doc.share_state, role);
       return;
     }
     const hostedBody = buildHostedOpenContextBody({
@@ -2428,22 +2448,22 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
   }
   const doc = getCanonicalReadableDocumentSync(slug, 'share') ?? getDocumentBySlug(slug);
   if (!doc) {
-    res.status(404).json({ error: 'Document not found' });
+    unavailablePayload(404, 'DOCUMENT_NOT_FOUND', 'Document not found', 'MISSING');
     return;
   }
   if (doc.share_state === 'DELETED') {
-    res.status(410).json({ error: 'Document deleted' });
+    unavailablePayload(410, 'DOCUMENT_DELETED', 'Document deleted', 'DELETED');
     return;
   }
 
   const access = await resolveOpenContextAccess(req, res, slug, doc);
   if (!access) return;
   if (doc.share_state === 'REVOKED' && !access.ownerAuthorized) {
-    res.status(403).json({ error: 'Document access has been revoked' });
+    unavailablePayload(403, 'DOCUMENT_REVOKED', 'Document access has been revoked', doc.share_state, access.role);
     return;
   }
   if (doc.share_state === 'PAUSED' && !access.ownerAuthorized) {
-    res.status(403).json({ error: 'Document is not currently accessible' });
+    unavailablePayload(403, 'DOCUMENT_PAUSED', 'Document is paused', doc.share_state, access.role);
     return;
   }
 
