@@ -257,14 +257,16 @@ Goal: make deliberate access states feel different from network or collaboration
 
 Out of scope: collaboration/Yjs refactors, provider integrations, account recovery, and broad visual redesign.
 
-### Recommended Next Slice: Import UX Repair
+### Implemented Slice: Import UX Repair
 
 Goal: make local file import feel reliable before expanding native-app or sync workflows.
 
-- Restore the `Choose File` button so it reliably opens the native macOS file picker.
-- Add a drag-and-drop target to `Create or Import File`.
-- Share validation, supported-file errors, and import behavior between click and drop paths.
-- Keep this scoped to import UX; do not start the Tauri/native sync work in the same slice.
+- The `Create or import` panel now has an explicit `Choose File` control backed by the native file input activation path.
+- The same panel is a drag-and-drop target for local Markdown/Text files.
+- Click and drop paths share selected-file state, supported-file validation, error messages, and import submission behavior.
+- Focused Playwright coverage in `src/tests/review-room-create-flow.playwright.ts` covers unsupported drops, supported drop import, native picker activation, supported picker import, and the existing create flow.
+
+Out of scope: Tauri/native sync work, provider integrations, and collaboration/Yjs changes.
 
 ### Workspace And Permissions
 

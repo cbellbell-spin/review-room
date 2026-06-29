@@ -30,6 +30,24 @@ async function waitForNoHorizontalOverflow(page: Page): Promise<void> {
   assert(!hasOverflow, 'Expected page not to have visible horizontal overflow');
 }
 
+async function dismissAnonymousPrompt(page: Page): Promise<void> {
+  const anonymousPrompt = page.getByRole('button', { name: 'Continue anonymously' });
+  if (await anonymousPrompt.isVisible().catch(() => false)) {
+    await anonymousPrompt.click();
+    await expect(anonymousPrompt).toBeHidden();
+  }
+}
+
+async function dispatchFileDrop(page: Page, selector: string, file: { name: string; mimeType: string; body: string }): Promise<void> {
+  const dataTransfer = await page.evaluateHandle((payload) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([payload.body], payload.name, { type: payload.mimeType }));
+    return transfer;
+  }, file);
+  await page.dispatchEvent(selector, 'drop', { dataTransfer });
+  await dataTransfer.dispose();
+}
+
 async function run(): Promise<void> {
   const dbPath = path.join(os.tmpdir(), `review-room-create-flow-${Date.now()}-${randomUUID()}.db`);
   const port = await getFreePort();
@@ -62,6 +80,64 @@ async function run(): Promise<void> {
     await expect(page.getByText('Open a document')).toBeVisible();
     await expect(page.locator('section[aria-labelledby="docs-heading"]')).toBeVisible();
     await expect(page.locator('details.secondary-details')).not.toHaveAttribute('open', '');
+    await waitForNoHorizontalOverflow(page);
+
+    await dispatchFileDrop(page, '#import-drop-zone', {
+      name: 'unsupported.pdf',
+      mimeType: 'application/pdf',
+      body: '%PDF-unsupported',
+    });
+    await expect(page.locator('#form-error')).toHaveText('Review Room can import .md, .markdown, and .txt files right now.');
+
+    await dispatchFileDrop(page, '#import-drop-zone', {
+      name: 'Dropped sample.md',
+      mimeType: 'text/markdown',
+      body: '# Dropped sample\n\nImported from drag and drop.',
+    });
+    await expect(page.locator('#import-file-name')).toHaveText('Dropped sample.md');
+    await expect(page.locator('#form-error')).toBeEmpty();
+    const dropImportResponsePromise = page.waitForResponse((response) => (
+      response.url() === `${baseUrl}/review-room/api/documents`
+      && response.request().method() === 'POST'
+    ));
+    await page.getByRole('button', { name: 'Import and open' }).click();
+    const dropImportResponse = await dropImportResponsePromise;
+    const dropImportHeaders = dropImportResponse.request().headers();
+    assert(
+      typeof dropImportHeaders['x-review-room-identity-id'] === 'string' && dropImportHeaders['x-review-room-identity-id'].startsWith('browser-'),
+      'Expected dropped-file import to include a browser Review Room identity',
+    );
+    await page.waitForURL(/\/d\/[^?]+\?rr=1&token=/);
+    await page.locator('.ProseMirror').waitFor({ state: 'visible', timeout: 15_000 });
+    await dismissAnonymousPrompt(page);
+    await expect(page.locator('.ProseMirror')).toContainText('Imported from drag and drop.');
+    await page.getByRole('button', { name: 'Save and return to documents' }).click();
+    await page.waitForURL(`${baseUrl}/review-room`);
+    await expect(page.getByText('Dropped sample')).toBeVisible();
+
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent('filechooser', { timeout: 5_000 }),
+      page.locator('#choose-file-button').click(),
+    ]);
+    await fileChooser.setFiles({
+      name: 'Picked sample.md',
+      mimeType: 'text/markdown',
+      buffer: Buffer.from('# Picked sample\n\nImported from the picker.'),
+    });
+    await expect(page.locator('#import-file-name')).toHaveText('Picked sample.md');
+    const pickerImportResponsePromise = page.waitForResponse((response) => (
+      response.url() === `${baseUrl}/review-room/api/documents`
+      && response.request().method() === 'POST'
+    ));
+    await page.getByRole('button', { name: 'Import and open' }).click();
+    await pickerImportResponsePromise;
+    await page.waitForURL(/\/d\/[^?]+\?rr=1&token=/);
+    await page.locator('.ProseMirror').waitFor({ state: 'visible', timeout: 15_000 });
+    await dismissAnonymousPrompt(page);
+    await expect(page.locator('.ProseMirror')).toContainText('Imported from the picker.');
+    await page.getByRole('button', { name: 'Save and return to documents' }).click();
+    await page.waitForURL(`${baseUrl}/review-room`);
+    await expect(page.getByText('Picked sample')).toBeVisible();
     await waitForNoHorizontalOverflow(page);
 
     const createResponsePromise = page.waitForResponse((response) => (
@@ -114,11 +190,7 @@ async function run(): Promise<void> {
       `Expected dashboard-created document to resolve to the browser Review Room identity, got ${openContextResult.openContext.reviewRoom?.identityId || '<missing>'}. Debug: ${JSON.stringify(openContextResult)}`,
     );
     assert(openContextResult.openContext.reviewRoom?.currentRole === 'owner', 'Expected dashboard-created document token to resolve to owner role');
-    const anonymousPrompt = page.getByRole('button', { name: 'Continue anonymously' });
-    if (await anonymousPrompt.isVisible().catch(() => false)) {
-      await anonymousPrompt.click();
-      await expect(anonymousPrompt).toBeHidden();
-    }
+    await dismissAnonymousPrompt(page);
 
     await expect(page.getByRole('toolbar', { name: 'Document formatting' })).toBeVisible();
     for (const name of ['Paragraph', 'Heading 1', 'Heading 2', 'Bold', 'Italic', 'Block quote', 'Bulleted list', 'Numbered list']) {

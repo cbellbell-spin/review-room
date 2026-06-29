@@ -20,12 +20,27 @@ Open `http://127.0.0.1:4000/review-room`.
    - `Workspace`
    - `New document`
    - `Create new document`
+   - `Import Markdown or Text`
+   - `Choose File`
+   - `Import and open`
    - `Review Room slug or URL`
    - `Access token`
    - `Add and open`
    - `Google Docs and SharePoint imports are not supported yet.`
 
 Expected: dashboard is usable, with no visible script error banner.
+
+## Import Local File
+
+1. Click `Choose File` in `Create or import`.
+2. Pick a `.md`, `.markdown`, or `.txt` file.
+3. Confirm the selected file name appears in the import target.
+4. Click `Import and open`.
+5. Confirm the browser opens `/d/:slug?rr=1&token=...` and the editor contains the imported file content.
+6. Return to `/review-room`.
+7. Drag an unsupported file type onto the import target.
+
+Expected: supported files import and open as Review Room documents. Unsupported files show `Review Room can import .md, .markdown, and .txt files right now.`
 
 ## Create Review Room Document
 

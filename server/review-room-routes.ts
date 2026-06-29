@@ -682,14 +682,57 @@ function renderReviewRoomHome(): string {
       font-weight: 650;
     }
     .button.secondary { background: #fff; color: var(--rr-accent); }
+    .button:focus-visible {
+      outline: 2px solid var(--rr-accent);
+      outline-offset: 2px;
+    }
     .form-note { font-size: 13px; color: var(--rr-muted); }
     form { display: grid; gap: 12px; padding: 18px; }
     form + form { border-top: 1px solid var(--rr-border-soft); }
     .import-form { padding: 0; }
     .import-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .file-input {
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .drop-target {
       border: 1px dashed #b8c8b3;
       background: var(--rr-surface-soft);
+      border-radius: 8px;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .drop-target[data-active="true"] {
+      border-color: var(--rr-accent);
+      background: #f4f8f2;
+    }
+    .drop-target-main {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .drop-target-copy {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .drop-target-title { font-weight: 700; color: #374539; }
+    .selected-file { color: var(--rr-muted); font-size: 13px; overflow-wrap: anywhere; }
+    .selected-file[data-selected="true"] { color: #374539; font-weight: 650; }
+    .file-input {
+      border: 1px solid var(--rr-control-border);
+      background: #fff;
     }
     .secondary-details {
       border-top: 1px solid var(--rr-border-soft);
@@ -832,10 +875,16 @@ function renderReviewRoomHome(): string {
         <div class="primary-action">
           <button id="new-document-button" class="button" type="button">Create new document</button>
           <form id="import-form" class="import-form">
-            <label>
-              Import Markdown or Text
-              <input id="import-file" class="file-input" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain">
-            </label>
+            <div id="import-drop-zone" class="drop-target" role="region" aria-labelledby="import-drop-heading" data-active="false">
+              <div class="drop-target-main">
+                <div class="drop-target-copy">
+                  <span id="import-drop-heading" class="drop-target-title">Import Markdown or Text</span>
+                  <span id="import-file-name" class="selected-file">Drop a file here or choose one below.</span>
+                </div>
+                <label id="choose-file-button" class="button secondary choose-file-button" for="import-file" role="button" tabindex="0" aria-describedby="import-file-name">Choose File</label>
+              </div>
+              <input id="import-file" class="visually-hidden file-input" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" tabindex="-1" aria-hidden="true">
+            </div>
             <div class="import-actions">
               <button id="import-document-button" class="button secondary" type="submit">Import and open</button>
               <span class="form-note">Supports .md, .markdown, and .txt files.</span>
@@ -916,13 +965,17 @@ function renderReviewRoomHome(): string {
     const profileSignout = document.getElementById('profile-signout');
     const newDocumentButton = document.getElementById('new-document-button');
     const importForm = document.getElementById('import-form');
+    const importDropZone = document.getElementById('import-drop-zone');
     const importFileInput = document.getElementById('import-file');
+    const chooseFileButton = document.getElementById('choose-file-button');
+    const importFileName = document.getElementById('import-file-name');
     const importDocumentButton = document.getElementById('import-document-button');
     const registerForm = document.getElementById('register-form');
     const errorEl = document.getElementById('form-error');
     const registerErrorEl = document.getElementById('register-error');
     const identityStorageKey = 'proof.reviewRoom.identityId.v1';
     let currentIdentityPayload = null;
+    let selectedImportFile = null;
 
     function createBrowserIdentityId() {
       const randomPart = window.crypto && typeof window.crypto.randomUUID === 'function'
@@ -1187,21 +1240,40 @@ function renderReviewRoomHome(): string {
       window.location.href = payload.openPath;
     });
 
-    importForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      errorEl.textContent = '';
-      const file = importFileInput.files && importFileInput.files[0];
-      if (!file) {
-        errorEl.textContent = 'Choose a Markdown or Text file to import.';
-        return;
-      }
+    function isSupportedImportFile(file) {
+      if (!file) return false;
       const lowerName = file.name.toLowerCase();
-      const supported = lowerName.endsWith('.md') || lowerName.endsWith('.markdown') || lowerName.endsWith('.txt')
+      return lowerName.endsWith('.md') || lowerName.endsWith('.markdown') || lowerName.endsWith('.txt')
         || file.type === 'text/markdown' || file.type === 'text/plain';
-      if (!supported) {
-        errorEl.textContent = 'Review Room can import .md, .markdown, and .txt files right now.';
-        return;
+    }
+
+    function resetSelectedImportFile(message) {
+      selectedImportFile = null;
+      importFileInput.value = '';
+      importFileName.dataset.selected = 'false';
+      importFileName.textContent = message || 'Drop a file here or choose one below.';
+    }
+
+    function selectImportFile(file) {
+      errorEl.textContent = '';
+      if (!file) {
+        resetSelectedImportFile();
+        errorEl.textContent = 'Choose a Markdown or Text file to import.';
+        return false;
       }
+      if (!isSupportedImportFile(file)) {
+        resetSelectedImportFile();
+        errorEl.textContent = 'Review Room can import .md, .markdown, and .txt files right now.';
+        return false;
+      }
+      selectedImportFile = file;
+      importFileName.dataset.selected = 'true';
+      importFileName.textContent = file.name;
+      return true;
+    }
+
+    async function importReviewRoomFile(file) {
+      if (!selectImportFile(file)) return;
       importDocumentButton.disabled = true;
       importDocumentButton.textContent = 'Importing...';
       try {
@@ -1225,6 +1297,39 @@ function renderReviewRoomHome(): string {
         importDocumentButton.disabled = false;
         importDocumentButton.textContent = 'Import and open';
       }
+    }
+
+    chooseFileButton.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      importFileInput.click();
+    });
+
+    importFileInput.addEventListener('change', () => {
+      selectImportFile(importFileInput.files && importFileInput.files[0]);
+    });
+
+    for (const eventName of ['dragenter', 'dragover']) {
+      importDropZone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        importDropZone.dataset.active = 'true';
+      });
+    }
+
+    for (const eventName of ['dragleave', 'drop']) {
+      importDropZone.addEventListener(eventName, () => {
+        importDropZone.dataset.active = 'false';
+      });
+    }
+
+    importDropZone.addEventListener('drop', (event) => {
+      event.preventDefault();
+      selectImportFile(event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0]);
+    });
+
+    importForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await importReviewRoomFile(selectedImportFile || (importFileInput.files && importFileInput.files[0]));
     });
 
     registerForm.addEventListener('submit', async (event) => {
