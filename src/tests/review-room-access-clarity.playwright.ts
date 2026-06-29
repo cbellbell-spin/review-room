@@ -41,6 +41,19 @@ async function expectAccess(
   await page.locator('.ProseMirror').waitFor({ state: 'visible', timeout: 15_000 });
   const access = page.locator(`[data-review-room-access="${role}"]`);
   await expect(access).toContainText(label);
+  const capabilityStrip = page.locator('[data-review-room-capability-strip="1"]');
+  await expect(capabilityStrip).toBeVisible();
+  await expect(capabilityStrip.locator('[data-kind="role"]')).toContainText(label);
+  await expect(capabilityStrip.locator('[data-kind="edit"]')).toContainText(
+    editable ? 'Editing available' : role === 'commenter' ? 'Comment only' : 'Read only',
+  );
+  await expect(capabilityStrip.locator('[data-kind="share"]')).toContainText(
+    role === 'owner' ? 'Can manage access' : role === 'editor' ? 'Can share document' : 'Owner manages access',
+  );
+  await expect(capabilityStrip.locator('[data-kind="agent"]')).toContainText(
+    role === 'owner' ? 'Agent request ready' : 'Agent request owner-only',
+  );
+  await expect(capabilityStrip.locator('[data-kind="state"]')).toContainText('Active document');
   await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', editable ? 'true' : 'false');
   const title = page.locator('.share-pill-title');
   if (editable) {
@@ -148,7 +161,7 @@ async function run(): Promise<void> {
     });
     assert(revoked.ok, `Expected revoke success, got ${revoked.status}`);
     await page.goto(`${baseUrl}${revokedLink}`);
-    await expect(page.getByText(/This document link is invalid or has been revoked/)).toBeVisible();
+    await expect(page.locator('[data-review-room-unavailable]')).toContainText(/This document link no longer works|This link is invalid, expired, or revoked/);
 
     const signedOutPage = await browser.newPage({ viewport: { width: 1280, height: 860 } });
     await signedOutPage.goto(`${baseUrl}${members.editor.openPath}`);

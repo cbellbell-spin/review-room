@@ -98,8 +98,11 @@ async function run(): Promise<void> {
     await page.goto(`${baseUrl}${ownerDoc.openPath}`);
     await page.locator('.ProseMirror').waitFor({ state: 'visible', timeout: 15_000 });
     await expect(page.locator('[data-review-room-paused-owner="1"]')).toContainText('Document paused');
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="state"]')).toContainText('Sharing paused');
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="edit"]')).toContainText('Editing available');
     await page.getByRole('button', { name: 'Resume sharing' }).click();
     await expect(page.locator('[data-review-room-paused-owner="1"]')).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="state"]')).toContainText('Active document');
 
     const resumedContext = await readJson<{ doc: { shareState: string }; capabilities: { canEdit: boolean } }>(
       await fetch(`${baseUrl}/api/documents/${encodeURIComponent(ownerDoc.slug)}/open-context`, {

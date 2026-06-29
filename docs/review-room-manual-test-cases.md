@@ -101,9 +101,15 @@ http://127.0.0.1:4000/d/SLUG?rr=1&token=ROLE_TOKEN
 
 Expected:
 
-- Owner and editor can edit the title, edit document content, comment/reply, resolve/reopen comments, use `Add agent`, and use `Share`.
-- Commenter can read and comment/reply, but cannot edit the title, edit document content, use `Add agent`, or use `Share`.
-- Viewer can read only. They cannot edit title/content, comment/reply, resolve/reopen comments, use `Add agent`, or use `Share`.
+- Owner and editor can edit the title, edit document content, comment/reply, resolve/reopen comments, and use `Share`.
+- Only owner can request an external BYO-agent review from `Add agent`. Editor can share the document but cannot request agent review or manage members.
+- Commenter can read and comment/reply, but cannot edit the title, edit document content, request agent review, or manage access.
+- Viewer can read only. They cannot edit title/content, comment/reply, resolve/reopen comments, request agent review, or manage access.
+- The document chrome capability strip summarizes the current state without opening menus:
+  - owner: `Full access`, `Editing available`, `Can manage access`, `Agent request ready`, `Active document`;
+  - editor: `Can edit`, `Editing available`, `Can share document`, `Agent request owner-only`, `Active document`;
+  - commenter: `Comment only`, `Comment only`, `Owner manages access`, `Agent request owner-only`, `Active document`;
+  - viewer: `View only`, `Read only`, `Owner manages access`, `Agent request owner-only`, `Active document`.
 - Non-owner roles should not see controls they cannot use, or those controls should be disabled with no successful server mutation.
 
 Check the open payload for each token:
@@ -216,6 +222,14 @@ curl -s http://127.0.0.1:4000/documents/SLUG/pause \
 
 Expected: the form shows `This document is paused. Resume it before registering it in Review Room.`
 
+## Open Paused Owner Link
+
+1. Create a Review Room document and keep the owner link and `ownerSecret`.
+2. Pause the document with the pause curl from `Register Paused Document`.
+3. Open the owner link.
+
+Expected: the editor opens for owner-capable access, the paused banner says `Document paused`, and the capability strip includes `Sharing paused` plus `Editing available`. Click `Resume sharing` and confirm the strip returns to `Active document`.
+
 ## Register Revoked Document
 
 1. Create a document and keep its `ownerSecret`.
@@ -259,10 +273,12 @@ Expected: standalone document mode remains separate from Review Room mode.
 1. Open a Review Room document URL with `rr=1`.
 2. At desktop width, confirm:
    - title row is above the controls row,
+   - the capability strip is visible below or beside the title without covering it,
    - there is no duplicate floating share pill,
    - formatting controls, `Add agent`, `Cancel`, `Save`, and `Share` are usable.
 3. At a narrow mobile width, confirm:
    - title stays on its own row,
+   - the capability strip remains readable and can scroll horizontally if needed,
    - formatting controls scroll horizontally if needed,
    - controls stay inside the viewport,
    - document content starts below the fixed header.

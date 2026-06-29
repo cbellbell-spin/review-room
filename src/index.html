@@ -157,6 +157,7 @@
       justify-content: center;
       gap: 10px;
       overflow: hidden;
+      flex-wrap: wrap;
     }
 
     .review-room-actions {
@@ -182,6 +183,15 @@
       flex: 1 1 auto;
       max-width: min(720px, 100%);
       text-align: center;
+    }
+
+    #review-room-capability-slot {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+      max-width: 100%;
+      flex: 0 1 auto;
     }
 
     #review-room-status-slot,
@@ -227,6 +237,11 @@
 
       .review-room-format-row {
         justify-content: flex-start;
+      }
+
+      #review-room-capability-slot {
+        order: 3;
+        flex-basis: 100%;
       }
 
       #review-room-presence-slot {
@@ -1237,6 +1252,7 @@
   <div id="review-room-bar" aria-label="Review Room navigation">
     <div class="review-room-document">
       <div id="review-room-title-slot" aria-live="polite"></div>
+      <div id="review-room-capability-slot" aria-live="polite"></div>
     </div>
     <div class="review-room-controls">
       <div class="review-room-left">

@@ -280,6 +280,18 @@ Goal: make dashboard entry paths explain document registration/opening outcomes 
 
 Out of scope: Tauri/native sync work, provider integrations, and collaboration/Yjs changes.
 
+### Implemented Slice: Document Chrome And Action Clarity
+
+Goal: make the opened document surface explain what the user can do before expanding native-app or sync workflows.
+
+- The near-term document-action surface stays with the current Review Room document chrome and mounted `share-pill` controls rather than restarting the fixed-bar consolidation work.
+- The document chrome now includes a compact capability strip for access role, editability, sharing/member authority, BYO-agent request state, and share availability.
+- The strip is derived from the centralized capability contract plus the existing review-request status, so owner, editor, commenter, viewer, paused-owner, and active-agent states read consistently with the Share and Add agent menus.
+- BYO-agent language remains provider-neutral: Review Room exposes request-scoped external review work and does not host models, invoke provider SDKs, or store provider credentials.
+- Focused coverage lives in `src/tests/review-room-header-wiring.test.ts`, `src/tests/review-room-access-clarity.playwright.ts`, `src/tests/review-room-unavailable-access.playwright.ts`, and `src/tests/review-room-agent-review.playwright.ts`.
+
+Out of scope: Tauri/native sync work, provider integrations, broad collaboration/Yjs changes, and a full visual redesign of the document header.
+
 ### Workspace And Permissions
 
 - Complete migration from local seeded identities to session-backed users after recovery and additional-device behavior are defined.

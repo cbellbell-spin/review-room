@@ -32,6 +32,7 @@ const vercelConfig = JSON.parse(readFileSync(path.join(root, 'vercel.json'), 'ut
 };
 
 assert(indexHtml.includes('id="review-room-title-slot"'), 'Expected Review Room header to expose a title slot');
+assert(indexHtml.includes('id="review-room-capability-slot"'), 'Expected Review Room header to expose a capability summary slot');
 assert(indexHtml.includes('id="review-room-status-slot"'), 'Expected Review Room header to expose a sync status slot');
 assert(indexHtml.includes('id="review-room-review-slot"'), 'Expected Review Room header to expose a review sidebar slot');
 assert(indexHtml.includes('id="review-room-agent-slot"'), 'Expected Review Room header to expose an agent control slot');
@@ -50,7 +51,20 @@ assert(
   'Expected Review Room mode to target the Review Room header bar',
 );
 assert(
+  editorSource.includes('private createReviewRoomCapabilityStrip()')
+    && editorSource.includes('private updateReviewRoomCapabilityStrip()')
+    && editorSource.includes("chip.className = 'review-room-capability-chip';")
+    && editorSource.includes("this.createReviewRoomCapabilityChip('edit'")
+    && editorSource.includes("this.createReviewRoomCapabilityChip('share'")
+    && editorSource.includes("this.createReviewRoomCapabilityChip('agent'")
+    && editorSource.includes("this.createReviewRoomCapabilityChip('state'")
+    && editorSource.includes('Review Room exposes request-scoped work for an external BYO agent; it does not run a model.')
+    && editorSource.includes('this.renderReviewRoomUnavailableChrome(copy.title);'),
+  'Expected Review Room document chrome to summarize role, editing, sharing, BYO-agent, and unavailable states',
+);
+assert(
   editorSource.includes("titleSlot.replaceChildren(title);")
+    && editorSource.includes('capabilitySlot.replaceChildren(this.reviewRoomCapabilityStripEl);')
     && editorSource.includes("statusSlot.replaceChildren(syncStatusInline);")
     && editorSource.includes("reviewWrap.append(this.createReviewRoomAuditBannerButton(), this.createReviewRoomReviewButton());")
     && editorSource.includes("reviewSlot.replaceChildren(reviewWrap);")

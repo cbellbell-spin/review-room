@@ -77,6 +77,7 @@ async function run(): Promise<void> {
     await expect(runReview).toBeVisible({ timeout: 10_000 });
     await runReview.click();
     await expect(agentButton).toContainText('Waiting for an agent', { timeout: 10_000 });
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="agent"]')).toContainText('Agent requested');
 
     const listed = await callTool<{ requests: Array<{ id: string; status: string }> }>(base, 'review_room_list_review_requests', {
       slug: created.document.proofSlug,
@@ -121,6 +122,7 @@ async function run(): Promise<void> {
     });
     await callTool(base, 'review_room_complete_review_request', leaseArgs);
     await expect(agentButton).toContainText('2 review items ready', { timeout: 15_000 });
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="agent"]')).toContainText('Agent results ready');
 
     await agentButton.click();
     await page.getByRole('menuitem', { name: 'Open review results' }).click();

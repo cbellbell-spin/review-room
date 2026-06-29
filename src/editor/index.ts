@@ -155,6 +155,7 @@ import {
   type ShareCapabilities,
   type SharePendingEvent,
   type ShareRequestError,
+  type ShareState,
 } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
@@ -1070,9 +1071,11 @@ class ProofEditorImpl implements ProofEditor {
     canRequestAgentReview: false,
   };
   private reviewRoomCurrentRole: ReviewRoomRole | null = null;
+  private reviewRoomShareState: ShareState | 'MISSING' | 'UNKNOWN' | null = null;
   private reviewRoomCanManageMembers: boolean = false;
   private reviewRoomActorLabels: Record<string, string> = {};
   private reviewRoomIdentityId: string | null = null;
+  private reviewRoomCapabilityStripEl: HTMLElement | null = null;
   private reviewRoomProfileButtonEl: HTMLButtonElement | null = null;
   private reviewRoomLatestAgentReviewRun: ReviewRoomAgentReviewRun | null = null;
   private reviewRoomAgentReviewCanStart: boolean = false;
@@ -1536,6 +1539,7 @@ class ProofEditorImpl implements ProofEditor {
       this.shareDocTitle = typeof doc.title === 'string' && doc.title.trim().length > 0
         ? doc.title.trim()
         : 'Untitled';
+      this.reviewRoomShareState = doc.shareState ?? null;
       this.updatePausedOwnerNotice(doc.shareState === 'PAUSED' && this.documentCapabilities.canEdit, options);
 
       let collabTemplateMarkdown: string | null = null;
@@ -1838,8 +1842,11 @@ class ProofEditorImpl implements ProofEditor {
 
     const state = error.error.shareState ?? (code === 'DOCUMENT_NOT_FOUND' ? 'MISSING' : 'UNKNOWN');
     const role = error.error.role ?? null;
+    this.reviewRoomCurrentRole = this.parseReviewRoomRole(this.formatUnavailableRole(role ?? ''));
+    this.reviewRoomShareState = state;
     const copy = this.getUnavailableCopy(code, state);
     document.title = `${copy.title} - Review Room`;
+    this.renderReviewRoomUnavailableChrome(copy.title);
     document.body.setAttribute('data-share-unavailable', String(state).toLowerCase());
     root.innerHTML = '';
 
@@ -1899,6 +1906,35 @@ class ProofEditorImpl implements ProofEditor {
     root.appendChild(shell);
     this.scheduleBannerLayoutUpdate();
     return true;
+  }
+
+  private renderReviewRoomUnavailableChrome(titleText: string): void {
+    if (!this.isReviewRoomRuntime()) return;
+    this.ensureShareBannerResponsiveCSS();
+    const titleSlot = document.getElementById('review-room-title-slot');
+    const capabilitySlot = document.getElementById('review-room-capability-slot');
+    if (titleSlot) {
+      const title = document.createElement('span');
+      title.className = 'share-pill-title';
+      title.textContent = titleText;
+      titleSlot.replaceChildren(title);
+      this.shareBannerTitleEl = title;
+    }
+    if (capabilitySlot) {
+      capabilitySlot.replaceChildren(this.createReviewRoomCapabilityStrip());
+    }
+    for (const id of [
+      'review-room-status-slot',
+      'review-room-presence-slot',
+      'review-room-review-slot',
+      'review-room-agent-slot',
+      'review-room-format-slot',
+      'review-room-save-slot',
+      'review-room-profile-slot',
+      'review-room-share-slot',
+    ]) {
+      document.getElementById(id)?.replaceChildren();
+    }
   }
 
   private getUnavailableCopy(code: string, state: string): { label: string; title: string; message: string } {
@@ -3738,6 +3774,43 @@ class ProofEditorImpl implements ProofEditor {
         font-weight:500;
         line-height:1;
       }
+      #review-room-bar .review-room-capability-strip {
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        gap:6px;
+        min-width:0;
+        max-width:100%;
+        overflow:hidden;
+      }
+      #review-room-bar .review-room-capability-chip {
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        min-height:26px;
+        max-width:150px;
+        padding:0 9px;
+        border:1px solid rgba(31,41,51,0.12);
+        border-radius:999px;
+        background:#fff;
+        color:#334155;
+        font-size:11px;
+        font-weight:700;
+        line-height:1;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+      }
+      #review-room-bar .review-room-capability-chip[data-kind="state"][data-state="paused"],
+      #review-room-bar .review-room-capability-chip[data-kind="agent"][data-state="active"] {
+        border-color:#f6c36a;
+        background:#fff7ed;
+        color:#7c2d12;
+      }
+      #review-room-bar .review-room-capability-chip[data-kind="edit"][data-state="readonly"],
+      #review-room-bar .review-room-capability-chip[data-kind="share"][data-state="owner"] {
+        color:#64748b;
+      }
       #share-banner .share-pill-status-sep {
         width:1px;
         height:14px;
@@ -3840,6 +3913,18 @@ class ProofEditorImpl implements ProofEditor {
         #review-room-bar .share-pill-share-btn button span:first-child {
           display:inline !important;
           font-size:11px !important;
+        }
+        #review-room-bar .review-room-capability-strip {
+          justify-content:flex-start;
+          overflow-x:auto;
+          scrollbar-width:none;
+        }
+        #review-room-bar .review-room-capability-strip::-webkit-scrollbar {
+          display:none;
+        }
+        #review-room-bar .review-room-capability-chip {
+          max-width:none;
+          flex:0 0 auto;
         }
         #review-room-bar .proof-avatar-tooltip {
           display:none !important;
@@ -4151,6 +4236,7 @@ class ProofEditorImpl implements ProofEditor {
       this.shareBannerTitleEl
       && this.shareBannerAvatarsEl
       && this.shareBannerAgentSlotEl
+      && (!isReviewRoom || this.reviewRoomCapabilityStripEl)
       && this.shareBannerSyncDotEl
       && this.shareBannerSyncLabelEl
       && banner.contains(this.shareBannerTitleEl)
@@ -4158,6 +4244,7 @@ class ProofEditorImpl implements ProofEditor {
       this.updateShareBannerTitleDisplay();
       this.updateShareBannerPresenceDisplay();
       this.updateShareBannerAgentControlDisplay();
+      this.updateReviewRoomCapabilityStrip();
       this.updateShareBannerSyncDisplay();
       this.scheduleBannerLayoutUpdate();
       return;
@@ -4201,6 +4288,7 @@ class ProofEditorImpl implements ProofEditor {
 
     if (isReviewRoom) {
       const titleSlot = document.getElementById('review-room-title-slot');
+      const capabilitySlot = document.getElementById('review-room-capability-slot');
       const statusSlot = document.getElementById('review-room-status-slot');
       const presenceSlot = document.getElementById('review-room-presence-slot');
       const agentSlotContainer = document.getElementById('review-room-agent-slot');
@@ -4209,8 +4297,10 @@ class ProofEditorImpl implements ProofEditor {
       const saveSlot = document.getElementById('review-room-save-slot');
       const profileSlot = document.getElementById('review-room-profile-slot');
       const shareSlot = document.getElementById('review-room-share-slot');
-      if (titleSlot && statusSlot && presenceSlot && agentSlotContainer && reviewSlot && formatSlot && saveSlot && profileSlot && shareSlot) {
+      if (titleSlot && capabilitySlot && statusSlot && presenceSlot && agentSlotContainer && reviewSlot && formatSlot && saveSlot && profileSlot && shareSlot) {
         titleSlot.replaceChildren(title);
+        this.reviewRoomCapabilityStripEl = this.createReviewRoomCapabilityStrip();
+        capabilitySlot.replaceChildren(this.reviewRoomCapabilityStripEl);
         statusSlot.replaceChildren(syncStatusInline);
         presenceSlot.replaceChildren(avatars);
         const reviewWrap = document.createElement('span');
@@ -5361,6 +5451,7 @@ class ProofEditorImpl implements ProofEditor {
     };
     this.collabCanComment = this.documentCapabilities.canComment;
     this.collabCanEdit = this.documentCapabilities.canEditContent;
+    this.updateReviewRoomCapabilityStrip();
   }
 
   private parseReviewRoomRole(value: unknown): ReviewRoomRole | null {
@@ -5388,6 +5479,152 @@ class ProofEditorImpl implements ProofEditor {
     if (role === 'commenter') return 'Comment only';
     if (role === 'viewer') return 'View only';
     return 'Unknown';
+  }
+
+  private reviewRoomEditingLabel(): { label: string; state: string; title: string } {
+    if (this.documentCapabilities.canEditContent) {
+      return {
+        label: 'Editing available',
+        state: 'editable',
+        title: 'You can edit the title and document content.',
+      };
+    }
+    if (this.documentCapabilities.canComment) {
+      return {
+        label: 'Comment only',
+        state: 'comment',
+        title: 'You can comment and reply, but content editing is disabled.',
+      };
+    }
+    return {
+      label: 'Read only',
+      state: 'readonly',
+      title: 'Editing and commenting are disabled for this link.',
+    };
+  }
+
+  private reviewRoomShareAuthorityLabel(): { label: string; state: string; title: string } {
+    if (this.documentCapabilities.canManageMembers) {
+      return {
+        label: 'Can manage access',
+        state: 'manage',
+        title: 'You can add, rotate, or revoke human collaborator access.',
+      };
+    }
+    if (this.documentCapabilities.canShare) {
+      return {
+        label: 'Can share document',
+        state: 'share',
+        title: 'You can share the document, but only owners manage collaborators.',
+      };
+    }
+    return {
+      label: 'Owner manages access',
+      state: 'owner',
+      title: 'Only the owner can change human collaborator access.',
+    };
+  }
+
+  private reviewRoomAgentChromeLabel(): { label: string; state: string; title: string } {
+    const run = this.reviewRoomLatestAgentReviewRun;
+    if (run && ['queued', 'claimed', 'running'].includes(run.status)) {
+      return {
+        label: run.status === 'queued' ? 'Agent requested' : 'Agent active',
+        state: 'active',
+        title: `${this.reviewRoomAgentReviewStatusLabel(run)}. Review Room exposes request-scoped work for an external BYO agent; it does not run a model.`,
+      };
+    }
+    if (run?.status === 'completed') {
+      return {
+        label: 'Agent results ready',
+        state: 'ready',
+        title: this.reviewRoomAgentReviewStatusLabel(run),
+      };
+    }
+    if (run && ['failed', 'cancelled', 'lease_expired'].includes(run.status)) {
+      return {
+        label: 'Agent needs review',
+        state: 'attention',
+        title: this.reviewRoomAgentReviewStatusLabel(run),
+      };
+    }
+    if (this.documentCapabilities.canRequestAgentReview) {
+      return {
+        label: 'Agent request ready',
+        state: 'ready',
+        title: 'The owner can request external BYO-agent review work. Review Room does not host or invoke a model provider.',
+      };
+    }
+    return {
+      label: 'Agent request owner-only',
+      state: 'owner',
+      title: 'Only the owner can request external BYO-agent review work.',
+    };
+  }
+
+  private reviewRoomShareStateLabel(): { label: string; state: string; title: string } {
+    if (this.reviewRoomShareState === 'PAUSED') {
+      return {
+        label: 'Sharing paused',
+        state: 'paused',
+        title: 'Owner access can still edit, but collaborators cannot open this document until sharing resumes.',
+      };
+    }
+    if (this.reviewRoomShareState === 'REVOKED' || this.reviewRoomShareState === 'DELETED' || this.reviewRoomShareState === 'MISSING') {
+      return {
+        label: 'Unavailable',
+        state: 'unavailable',
+        title: 'This document link does not currently grant access.',
+      };
+    }
+    return {
+      label: 'Active document',
+      state: 'active',
+      title: 'This document is available through the current link.',
+    };
+  }
+
+  private createReviewRoomCapabilityChip(kind: string, label: string, state: string, title: string): HTMLSpanElement {
+    const chip = document.createElement('span');
+    chip.className = 'review-room-capability-chip';
+    chip.dataset.kind = kind;
+    chip.dataset.state = state;
+    chip.textContent = label;
+    chip.title = title;
+    chip.setAttribute('aria-label', `${label}. ${title}`);
+    return chip;
+  }
+
+  private createReviewRoomCapabilityStrip(): HTMLElement {
+    const strip = document.createElement('div');
+    strip.className = 'review-room-capability-strip';
+    strip.dataset.reviewRoomCapabilityStrip = '1';
+    strip.setAttribute('aria-label', 'Document capabilities');
+    this.reviewRoomCapabilityStripEl = strip;
+    this.updateReviewRoomCapabilityStrip();
+    return strip;
+  }
+
+  private updateReviewRoomCapabilityStrip(): void {
+    const strip = this.reviewRoomCapabilityStripEl;
+    if (!strip || !this.isReviewRoomRuntime()) return;
+    const role = {
+      label: this.shortReviewRoomAccess(this.reviewRoomCurrentRole),
+      state: this.reviewRoomCurrentRole ?? 'unknown',
+      title: this.describeReviewRoomAccess(this.reviewRoomCurrentRole),
+    };
+    const editing = this.reviewRoomEditingLabel();
+    const sharing = this.reviewRoomShareAuthorityLabel();
+    const agent = this.reviewRoomAgentChromeLabel();
+    const shareState = this.reviewRoomShareStateLabel();
+
+    strip.replaceChildren(
+      this.createReviewRoomCapabilityChip('role', role.label, role.state, role.title),
+      this.createReviewRoomCapabilityChip('edit', editing.label, editing.state, editing.title),
+      this.createReviewRoomCapabilityChip('share', sharing.label, sharing.state, sharing.title),
+      this.createReviewRoomCapabilityChip('agent', agent.label, agent.state, agent.title),
+      this.createReviewRoomCapabilityChip('state', shareState.label, shareState.state, shareState.title),
+    );
   }
 
   private copyWithPromptFallback(text: string, promptLabel = 'Copy link:'): boolean {
@@ -6603,6 +6840,7 @@ class ProofEditorImpl implements ProofEditor {
       this.reviewRoomLatestAgentReviewRun = response.runs[0] ?? null;
       this.reviewRoomAgentReviewCanStart = response.canStart;
       this.updateShareBannerAgentControlDisplay();
+      this.updateReviewRoomCapabilityStrip();
       if (previousStatus && previousStatus !== 'completed' && this.reviewRoomLatestAgentReviewRun?.status === 'completed') {
         void this.updateReviewRoomReviewButtonCount();
       }
@@ -6624,6 +6862,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!response || this.isShareRequestError(response) || response.success !== true) return false;
     this.reviewRoomLatestAgentReviewRun = response.run;
     this.updateShareBannerAgentControlDisplay();
+    this.updateReviewRoomCapabilityStrip();
     this.scheduleReviewRoomAgentReviewPoll();
     return true;
   }
@@ -6635,6 +6874,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!response || this.isShareRequestError(response) || response.success !== true) return false;
     this.reviewRoomLatestAgentReviewRun = response.run;
     this.updateShareBannerAgentControlDisplay();
+    this.updateReviewRoomCapabilityStrip();
     this.scheduleReviewRoomAgentReviewPoll();
     return true;
   }
@@ -6646,6 +6886,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!response || this.isShareRequestError(response) || response.success !== true) return false;
     this.reviewRoomLatestAgentReviewRun = response.run;
     this.updateShareBannerAgentControlDisplay();
+    this.updateReviewRoomCapabilityStrip();
     return true;
   }
 
@@ -7161,6 +7402,7 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerTitleEl = null;
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
+    this.reviewRoomCapabilityStripEl = null;
     this.reviewRoomFormatSlotEl = null;
     this.reviewRoomAuditBannerEl = null;
     this.reviewRoomSuggestingButtonEl = null;
@@ -7186,12 +7428,14 @@ class ProofEditorImpl implements ProofEditor {
     if (existing) existing.remove();
     for (const id of [
       'review-room-title-slot',
+      'review-room-capability-slot',
       'review-room-status-slot',
       'review-room-presence-slot',
       'review-room-review-slot',
       'review-room-agent-slot',
       'review-room-format-slot',
       'review-room-save-slot',
+      'review-room-profile-slot',
       'review-room-share-slot',
     ]) {
       document.getElementById(id)?.replaceChildren();
