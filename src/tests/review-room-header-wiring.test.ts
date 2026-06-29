@@ -365,8 +365,8 @@ assert(
     && editorSource.includes("event.type === 'suggestion.accepted'")
     && editorSource.includes("|| event.type === 'suggestion.rejected'")
     && editorSource.includes('if (this.isSuggestionDecisionPendingShareEvent(event) && this.collabEnabled) {')
-    && editorSource.includes('void this.refreshCollabSessionAndReconnect(this.shouldPreservePendingLocalCollabState());'),
-  'Expected accepted/rejected suggestion events to refresh the live collab session after access-epoch rotation',
+    && editorSource.includes('void this.refreshCollabSessionAndReconnect(false);'),
+  'Expected accepted/rejected suggestion events to cleanly refresh the live collab session after access-epoch rotation',
 );
 assert(
   !editorSource.includes('if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) return;\n    if (this.hasRecentLocalEditorInput()) return;')

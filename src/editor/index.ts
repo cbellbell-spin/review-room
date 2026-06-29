@@ -3030,7 +3030,9 @@ class ProofEditorImpl implements ProofEditor {
     if (this.isMarksPendingShareEvent(event)) {
       this.scheduleShareMarksRefresh();
       if (this.isSuggestionDecisionPendingShareEvent(event) && this.collabEnabled) {
-        void this.refreshCollabSessionAndReconnect(this.shouldPreservePendingLocalCollabState());
+        // Suggestion decisions are canonical server rewrites that rotate access.
+        // Rebind cleanly so stale local Yjs state cannot keep the edit gate closed.
+        void this.refreshCollabSessionAndReconnect(false);
       }
       return;
     }
