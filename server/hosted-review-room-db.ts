@@ -873,6 +873,7 @@ export async function createHostedReviewRoomDocument(input: {
   ownerSecret: string;
   workspaceId?: string;
   identityId?: string;
+  source?: ReviewRoomDocumentRow['source'];
 }): Promise<{
   proofDoc: DocumentRow;
   editorAccess: { tokenId: string; secret: string };
@@ -888,8 +889,11 @@ export async function createHostedReviewRoomDocument(input: {
   const historyEventId = randomUUID();
   const workspaceId = input.workspaceId || REVIEW_ROOM_DEFAULT_WORKSPACE_ID;
   const identityId = input.identityId || REVIEW_ROOM_LOCAL_HUMAN_ID;
+  const source = input.source === 'imported' ? 'imported' : 'created';
+  const eventType = source === 'imported' ? 'document.imported' : 'document.created';
+  const engineEventType = source === 'imported' ? 'review_room.document.imported' : 'review_room.document.created';
   const marksJson = JSON.stringify(input.marks ?? {});
-  const eventPayload = JSON.stringify({ title: input.title, ownerId: input.ownerId, reviewRoom: true });
+  const eventPayload = JSON.stringify({ title: input.title, ownerId: input.ownerId, reviewRoom: true, source });
 
   await db.batch([
     [
@@ -922,8 +926,8 @@ export async function createHostedReviewRoomDocument(input: {
       `INSERT INTO review_room_documents (
         id, workspace_id, title, proof_slug, proof_doc_id, source, owner_identity_id, created_by_identity_id, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?)`,
-      [reviewRoomDocumentId, workspaceId, input.title, input.slug, docId, identityId, identityId, now, now],
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [reviewRoomDocumentId, workspaceId, input.title, input.slug, docId, source, identityId, identityId, now, now],
     ],
     [
       `INSERT INTO review_room_document_members (
@@ -937,37 +941,38 @@ export async function createHostedReviewRoomDocument(input: {
         id, workspace_id, document_id, actor_id, actor_type, event_type, target_type, target_id,
         before_json, after_json, rationale, metadata_json, created_at
       )
-      VALUES (?, ?, ?, ?, 'human', 'document.created', 'document', ?, NULL, ?, NULL, ?, ?)`,
+      VALUES (?, ?, ?, ?, 'human', ?, 'document', ?, NULL, ?, NULL, ?, ?)`,
       [
         historyEventId,
         workspaceId,
         reviewRoomDocumentId,
         identityId,
+        eventType,
         reviewRoomDocumentId,
         JSON.stringify({ title: input.title, proofSlug: input.slug, proofDocId: docId }),
-        JSON.stringify({ proofSlug: input.slug, source: 'created' }),
+        JSON.stringify({ proofSlug: input.slug, source }),
         now,
       ],
     ],
     [
       `INSERT INTO events (document_slug, event_type, event_data, actor, created_at)
-       VALUES (?, 'review_room.document.created', ?, ?, ?)`,
-      [input.slug, eventPayload, input.ownerId, now],
+       VALUES (?, ?, ?, ?, ?)`,
+      [input.slug, engineEventType, eventPayload, input.ownerId, now],
     ],
     [
       `INSERT INTO document_events (
         document_slug, document_revision, event_type, event_data, actor, idempotency_key, mutation_route, tombstone_revision, created_at
       )
-      VALUES (?, 1, 'review_room.document.created', ?, ?, NULL, NULL, NULL, ?)`,
-      [input.slug, eventPayload, input.ownerId, now],
+      VALUES (?, 1, ?, ?, ?, NULL, NULL, NULL, ?)`,
+      [input.slug, engineEventType, eventPayload, input.ownerId, now],
     ],
     [
       `INSERT INTO mutation_outbox (
         document_slug, document_revision, event_id, event_type, event_data, actor, idempotency_key, mutation_route,
         tombstone_revision, created_at, delivered_at
       )
-      VALUES (?, 1, last_insert_rowid(), 'review_room.document.created', ?, ?, NULL, NULL, NULL, ?, NULL)`,
-      [input.slug, eventPayload, input.ownerId, now],
+      VALUES (?, 1, last_insert_rowid(), ?, ?, ?, NULL, NULL, NULL, ?, NULL)`,
+      [input.slug, engineEventType, eventPayload, input.ownerId, now],
     ],
   ]);
 

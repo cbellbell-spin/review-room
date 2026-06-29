@@ -10,6 +10,7 @@ import {
   getDocumentBySlug,
   resolveDocumentAccess,
   reviewRoomRoleToShareRole,
+  shareRoleToReviewRoomRole,
   type DocumentRow,
   type ReviewRoomAssignmentTaskRow,
   type ReviewRoomDocumentMemberRow,
@@ -76,6 +77,7 @@ import {
   normalizeReviewRoomIdentityId,
   reviewRoomActorForIdentity,
 } from './review-room-identity.js';
+import type { ShareRole } from './share-types.js';
 
 export const reviewRoomRoutes = Router();
 
@@ -133,22 +135,63 @@ function parseReviewRoomRoleInput(value: unknown): ReviewRoomRole | null {
     : null;
 }
 
-function parseProofSlugInput(value: string): { slug: string; token: string | null } {
+type ParsedReviewRoomReference = {
+  slug: string;
+  token: string | null;
+  error: { code: string; error: string } | null;
+};
+
+const REVIEW_ROOM_SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
+
+function invalidReviewRoomLink(): ParsedReviewRoomReference {
+  return {
+    slug: '',
+    token: null,
+    error: {
+      code: 'INVALID_DOCUMENT_LINK',
+      error: 'Paste a Review Room /d/... link or a document slug. Direct Google Docs and SharePoint links are not supported yet.',
+    },
+  };
+}
+
+function validateReviewRoomSlug(slug: string): ParsedReviewRoomReference {
+  if (!slug) {
+    return {
+      slug: '',
+      token: null,
+      error: { code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' },
+    };
+  }
+  if (!REVIEW_ROOM_SLUG_PATTERN.test(slug)) {
+    return {
+      slug: '',
+      token: null,
+      error: {
+        code: 'INVALID_DOCUMENT_SLUG',
+        error: 'Use a Review Room document slug or a /d/... link.',
+      },
+    };
+  }
+  return { slug, token: null, error: null };
+}
+
+function parseProofSlugInput(value: string): ParsedReviewRoomReference {
   const trimmed = value.trim();
-  if (!trimmed) return { slug: '', token: null };
+  if (!trimmed) return validateReviewRoomSlug('');
   try {
     const parsed = new URL(trimmed, 'http://review-room.local');
     const match = parsed.pathname.match(/^\/d\/([^/?#]+)\/?$/);
     if (match?.[1]) {
-      return {
-        slug: decodeURIComponent(match[1]).trim(),
-        token: parsed.searchParams.get('token'),
-      };
+      const result = validateReviewRoomSlug(decodeURIComponent(match[1]).trim());
+      return { ...result, token: parsed.searchParams.get('token')?.trim() || null };
+    }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
+      return invalidReviewRoomLink();
     }
   } catch {
-    // Treat unparsable input as a raw slug below.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return invalidReviewRoomLink();
   }
-  return { slug: trimmed.replace(/^\/d\//, '').split(/[?#]/)[0]?.trim() ?? '', token: null };
+  return validateReviewRoomSlug(trimmed.split(/[?#]/)[0]?.trim() ?? '');
 }
 
 // Engine seams: the Proof document engine still differs between the local
@@ -162,6 +205,16 @@ async function engineGetDocumentBySlug(slug: string): Promise<DocumentRow | unde
 async function engineResolveDocumentAccess(slug: string, token: string): Promise<unknown> {
   if (isHostedReviewRoomDbEnabled()) return resolveHostedDocumentAccess(slug, token);
   return resolveDocumentAccess(slug, token);
+}
+
+async function engineResolveReviewRoomRole(slug: string, token: string): Promise<ReviewRoomRole | null> {
+  const access = await engineResolveDocumentAccess(slug, token);
+  const role = access && typeof access === 'object' && 'role' in access
+    ? (access as { role?: unknown }).role
+    : null;
+  return role === 'viewer' || role === 'commenter' || role === 'editor' || role === 'owner_bot'
+    ? shareRoleToReviewRoomRole(role as ShareRole)
+    : null;
 }
 
 async function engineAddDocumentEvent(slug: string, eventType: string, eventData: unknown, actor: string): Promise<void> {
@@ -198,8 +251,14 @@ function reviewRoomRegisterErrorForState(shareState: string): { status: number; 
   return {
     status: 409,
     code: 'DOCUMENT_UNAVAILABLE',
-    error: `This document is not available for registration (${shareState}).`,
+    error: 'This document is currently unavailable and cannot be registered in Review Room.',
   };
+}
+
+function reviewRoomSourceLabel(source: ReviewRoomDocumentRow['source'] | string): string {
+  if (source === 'registered') return 'Registered document';
+  if (source === 'imported') return 'Imported file';
+  return 'Created in Review Room';
 }
 
 function serializeDocument(
@@ -215,7 +274,7 @@ function serializeDocument(
     proofSlug: row.proof_slug,
     proofDocId: row.proof_doc_id,
     source: row.source,
-    sourceLabel: row.source === 'registered' ? 'Registered document' : 'Created in Review Room',
+    sourceLabel: reviewRoomSourceLabel(row.source),
     shareState: row.share_state,
     currentRole: role,
     currentShareRole: shareRole,
@@ -1032,7 +1091,7 @@ function renderReviewRoomHome(): string {
       }
       documentsEl.innerHTML = docs.map((doc) => {
         const title = escapeHtml(doc.title || 'Untitled review');
-        const source = escapeHtml(doc.sourceLabel || (doc.source === 'registered' ? 'Registered document' : 'Created in Review Room'));
+        const source = escapeHtml(doc.sourceLabel || (doc.source === 'registered' ? 'Registered document' : doc.source === 'imported' ? 'Imported file' : 'Created in Review Room'));
         const meta = escapeHtml('Slug ' + doc.proofSlug + ' · Updated ' + formatDate(doc.proofUpdatedAt || doc.updatedAt));
         return '<article class="doc-row">'
           + '<div><div class="doc-title">' + title + '</div><div class="doc-meta"><span class="doc-source">' + source + '</span><span>' + meta + '</span></div></div>'
@@ -1282,7 +1341,7 @@ function renderReviewRoomHome(): string {
         const response = await fetch('/review-room/api/documents', {
           method: 'POST',
           headers: reviewRoomHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ title, markdown }),
+          body: JSON.stringify({ title, markdown, source: 'imported' }),
         });
         const payload = await response.json();
         if (!response.ok) {
@@ -1337,6 +1396,10 @@ function renderReviewRoomHome(): string {
       registerErrorEl.textContent = '';
       const proofSlug = document.getElementById('proof-slug').value.trim();
       const token = document.getElementById('proof-token').value.trim();
+      if (token && /\\s/.test(token)) {
+        registerErrorEl.textContent = 'Access token must be a single token value.';
+        return;
+      }
       const response = await fetch('/review-room/api/documents/register', {
         method: 'POST',
         headers: reviewRoomHeaders({ 'Content-Type': 'application/json' }),
@@ -1347,7 +1410,10 @@ function renderReviewRoomHome(): string {
         registerErrorEl.textContent = payload.error || 'Could not register document.';
         return;
       }
-      window.location.href = payload.openPath || payload.document.openPath;
+      registerErrorEl.textContent = payload.message || 'Opening document...';
+      window.setTimeout(() => {
+        window.location.href = payload.openPath || payload.document.openPath;
+      }, 80);
     });
 
     load().catch((error) => {
@@ -2206,6 +2272,9 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
   const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Untitled document';
   const markdown = typeof body.markdown === 'string' ? body.markdown : '';
+  const source: ReviewRoomDocumentRow['source'] = body.source === 'imported' ? 'imported' : 'created';
+  const createdEventType = source === 'imported' ? 'document.imported' : 'document.created';
+  const engineEventType = source === 'imported' ? 'review_room.document.imported' : 'review_room.document.created';
 
   const slug = generateSlug();
   const ownerSecret = randomUUID();
@@ -2219,6 +2288,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
       ownerSecret,
       workspaceId: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
       identityId,
+      source,
     });
     const reviewRoomAccessToken = hosted.member?.proof_access_token ?? hosted.editorAccess.secret;
     const openPath = appendTokenToPath(
@@ -2242,10 +2312,11 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
   const proofDoc = createDocument(slug, markdown, {}, title, ownerId, ownerSecret);
   const access = createDocumentAccessToken(slug, 'editor');
   refreshSnapshotForSlug(slug);
-  addEvent(slug, 'review_room.document.created', {
+  addEvent(slug, engineEventType, {
     title,
     ownerId,
     reviewRoom: true,
+    source,
   }, ownerId);
 
   const reviewRoomDocument = await storeCreateReviewRoomDocumentRecord({
@@ -2253,6 +2324,7 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
     title,
     proofSlug: proofDoc.slug,
     proofDocId: proofDoc.doc_id,
+    source,
     ownerIdentityId: identityId,
     createdByIdentityId: identityId,
   });
@@ -2261,11 +2333,11 @@ reviewRoomRoutes.post('/review-room/api/documents', async (req: Request, res: Re
     documentId: reviewRoomDocument.id,
     actorId: identityId,
     actorType: 'human',
-    eventType: 'document.created',
+    eventType: createdEventType,
     targetType: 'document',
     targetId: reviewRoomDocument.id,
     after: { title, proofSlug: proofDoc.slug, proofDocId: proofDoc.doc_id },
-    metadata: { source: 'created' },
+    metadata: { source },
   });
   const member = await storeGetReviewRoomDocumentMemberForProofSlug(proofDoc.slug, identityId);
   const reviewRoomAccessToken = member?.proof_access_token ?? access.secret;
@@ -2294,24 +2366,58 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
   const token = typeof body.token === 'string' && body.token.trim()
     ? body.token.trim()
     : parsed.token;
-  if (!proofSlug) {
-    res.status(400).json({ success: false, code: 'DOCUMENT_SLUG_REQUIRED', error: 'Document slug is required.' });
+  if (parsed.error) {
+    res.status(400).json({ success: false, ...parsed.error });
+    return;
+  }
+  if (token && /\s/.test(token)) {
+    res.status(400).json({
+      success: false,
+      code: 'INVALID_ACCESS_TOKEN',
+      error: 'Access token must be a single token value.',
+    });
     return;
   }
   const existing = await storeGetReviewRoomDocumentByProofSlug(proofSlug);
   if (existing) {
-    const member = await storeGetReviewRoomDocumentMemberForProofSlug(proofSlug, identityId)
+    const existingMember = await storeGetReviewRoomDocumentMemberForProofSlug(proofSlug, identityId);
+    const tokenMember = existingMember ? null : await storeGetReviewRoomDocumentMemberForProofSlugAndToken(proofSlug, token);
+    const accessRole = !existingMember && !tokenMember && token
+      ? await engineResolveReviewRoomRole(proofSlug, token)
+      : null;
+    const authorizedRole = tokenMember?.role ?? accessRole;
+    if (!existingMember && !authorizedRole) {
+      res.status(403).json({
+        success: false,
+        code: 'PERMISSION_DENIED',
+        error: token
+          ? 'The provided token does not grant access to that document.'
+          : 'This document is already in Review Room. Paste a Review Room link with its token, or open it from an account that already has access.',
+      });
+      return;
+    }
+    if (!existingMember) {
+      await storeUpsertReviewRoomIdentity({
+        id: identityId,
+        workspaceId: existing.workspace_id,
+        kind: 'human',
+        displayName: identityId,
+      });
+    }
+    const member = existingMember
       ?? await storeUpsertReviewRoomDocumentMember({
         reviewRoomDocumentId: existing.id,
         identityId,
-        role: 'owner',
+        role: authorizedRole ?? 'viewer',
         proofSlug,
+        proofAccessToken: token,
       });
     res.json({
       success: true,
       alreadyRegistered: true,
       document: serializeDocument(existing, member),
       openPath: appendTokenToPath(buildReviewRoomOpenPath(proofSlug), member.proof_access_token ?? token),
+      message: 'This document is already in Review Room. Opening your existing access.',
     });
     return;
   }
@@ -2376,6 +2482,7 @@ reviewRoomRoutes.post('/review-room/api/documents/register', async (req: Request
     success: true,
     document: serializeDocument(reviewRoomDocument, member),
     openPath: appendTokenToPath(buildReviewRoomOpenPath(proofDoc.slug), member?.proof_access_token ?? token),
+    message: 'Document added to Review Room. Opening now.',
     proof: {
       slug: proofDoc.slug,
       docId: proofDoc.doc_id,

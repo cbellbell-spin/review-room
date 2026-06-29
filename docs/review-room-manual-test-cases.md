@@ -38,7 +38,8 @@ Expected: dashboard is usable, with no visible script error banner.
 4. Click `Import and open`.
 5. Confirm the browser opens `/d/:slug?rr=1&token=...` and the editor contains the imported file content.
 6. Return to `/review-room`.
-7. Drag an unsupported file type onto the import target.
+7. Confirm the imported document appears in the list with source label `Imported file`.
+8. Drag an unsupported file type onto the import target.
 
 Expected: supported files import and open as Review Room documents. Unsupported files show `Review Room can import .md, .markdown, and .txt files right now.`
 
@@ -153,6 +154,35 @@ Expected: the document opens in Review Room mode and is listed as `Registered do
 3. Register the same slug or URL again.
 
 Expected: registration is idempotent. It opens the existing Review Room record and does not create a duplicate list item.
+
+## Register Duplicate Without Access
+
+1. Register an existing active document.
+2. Open `/review-room` in a fresh browser profile or clear the Review Room browser identity.
+3. Paste only the already-registered slug into `Review Room slug or URL`.
+4. Leave `Access token` empty.
+5. Click `Add and open`.
+
+Expected: the form shows `This document is already in Review Room. Paste a Review Room link with its token, or open it from an account that already has access.` The hidden document title and body are not shown.
+
+## Register Unsupported External Link
+
+1. Open `/review-room`.
+2. Paste a Google Docs or SharePoint URL into `Review Room slug or URL`.
+3. Click `Add and open`.
+
+Expected: the form shows `Paste a Review Room /d/... link or a document slug. Direct Google Docs and SharePoint links are not supported yet.`
+
+## Register Invalid Slug Or Token Shape
+
+1. Open `/review-room`.
+2. Enter `bad slug` in `Review Room slug or URL`.
+3. Click `Add and open`.
+4. Replace the slug with `missing-review-doc`.
+5. Enter `two words` in `Access token`.
+6. Click `Add and open`.
+
+Expected: the invalid slug shows `Use a Review Room document slug or a /d/... link.` The malformed token shows `Access token must be a single token value.`
 
 ## Register Missing Slug
 

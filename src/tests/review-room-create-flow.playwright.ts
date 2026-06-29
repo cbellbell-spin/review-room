@@ -114,6 +114,7 @@ async function run(): Promise<void> {
     await page.getByRole('button', { name: 'Save and return to documents' }).click();
     await page.waitForURL(`${baseUrl}/review-room`);
     await expect(page.getByText('Dropped sample')).toBeVisible();
+    await expect(page.getByText('Imported file').first()).toBeVisible();
 
     const [fileChooser] = await Promise.all([
       page.waitForEvent('filechooser', { timeout: 5_000 }),
@@ -215,6 +216,7 @@ async function run(): Promise<void> {
     await page.waitForURL(`${baseUrl}/review-room`);
     await expect(page.locator('section[aria-labelledby="docs-heading"]')).toBeVisible();
     await expect(page.getByText(title)).toBeVisible();
+    await expect(page.getByText('Created in Review Room').first()).toBeVisible();
     await waitForNoHorizontalOverflow(page);
 
     assert(consoleErrors.length === 0, `Unexpected console errors:\n${consoleErrors.join('\n')}`);

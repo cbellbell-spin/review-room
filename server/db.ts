@@ -278,7 +278,7 @@ export interface ReviewRoomDocumentRow {
   title: string;
   proof_slug: string;
   proof_doc_id: string | null;
-  source: 'created' | 'registered';
+  source: 'created' | 'imported' | 'registered';
   owner_identity_id: string;
   created_by_identity_id: string;
   created_at: string;

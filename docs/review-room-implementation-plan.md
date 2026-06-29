@@ -268,6 +268,18 @@ Goal: make local file import feel reliable before expanding native-app or sync w
 
 Out of scope: Tauri/native sync work, provider integrations, and collaboration/Yjs changes.
 
+### Implemented Slice: Existing Document Opening Clarity
+
+Goal: make dashboard entry paths explain document registration/opening outcomes before expanding native-app or sync workflows.
+
+- The dashboard now labels list entries as `Created in Review Room`, `Imported file`, or `Registered document`.
+- File imports pass `source: imported` through the Review Room create API on both local and hosted DB paths.
+- Existing-link registration validates empty input, unsupported external links, invalid slugs, malformed access tokens, missing documents, permission-denied documents, paused, revoked, deleted, and unknown unavailable states with explicit user-facing messages.
+- Duplicate registration no longer grants owner access or reveals document details to visitors who only guess an existing Review Room slug; a current membership or valid link/token is required before document details are returned.
+- Focused route coverage in `src/tests/server-routes-and-share.test.ts` covers validation failures, source labels, duplicate-registration privacy, and authorized duplicate registration.
+
+Out of scope: Tauri/native sync work, provider integrations, and collaboration/Yjs changes.
+
 ### Workspace And Permissions
 
 - Complete migration from local seeded identities to session-backed users after recovery and additional-device behavior are defined.
@@ -277,9 +289,9 @@ Out of scope: Tauri/native sync work, provider integrations, and collaboration/Y
 
 ### Existing Document Opening
 
-- Keep the registration/opening flow covered as permissions are added.
-- Make the dashboard distinguish newly-created drafts from registered documents.
-- Show helpful error states when a slug is missing, revoked, paused, or permission-denied.
+- Continue hardening registration/opening flow coverage as session-backed permissions evolve.
+- Keep privacy checks on duplicate registration so hidden Review Room document details are only returned after membership or token authorization.
+- Expand manual/browser coverage if native-app or sync entry points add new dashboard paths.
 
 ### Repo Pruning
 

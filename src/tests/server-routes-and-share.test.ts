@@ -648,6 +648,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(typeof created.document?.proofSlug === 'string' && created.document.proofSlug.length > 0, 'Expected document slug');
       assert(typeof created.document?.proofDocId === 'string' && created.document.proofDocId.length > 0, 'Expected document id');
       assertEqual(created.document?.source, 'created', 'Expected Review Room-created documents to expose source=created');
+      assertEqual(created.document?.sourceLabel, 'Created in Review Room', 'Expected Review Room-created source label');
       assertEqual(created.document?.currentRole, 'owner', 'Expected creator to have Review Room owner role');
       assertEqual(created.document?.currentShareRole, 'owner_bot', 'Expected owner role to map to owner share access');
       assertEqual(created.document?.capabilities?.canEdit, true, 'Expected owner to edit Review Room documents');
@@ -702,6 +703,21 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const relistedDoc = relisted.documents.find((entry: { proofSlug?: string }) => entry.proofSlug === created.document.proofSlug);
       assert(relistedDoc, 'Expected edited document in Review Room list');
       assertEqual(relistedDoc.title, editedTitle, 'Expected Review Room list to reflect edited title');
+
+      const importedResponse = await post(baseUrl, '/review-room/api/documents', {
+        title: 'Imported Label Doc',
+        markdown: '# Imported Label Doc',
+        source: 'imported',
+      });
+      assert(importedResponse.status === 201, `Expected imported create status 201, got ${importedResponse.status}`);
+      const imported = await importedResponse.json();
+      assertEqual(imported.document?.source, 'imported', 'Expected imported source');
+      assertEqual(imported.document?.sourceLabel, 'Imported file', 'Expected imported source label');
+      const importedListResponse = await get(baseUrl, '/review-room/api/documents');
+      const importedList = await importedListResponse.json();
+      const importedListedDoc = importedList.documents.find((entry: { proofSlug?: string }) => entry.proofSlug === imported.document.proofSlug);
+      assert(importedListedDoc, 'Expected imported document in Review Room list');
+      assertEqual(importedListedDoc.sourceLabel, 'Imported file', 'Expected list to distinguish imported files');
     });
 
     await test('D2: Review Room registers an existing active document', async () => {
@@ -738,6 +754,27 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const duplicate = await duplicateResponse.json();
       assertEqual(duplicate.alreadyRegistered, true, 'Expected duplicate registration to be idempotent');
       assertEqual(duplicate.document?.id, registered.document?.id, 'Expected duplicate registration to return existing record');
+
+      const guessedDuplicate = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: proof.slug,
+      }, {
+        'x-review-room-identity-id': 'browser-duplicate-visitor',
+      });
+      assert(guessedDuplicate.status === 403, `Expected guessed duplicate register status 403, got ${guessedDuplicate.status}`);
+      const guessedPayload = await guessedDuplicate.json();
+      assertEqual(guessedPayload.code, 'PERMISSION_DENIED', 'Expected guessed duplicate to be permission denied');
+      assert(!guessedDuplicate.body.includes('Existing Registered Doc'), 'Expected guessed duplicate response not to reveal title');
+
+      const authorizedDuplicate = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: proof.slug,
+        token: proof.accessToken,
+      }, {
+        'x-review-room-identity-id': 'browser-authorized-duplicate-visitor',
+      });
+      assert(authorizedDuplicate.status === 200, `Expected authorized duplicate register status 200, got ${authorizedDuplicate.status}`);
+      const authorizedDuplicatePayload = await authorizedDuplicate.json();
+      assertEqual(authorizedDuplicatePayload.alreadyRegistered, true, 'Expected authorized duplicate to reuse existing record');
+      assertEqual(authorizedDuplicatePayload.document?.currentRole, 'editor', 'Expected proof editor token to map to Review Room editor');
     });
 
     await test('D2: Review Room role records drive open tokens and permissions', async () => {
@@ -948,6 +985,31 @@ async function runRoutePayloadValidationTests(): Promise<void> {
     });
 
     await test('D2: Review Room register reports missing, unavailable, and permission states', async () => {
+      const invalidLink = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: 'https://docs.google.com/document/d/not-review-room/edit',
+      });
+      assert(invalidLink.status === 400, `Expected invalid-link register status 400, got ${invalidLink.status}`);
+      const invalidLinkPayload = await invalidLink.json();
+      assertEqual(invalidLinkPayload.code, 'INVALID_DOCUMENT_LINK');
+      assertEqual(invalidLinkPayload.error, 'Paste a Review Room /d/... link or a document slug. Direct Google Docs and SharePoint links are not supported yet.');
+
+      const invalidSlug = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: 'bad slug',
+      });
+      assert(invalidSlug.status === 400, `Expected invalid-slug register status 400, got ${invalidSlug.status}`);
+      const invalidSlugPayload = await invalidSlug.json();
+      assertEqual(invalidSlugPayload.code, 'INVALID_DOCUMENT_SLUG');
+      assertEqual(invalidSlugPayload.error, 'Use a Review Room document slug or a /d/... link.');
+
+      const invalidTokenShape = await post(baseUrl, '/review-room/api/documents/register', {
+        proofSlug: 'missing-review-doc',
+        token: 'two words',
+      });
+      assert(invalidTokenShape.status === 400, `Expected invalid token shape status 400, got ${invalidTokenShape.status}`);
+      const invalidTokenShapePayload = await invalidTokenShape.json();
+      assertEqual(invalidTokenShapePayload.code, 'INVALID_ACCESS_TOKEN');
+      assertEqual(invalidTokenShapePayload.error, 'Access token must be a single token value.');
+
       const missing = await post(baseUrl, '/review-room/api/documents/register', { proofSlug: 'does-not-exist' });
       assert(missing.status === 404, `Expected missing register status 404, got ${missing.status}`);
       const missingPayload = await missing.json();

@@ -1044,7 +1044,7 @@ export async function storeCreateReviewRoomDocumentRecord(input: {
   title: string;
   proofSlug: string;
   proofDocId?: string | null;
-  source?: 'created' | 'registered';
+  source?: ReviewRoomDocumentRow['source'];
   ownerIdentityId?: string;
   createdByIdentityId?: string;
 }): Promise<ReviewRoomDocumentRow> {
