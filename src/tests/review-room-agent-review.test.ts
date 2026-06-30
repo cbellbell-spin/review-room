@@ -383,7 +383,20 @@ async function run(): Promise<void> {
       slug,
       token: expiringCredential.credential.token,
     });
-    assert(!expiredCredentialProbe.success, 'Lease expiry must revoke the associated agent credential');
+    assert(
+      !expiredCredentialProbe.success && expiredCredentialProbe.code === 'REQUEST_LEASE_EXPIRED',
+      'Lease expiry must revoke the associated agent credential with a specific code',
+    );
+    const expiredCompletion = await callTool(base, 'review_room_complete_review_request', {
+      slug,
+      token: expiringCredential.credential.token,
+      requestId: expiring.run.id,
+      leaseToken: expiredSecret,
+    });
+    assert(
+      !expiredCompletion.success && expiredCompletion.code === 'REQUEST_LEASE_EXPIRED',
+      'Completion after lease expiry should return a specific lease-expired code',
+    );
 
     console.log('✓ Review Room BYO agent review-request protocol');
   } finally {

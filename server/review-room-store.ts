@@ -828,6 +828,24 @@ export async function storeResolveReviewRoomAgentCredential(
   `, [proofSlug, tokenHash, new Date().toISOString()]);
 }
 
+export async function storeInspectReviewRoomAgentCredential(
+  proofSlug: string,
+  token: string,
+): Promise<ReviewRoomAgentCredential | null> {
+  const trimmed = token.trim();
+  if (!trimmed) return null;
+  const tokenHash = hashSecret(trimmed);
+  return execute<ReviewRoomAgentCredential>(`
+    SELECT c.*, d.proof_slug, r.status AS request_status
+    FROM review_room_agent_credentials c
+    JOIN review_room_documents d ON d.id = c.document_id
+    JOIN review_room_agent_review_runs r ON r.id = c.review_request_id
+    WHERE d.proof_slug = ?
+      AND c.token_hash = ?
+    LIMIT 1
+  `, [proofSlug, tokenHash]);
+}
+
 export async function storeTouchReviewRoomAgentCredential(id: string): Promise<void> {
   const db = await ensureStore();
   await db.execute({

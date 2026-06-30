@@ -20,6 +20,7 @@ import {
   storeGetAgentReviewRun,
   storeGetReviewRoomDocumentByProofSlug,
   storeHeartbeatAgentReviewRun,
+  storeInspectReviewRoomAgentCredential,
   storeListAgentReviewRuns,
   storeReleaseAgentReviewRun,
   storeReserveAgentReviewOutput,
@@ -252,6 +253,61 @@ const tools: ReviewRoomTool[] = [
   },
 ];
 
+function agentCredentialLifecycleError(
+  credential: Awaited<ReturnType<typeof storeInspectReviewRoomAgentCredential>>,
+): { ok: false; status: number; body: JsonRecord } | null {
+  if (!credential) return null;
+  if (credential.request_status === 'lease_expired') {
+    return {
+      ok: false,
+      status: 409,
+      body: {
+        success: false,
+        code: 'REQUEST_LEASE_EXPIRED',
+        error: 'The review request lease expired. Ask the document owner to requeue the request or issue a fresh agent credential.',
+      },
+    };
+  }
+  if (credential.expires_at <= new Date().toISOString()) {
+    return {
+      ok: false,
+      status: 401,
+      body: {
+        success: false,
+        code: 'AGENT_CREDENTIAL_EXPIRED',
+        error: 'The request-scoped agent credential expired.',
+      },
+    };
+  }
+  if (credential.revoked_at) {
+    return {
+      ok: false,
+      status: 401,
+      body: {
+        success: false,
+        code: 'AGENT_CREDENTIAL_REVOKED',
+        error: 'The request-scoped agent credential is no longer active.',
+      },
+    };
+  }
+  if (
+    credential.request_status === 'completed'
+    || credential.request_status === 'failed'
+    || credential.request_status === 'cancelled'
+  ) {
+    return {
+      ok: false,
+      status: 409,
+      body: {
+        success: false,
+        code: 'REVIEW_REQUEST_CLOSED',
+        error: `Review request is ${credential.request_status}.`,
+      },
+    };
+  }
+  return null;
+}
+
 async function resolveToolAuth(
   slug: string,
   token: string,
@@ -263,6 +319,11 @@ async function resolveToolAuth(
   if (token) {
     const credential = await storeResolveReviewRoomAgentCredential(slug, token);
     if (credential) {
+      await storeExpireAgentReviewRunLeases(credential.document_id);
+      const lifecycleError = agentCredentialLifecycleError(
+        await storeInspectReviewRoomAgentCredential(slug, token),
+      );
+      if (lifecycleError) return lifecycleError;
       if (!allowedRoles.includes('agent')) {
         return { ok: false, status: 403, body: { success: false, code: 'AGENT_CAPABILITY_FORBIDDEN', error: 'This agent credential cannot perform that action.' } };
       }
@@ -275,6 +336,10 @@ async function resolveToolAuth(
         credentialId: credential.id,
       };
     }
+    const lifecycleError = agentCredentialLifecycleError(
+      await storeInspectReviewRoomAgentCredential(slug, token),
+    );
+    if (lifecycleError) return lifecycleError;
   }
   if (isHostedReviewRoomDbEnabled()) {
     const role = token ? await resolveHostedDocumentAccessRole(slug, token) : null;
