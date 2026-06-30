@@ -72,12 +72,13 @@ async function run(): Promise<void> {
     await page.locator('.ProseMirror').waitFor({ state: 'visible', timeout: 15_000 });
     const agentButton = page.getByRole('button', { name: 'Agent options' });
     await expect(agentButton).toBeVisible();
+    await expect(agentButton).toContainText('Add agent');
     await agentButton.click();
-    const runReview = page.getByRole('menuitem', { name: 'Request document review' });
+    const runReview = page.getByRole('menuitem', { name: 'Queue external review' });
     await expect(runReview).toBeVisible({ timeout: 10_000 });
     await runReview.click();
     await expect(agentButton).toContainText('Waiting for an agent', { timeout: 10_000 });
-    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="agent"]')).toContainText('Agent requested');
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="agent"]')).toContainText('Agent request waiting');
 
     const listed = await callTool<{ requests: Array<{ id: string; status: string }> }>(base, 'review_room_list_review_requests', {
       slug: created.document.proofSlug,
@@ -86,7 +87,7 @@ async function run(): Promise<void> {
     const request = listed.requests.find((item) => item.status === 'queued');
     assert(Boolean(request), 'Expected browser-created review request to be queued');
     await agentButton.click();
-    const copyRequest = page.getByRole('menuitem', { name: 'Copy request for an agent' });
+    const copyRequest = page.getByRole('menuitem', { name: 'Copy scoped request prompt' });
     await expect(copyRequest).toBeVisible();
     const credentialResponsePromise = page.waitForResponse((candidate) => (
       candidate.request().method() === 'POST'
@@ -121,11 +122,11 @@ async function run(): Promise<void> {
       content: 'Beta names a concrete outcome for the browser review suggestion.',
     });
     await callTool(base, 'review_room_complete_review_request', leaseArgs);
-    await expect(agentButton).toContainText('2 review items ready', { timeout: 15_000 });
-    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="agent"]')).toContainText('Agent results ready');
+    await expect(agentButton).toContainText('2 review items need review', { timeout: 15_000 });
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="agent"]')).toContainText('Review work ready');
 
     await agentButton.click();
-    await page.getByRole('menuitem', { name: 'Open review results' }).click();
+    await page.getByRole('menuitem', { name: 'Open remaining review work' }).click();
     await expect(page.locator('#review-room-review-sidebar')).toBeVisible();
     await expect(page.getByText('Beta names a concrete outcome for the browser review suggestion.')).toBeVisible();
     await page.getByRole('tab', { name: /Comments/ }).click();

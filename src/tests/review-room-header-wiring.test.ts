@@ -54,13 +54,13 @@ assert(
   editorSource.includes('private createReviewRoomCapabilityStrip()')
     && editorSource.includes('private updateReviewRoomCapabilityStrip()')
     && editorSource.includes("chip.className = 'review-room-capability-chip';")
-    && editorSource.includes("this.createReviewRoomCapabilityChip('edit'")
-    && editorSource.includes("this.createReviewRoomCapabilityChip('share'")
+    && editorSource.includes("this.createReviewRoomCapabilityChip('access'")
     && editorSource.includes("this.createReviewRoomCapabilityChip('agent'")
     && editorSource.includes("this.createReviewRoomCapabilityChip('state'")
+    && editorSource.includes("this.reviewRoomShareState && this.reviewRoomShareState !== 'ACTIVE'")
     && editorSource.includes('Review Room exposes request-scoped work for an external BYO agent; it does not run a model.')
     && editorSource.includes('this.renderReviewRoomUnavailableChrome(copy.title);'),
-  'Expected Review Room document chrome to summarize role, editing, sharing, BYO-agent, and unavailable states',
+  'Expected Review Room document chrome to summarize access, meaningful BYO-agent state, and unavailable states without noisy duplicate chips',
 );
 assert(
   editorSource.includes("titleSlot.replaceChildren(title);")
@@ -255,7 +255,7 @@ assert(
   'Expected Review Room Share menu to export Markdown and Text without internal Proof spans',
 );
 assert(
-  editorSource.includes('Copy agent prompt')
+  editorSource.includes('Copy general agent prompt')
     && editorSource.includes('Download Claude/Cowork plugin')
     && editorSource.includes('MCP URL:')
     && editorSource.includes('review_room_get_state')
@@ -275,9 +275,13 @@ assert(
     && editorSource.includes('private async refreshReviewRoomAgentReviewStatus()')
     && editorSource.includes('private async startReviewRoomAgentReview()')
     && editorSource.includes('private async retryReviewRoomAgentReview()')
-    && editorSource.includes("addMenuButton(currentRun ? 'Request another review' : 'Request document review'")
-    && editorSource.includes("addMenuButton('Open review results'")
-    && editorSource.includes("addMenuButton('Requeue review request'")
+    && editorSource.includes("addMenuButton(currentRun ? 'Queue another external review' : 'Queue external review'")
+    && editorSource.includes("'Open remaining review work' : 'Open review panel'")
+    && editorSource.includes("addMenuButton('Copy scoped request prompt'")
+    && editorSource.includes("addMenuButton('Open setup guide'")
+    && editorSource.includes("!this.isReviewRoomRuntime()")
+    && editorSource.includes("this.reviewRoomOpenReviewItemCount")
+    && editorSource.includes("addMenuButton('Requeue external review'")
     && editorSource.includes('the agent brings its own model and credentials')
     && editorSource.includes('This is a request-scoped agent credential')
     && editorSource.includes('shareClient.createReviewRoomAgentCredential(request.id)')

@@ -1078,6 +1078,7 @@ class ProofEditorImpl implements ProofEditor {
   private reviewRoomCapabilityStripEl: HTMLElement | null = null;
   private reviewRoomProfileButtonEl: HTMLButtonElement | null = null;
   private reviewRoomLatestAgentReviewRun: ReviewRoomAgentReviewRun | null = null;
+  private reviewRoomOpenReviewItemCount: number | null = null;
   private reviewRoomAgentReviewCanStart: boolean = false;
   private reviewRoomAgentReviewRefreshInFlight: boolean = false;
   private reviewRoomAgentReviewPollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3807,8 +3808,8 @@ class ProofEditorImpl implements ProofEditor {
         background:#fff7ed;
         color:#7c2d12;
       }
-      #review-room-bar .review-room-capability-chip[data-kind="edit"][data-state="readonly"],
-      #review-room-bar .review-room-capability-chip[data-kind="share"][data-state="owner"] {
+      #review-room-bar .review-room-capability-chip[data-kind="agent"][data-state="owner"],
+      #review-room-bar .review-room-capability-chip[data-kind="access"][data-state="unknown"] {
         color:#64748b;
       }
       #share-banner .share-pill-status-sep {
@@ -4195,7 +4196,7 @@ class ProofEditorImpl implements ProofEditor {
     const nextState = agents.length > 0 ? 'connected' : 'empty';
     const reviewRun = this.reviewRoomLatestAgentReviewRun;
     const reviewSignature = reviewRun
-      ? `${reviewRun.id}:${reviewRun.status}:${reviewRun.attemptCount}:${reviewRun.resultCount}:${reviewRun.failedOutputCount}`
+      ? `${reviewRun.id}:${reviewRun.status}:${reviewRun.attemptCount}:${reviewRun.resultCount}:${reviewRun.failedOutputCount}:${this.reviewRoomOpenReviewItemCount ?? 'unknown'}`
       : `none:${this.reviewRoomAgentReviewCanStart}`;
     const signature = `${agents.map((agent) => `${agent.id}:${agent.status}:${agent.at}`).join('|')}|review:${reviewSignature}`;
     if (
@@ -5529,14 +5530,14 @@ class ProofEditorImpl implements ProofEditor {
     const run = this.reviewRoomLatestAgentReviewRun;
     if (run && ['queued', 'claimed', 'running'].includes(run.status)) {
       return {
-        label: run.status === 'queued' ? 'Agent requested' : 'Agent active',
+        label: run.status === 'queued' ? 'Agent request waiting' : 'Agent working',
         state: 'active',
         title: `${this.reviewRoomAgentReviewStatusLabel(run)}. Review Room exposes request-scoped work for an external BYO agent; it does not run a model.`,
       };
     }
     if (run?.status === 'completed') {
       return {
-        label: 'Agent results ready',
+        label: this.reviewRoomCompletedAgentReviewChromeLabel(),
         state: 'ready',
         title: this.reviewRoomAgentReviewStatusLabel(run),
       };
@@ -5550,7 +5551,7 @@ class ProofEditorImpl implements ProofEditor {
     }
     if (this.documentCapabilities.canRequestAgentReview) {
       return {
-        label: 'Agent request ready',
+        label: 'Agent requests available',
         state: 'ready',
         title: 'The owner can request external BYO-agent review work. Review Room does not host or invoke a model provider.',
       };
@@ -5613,18 +5614,19 @@ class ProofEditorImpl implements ProofEditor {
       state: this.reviewRoomCurrentRole ?? 'unknown',
       title: this.describeReviewRoomAccess(this.reviewRoomCurrentRole),
     };
-    const editing = this.reviewRoomEditingLabel();
-    const sharing = this.reviewRoomShareAuthorityLabel();
     const agent = this.reviewRoomAgentChromeLabel();
     const shareState = this.reviewRoomShareStateLabel();
+    const chips = [
+      this.createReviewRoomCapabilityChip('access', role.label, role.state, role.title),
+    ];
+    if (this.reviewRoomLatestAgentReviewRun || !this.documentCapabilities.canRequestAgentReview) {
+      chips.push(this.createReviewRoomCapabilityChip('agent', agent.label, agent.state, agent.title));
+    }
+    if (this.reviewRoomShareState && this.reviewRoomShareState !== 'ACTIVE') {
+      chips.push(this.createReviewRoomCapabilityChip('state', shareState.label, shareState.state, shareState.title));
+    }
 
-    strip.replaceChildren(
-      this.createReviewRoomCapabilityChip('role', role.label, role.state, role.title),
-      this.createReviewRoomCapabilityChip('edit', editing.label, editing.state, editing.title),
-      this.createReviewRoomCapabilityChip('share', sharing.label, sharing.state, sharing.title),
-      this.createReviewRoomCapabilityChip('agent', agent.label, agent.state, agent.title),
-      this.createReviewRoomCapabilityChip('state', shareState.label, shareState.state, shareState.title),
-    );
+    strip.replaceChildren(...chips);
   }
 
   private copyWithPromptFallback(text: string, promptLabel = 'Copy link:'): boolean {
@@ -6185,7 +6187,13 @@ class ProofEditorImpl implements ProofEditor {
       ]);
       if (!doc || this.reviewRoomReviewButtonEl !== button) return;
       const count = countOpenReviewItems(doc);
+      const previousOpenCount = this.reviewRoomOpenReviewItemCount;
+      this.reviewRoomOpenReviewItemCount = count;
       button.textContent = count > 0 ? `Review ${count}` : 'Review';
+      if (previousOpenCount !== count) {
+        this.updateShareBannerAgentControlDisplay();
+        this.updateReviewRoomCapabilityStrip();
+      }
       const auditEvents = history && !('error' in history) && history.success
         ? filterOpenReviewAuditEvents(history.events)
         : [];
@@ -6779,7 +6787,9 @@ class ProofEditorImpl implements ProofEditor {
       addItem('Download Markdown', async () => this.downloadCurrentDocument('markdown'), { successText: 'Saved' });
       addItem('Download Text', async () => this.downloadCurrentDocument('text'), { successText: 'Saved' });
       addDivider();
-      addActionItem('View activity', () => this.openShareActivityModal());
+      if (!this.isReviewRoomRuntime()) {
+        addActionItem('View activity', () => this.openShareActivityModal());
+      }
 
       container.appendChild(menu);
       this.clampMenuToViewport(menu);
@@ -6900,10 +6910,25 @@ class ProofEditorImpl implements ProofEditor {
     if (run.status === 'queued') return 'Waiting for an agent';
     if (run.status === 'claimed') return `Claimed by ${run.claimedByAgentId || 'an agent'}`;
     if (run.status === 'running') return `Reviewing: ${run.claimedByAgentId || 'external agent'}`;
-    if (run.status === 'completed') return `${run.resultCount} review item${run.resultCount === 1 ? '' : 's'} ready`;
+    if (run.status === 'completed') {
+      const openCount = this.reviewRoomOpenReviewItemCount;
+      if (typeof openCount === 'number') {
+        if (openCount <= 0) return 'Agent review complete';
+        return `${openCount} review item${openCount === 1 ? '' : 's'} need review`;
+      }
+      return 'Review results ready';
+    }
     if (run.status === 'cancelled') return 'Review cancelled';
     if (run.status === 'lease_expired') return 'Agent lease expired';
     return 'Review failed';
+  }
+
+  private reviewRoomCompletedAgentReviewChromeLabel(): string {
+    const openCount = this.reviewRoomOpenReviewItemCount;
+    if (typeof openCount === 'number') {
+      return openCount > 0 ? 'Review work ready' : 'Review work cleared';
+    }
+    return 'Review results ready';
   }
 
   private createAgentMenuButton(
@@ -7078,7 +7103,7 @@ class ProofEditorImpl implements ProofEditor {
 
       const label = document.createElement('span');
       label.className = 'agent-btn-label';
-      label.textContent = reviewRun ? this.reviewRoomAgentReviewStatusLabel(reviewRun) : 'Agent';
+      label.textContent = reviewRun ? this.reviewRoomAgentReviewStatusLabel(reviewRun) : 'Add agent';
       label.style.cssText = 'font-size:12px;font-weight:600;line-height:1;';
       btn.appendChild(label);
 
@@ -7179,7 +7204,7 @@ class ProofEditorImpl implements ProofEditor {
                 ? 'Previous agent access was revoked; copy the request again to create fresh access.'
                 : '',
           ].filter(Boolean).join(' ')
-          : 'Request a review from an external agent. Review Room coordinates the work; the agent brings its own model and credentials.';
+          : 'Queue a review request for an external agent. Review Room coordinates the work; the agent brings its own model and credentials.';
         reviewBody.style.cssText = 'padding:0 12px 8px;color:rgba(255,255,255,0.78);font-size:12px;line-height:1.35;';
         menu.append(reviewHeader, reviewBody);
         if (!this.reviewRoomAgentReviewCanStart) {
@@ -7187,16 +7212,17 @@ class ProofEditorImpl implements ProofEditor {
         } else if (currentRun && ['queued', 'claimed', 'running'].includes(currentRun.status)) {
           addMenuButton(this.reviewRoomAgentReviewStatusLabel(currentRun), async () => false, { disabled: true });
           if (currentRun.status === 'queued') {
-            addMenuButton('Copy request for an agent', async () => this.copyAgentInviteWithFallback(), { successText: 'Copied' });
+            addMenuButton('Copy scoped request prompt', async () => this.copyAgentInviteWithFallback(), { successText: 'Copied' });
           }
           addMenuButton('Cancel review request', async () => this.cancelReviewRoomAgentReview(), { destructive: true, successText: 'Cancelled' });
         } else if (currentRun && ['failed', 'cancelled', 'lease_expired'].includes(currentRun.status)) {
-          addMenuButton('Requeue review request', async () => this.retryReviewRoomAgentReview(), { successText: 'Queued' });
+          addMenuButton('Requeue external review', async () => this.retryReviewRoomAgentReview(), { successText: 'Queued' });
         } else {
           if (currentRun?.status === 'completed') {
-            addMenuButton('Open review results', async () => this.openReviewRoomAgentReviewResults(), { successText: 'Opened' });
+            const openCount = this.reviewRoomOpenReviewItemCount;
+            addMenuButton(openCount && openCount > 0 ? 'Open remaining review work' : 'Open review panel', async () => this.openReviewRoomAgentReviewResults(), { successText: 'Opened' });
           }
-          addMenuButton(currentRun ? 'Request another review' : 'Request document review', async () => this.startReviewRoomAgentReview(), { successText: 'Waiting' });
+          addMenuButton(currentRun ? 'Queue another external review' : 'Queue external review', async () => this.startReviewRoomAgentReview(), { successText: 'Waiting' });
         }
         addDivider();
       }
@@ -7204,17 +7230,17 @@ class ProofEditorImpl implements ProofEditor {
       const agentsNow = this.getConnectedAgentEntries();
       if (agentsNow.length === 0) {
         const header = document.createElement('div');
-        header.textContent = 'External agent setup';
+        header.textContent = 'General agent setup';
         header.style.cssText = 'padding:8px 12px 4px;color:#fff;font-size:13px;font-weight:700;';
         const body = document.createElement('div');
-        body.textContent = 'Invite an agent collaborator to edit, suggest, and review this doc.';
+        body.textContent = 'Use this when you want a reusable prompt or setup links outside a queued review request.';
         body.style.cssText = 'padding:0 12px 8px;color:rgba(255,255,255,0.78);font-size:12px;line-height:1.35;';
         menu.append(header, body);
-        addMenuButton('Copy agent prompt', async () => this.copyAgentInviteWithFallback(), {
+        addMenuButton('Copy general agent prompt', async () => this.copyAgentInviteWithFallback(), {
           successText: 'Copied',
         });
         addDivider();
-        addMenuButton('Agent setup', async () => {
+        addMenuButton('Open setup guide', async () => {
           this.openAgentHelpModal();
           return true;
         }, { subtle: true, successText: 'Done' });
@@ -7287,10 +7313,10 @@ class ProofEditorImpl implements ProofEditor {
           menu.appendChild(row);
         }
         addDivider();
-        addMenuButton('Copy agent prompt', async () => this.copyAgentInviteWithFallback(), {
+        addMenuButton('Copy general agent prompt', async () => this.copyAgentInviteWithFallback(), {
           successText: 'Copied',
         });
-        addMenuButton('Agent setup', async () => {
+        addMenuButton('Open setup guide', async () => {
           this.openAgentHelpModal();
           return true;
         }, { subtle: true, successText: 'Done' });

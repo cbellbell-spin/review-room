@@ -43,17 +43,15 @@ async function expectAccess(
   await expect(access).toContainText(label);
   const capabilityStrip = page.locator('[data-review-room-capability-strip="1"]');
   await expect(capabilityStrip).toBeVisible();
-  await expect(capabilityStrip.locator('[data-kind="role"]')).toContainText(label);
-  await expect(capabilityStrip.locator('[data-kind="edit"]')).toContainText(
-    editable ? 'Editing available' : role === 'commenter' ? 'Comment only' : 'Read only',
-  );
-  await expect(capabilityStrip.locator('[data-kind="share"]')).toContainText(
-    role === 'owner' ? 'Can manage access' : role === 'editor' ? 'Can share document' : 'Owner manages access',
-  );
-  await expect(capabilityStrip.locator('[data-kind="agent"]')).toContainText(
-    role === 'owner' ? 'Agent request ready' : 'Agent request owner-only',
-  );
-  await expect(capabilityStrip.locator('[data-kind="state"]')).toContainText('Active document');
+  await expect(capabilityStrip.locator('[data-kind="access"]')).toContainText(label);
+  await expect(capabilityStrip.locator('[data-kind="edit"]')).toHaveCount(0);
+  await expect(capabilityStrip.locator('[data-kind="share"]')).toHaveCount(0);
+  await expect(capabilityStrip.locator('[data-kind="state"]')).toHaveCount(0);
+  if (role === 'owner') {
+    await expect(capabilityStrip.locator('[data-kind="agent"]')).toHaveCount(0);
+  } else {
+    await expect(capabilityStrip.locator('[data-kind="agent"]')).toContainText('Agent request owner-only');
+  }
   await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', editable ? 'true' : 'false');
   const title = page.locator('.share-pill-title');
   if (editable) {
@@ -74,12 +72,16 @@ async function expectAccess(
   await expect(agentOptions).toBeVisible();
   await agentOptions.click();
   if (role === 'owner') {
-    await expect(page.getByRole('menuitem', { name: /Request document review/ })).toBeEnabled();
+    await expect(page.getByRole('menuitem', { name: /Queue external review/ })).toBeEnabled();
   } else {
     const unavailable = page.getByRole('menuitem', { name: /Only the owner can request a review/ });
     await expect(unavailable).toBeVisible();
     await expect(unavailable).toBeDisabled();
   }
+  await page.keyboard.press('Escape');
+
+  await page.getByRole('button', { name: /Share options/ }).click();
+  await expect(page.getByRole('menuitem', { name: /View activity/ })).toHaveCount(0);
   await page.keyboard.press('Escape');
 
   await page.getByRole('button', { name: 'Open review items' }).click();

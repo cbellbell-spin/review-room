@@ -99,10 +99,11 @@ async function run(): Promise<void> {
     await page.locator('.ProseMirror').waitFor({ state: 'visible', timeout: 15_000 });
     await expect(page.locator('[data-review-room-paused-owner="1"]')).toContainText('Document paused');
     await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="state"]')).toContainText('Sharing paused');
-    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="edit"]')).toContainText('Editing available');
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="access"]')).toContainText('Full access');
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="edit"]')).toHaveCount(0);
     await page.getByRole('button', { name: 'Resume sharing' }).click();
     await expect(page.locator('[data-review-room-paused-owner="1"]')).toHaveCount(0, { timeout: 15_000 });
-    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="state"]')).toContainText('Active document');
+    await expect(page.locator('[data-review-room-capability-strip="1"] [data-kind="state"]')).toHaveCount(0);
 
     const resumedContext = await readJson<{ doc: { shareState: string }; capabilities: { canEdit: boolean } }>(
       await fetch(`${baseUrl}/api/documents/${encodeURIComponent(ownerDoc.slug)}/open-context`, {
