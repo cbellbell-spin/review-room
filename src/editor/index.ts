@@ -4653,6 +4653,14 @@ class ProofEditorImpl implements ProofEditor {
         const payload = await response.json() as {
           currentIdentity?: { id?: string; display_name?: string; displayName?: string };
           session?: { active?: boolean; expiresAt?: string };
+          recovery?: {
+            state?: string;
+            canCreateEnrollment?: boolean;
+            canSelfRecover?: boolean;
+            activeDeviceCount?: number | null;
+            emailDelivery?: { enabled?: boolean; reason?: string };
+            guidance?: { summary?: string; owner?: string; editor?: string; commenter?: string; viewer?: string };
+          };
           sessions?: Array<{
             id?: string;
             current?: boolean;
@@ -4748,9 +4756,13 @@ class ProofEditorImpl implements ProofEditor {
         const devices = document.createElement('p');
         devices.style.margin = '0';
         devices.textContent = sessionActive
-          ? 'Create a short-lived one-use enrollment link to use this same identity in another browser. Losing every authenticated device remains a separate recovery decision.'
+          ? 'Create a short-lived one-use enrollment link to use this same identity in another browser.'
           : 'This browser is not session-linked yet. A one-time owner invitation or an already enrolled device can link this identity here.';
-        guidance.append(continuity, devices);
+        const recovery = document.createElement('p');
+        recovery.style.margin = '0';
+        recovery.textContent = payload.recovery?.guidance?.summary
+          || 'If every authenticated device is gone, ask the document owner for a fresh invitation or use a retained role-scoped document link.';
+        guidance.append(continuity, devices, recovery);
         if (sessionActive) {
           const enrollRow = document.createElement('div');
           enrollRow.style.cssText = 'display:grid;gap:7px;';

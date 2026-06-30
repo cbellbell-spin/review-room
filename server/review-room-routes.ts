@@ -62,6 +62,7 @@ import {
   storeListReviewRoomHistoryEvents,
   storeListReviewRoomIdentities,
   storeListReviewRoomSessions,
+  storeInspectReviewRoomSession,
   storeResolveReviewRoomSession,
   storeRemoveReviewRoomDocumentMember,
   storeRevokeReviewRoomSessionById,
@@ -117,6 +118,72 @@ async function getReviewRoomSession(req: Request) {
 async function getCurrentReviewRoomIdentityId(req: Request): Promise<string> {
   const session = await getReviewRoomSession(req);
   return session?.identity_id ?? getExplicitReviewRoomIdentityId(req) ?? normalizeReviewRoomIdentityId(null);
+}
+
+type ReviewRoomRecoveryState = {
+  state: 'session_active' | 'no_session' | 'session_revoked' | 'session_expired' | 'no_authenticated_devices';
+  canCreateEnrollment: boolean;
+  canSelfRecover: boolean;
+  activeDeviceCount: number | null;
+  emailDelivery: {
+    enabled: false;
+    reason: string;
+  };
+  guidance: {
+    summary: string;
+    owner: string;
+    editor: string;
+    commenter: string;
+    viewer: string;
+  };
+};
+
+const REVIEW_ROOM_RECOVERY_EMAIL_BLOCKER = 'Invitation email delivery is disabled until Review Room has a verified delivery address and recovery factor for the target identity.';
+
+function buildReviewRoomRecoveryState(input: {
+  sessionActive: boolean;
+  inspectedSessionStatus?: 'active' | 'revoked' | 'expired' | null;
+  activeDeviceCount?: number | null;
+}): ReviewRoomRecoveryState {
+  const activeDeviceCount = input.activeDeviceCount ?? null;
+  const lostAllKnownDevices = !input.sessionActive
+    && Boolean(input.inspectedSessionStatus)
+    && activeDeviceCount === 0;
+  const state: ReviewRoomRecoveryState['state'] = input.sessionActive
+    ? 'session_active'
+    : lostAllKnownDevices
+      ? 'no_authenticated_devices'
+      : input.inspectedSessionStatus === 'revoked'
+        ? 'session_revoked'
+        : input.inspectedSessionStatus === 'expired'
+          ? 'session_expired'
+          : 'no_session';
+  const summary = input.sessionActive
+    ? 'This browser can create one-use enrollment links for additional devices.'
+    : lostAllKnownDevices
+      ? 'No authenticated Review Room device remains for the previous identity on this browser. Self-service recovery is not available yet.'
+      : input.inspectedSessionStatus === 'revoked'
+        ? 'This browser session was revoked. Use another enrolled device, a fresh owner invitation, or an owner-capable document link.'
+        : input.inspectedSessionStatus === 'expired'
+          ? 'This browser session expired. Use another enrolled device, a fresh owner invitation, or an owner-capable document link.'
+          : 'This browser is not linked to a Review Room session. Use an owner invitation, an enrollment link from another device, or a role-scoped document link.';
+  return {
+    state,
+    canCreateEnrollment: input.sessionActive,
+    canSelfRecover: false,
+    activeDeviceCount,
+    emailDelivery: {
+      enabled: false,
+      reason: REVIEW_ROOM_RECOVERY_EMAIL_BLOCKER,
+    },
+    guidance: {
+      summary,
+      owner: 'Owners with an authenticated device can create enrollment links. If every owner device is gone, recovery requires a retained owner-capable document link; otherwise Review Room stays private and does not expose the document.',
+      editor: 'Editors who lose every authenticated device need the document owner to send a fresh identity invitation, or they can continue through an unrevoked editor document link.',
+      commenter: 'Commenters who lose every authenticated device need the document owner to send a fresh identity invitation, or they can continue through an unrevoked commenter document link.',
+      viewer: 'Viewers who lose every authenticated device need the document owner to send a fresh identity invitation, or they can continue through an unrevoked viewer document link.',
+    },
+  };
 }
 
 function getPresentedShareToken(req: Request): string | null {
@@ -916,6 +983,7 @@ function renderReviewRoomHome(): string {
             <div class="profile-guidance">
               <p id="profile-continuity-copy"></p>
               <p id="profile-device-copy"></p>
+              <p id="profile-recovery-copy"></p>
               <button id="profile-enrollment" class="profile-device-link" type="button">Create device enrollment link</button>
               <div id="profile-enrollment-result" class="profile-device-result"></div>
               <div id="profile-sessions" class="profile-sessions"></div>
@@ -1018,6 +1086,7 @@ function renderReviewRoomHome(): string {
     const profileStatus = document.getElementById('profile-status');
     const profileContinuityCopy = document.getElementById('profile-continuity-copy');
     const profileDeviceCopy = document.getElementById('profile-device-copy');
+    const profileRecoveryCopy = document.getElementById('profile-recovery-copy');
     const profileEnrollment = document.getElementById('profile-enrollment');
     const profileEnrollmentResult = document.getElementById('profile-enrollment-result');
     const profileSessions = document.getElementById('profile-sessions');
@@ -1115,8 +1184,12 @@ function renderReviewRoomHome(): string {
         ? 'A one-time invitation linked this identity to this browser. Signing out ends that identity session here; shared document links can still grant document access.'
         : 'This identity currently lives only in this browser. Accepting an owner invitation links a stable collaborator identity here.';
       profileDeviceCopy.textContent = sessionActive
-        ? 'Create a short-lived one-use enrollment link to carry this same identity to another browser. Losing every authenticated device remains a separate recovery decision.'
+        ? 'Create a short-lived one-use enrollment link to carry this same identity to another browser.'
         : 'Device enrollment is available after this browser has an authenticated Review Room session.';
+      const recovery = payload.recovery || {};
+      profileRecoveryCopy.textContent = recovery.guidance && recovery.guidance.summary
+        ? recovery.guidance.summary
+        : 'If every authenticated device is gone, ask the document owner for a fresh invitation or use a retained role-scoped document link.';
       profileEnrollment.hidden = !sessionActive;
       profileEnrollmentResult.dataset.open = 'false';
       profileEnrollmentResult.textContent = '';
@@ -1446,7 +1519,9 @@ reviewRoomRoutes.get('/review-room/claude-plugin.zip', (_req: Request, res: Resp
 reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Response) => {
   const identityId = await getCurrentReviewRoomIdentityId(req);
   const session = await getReviewRoomSession(req);
-  const sessions = session ? await storeListReviewRoomSessions(session.identity_id) : [];
+  const inspectedSession = session ? null : await storeInspectReviewRoomSession(getReviewRoomSessionCookie(req));
+  const recoveryIdentityId = session?.identity_id ?? inspectedSession?.identity_id ?? null;
+  const sessions = recoveryIdentityId ? await storeListReviewRoomSessions(recoveryIdentityId) : [];
   res.json({
     success: true,
     workspace: {
@@ -1455,6 +1530,11 @@ reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Resp
     },
     currentIdentity: await storeGetReviewRoomIdentity(identityId),
     session: session ? { active: true, expiresAt: session.expires_at } : { active: false },
+    recovery: buildReviewRoomRecoveryState({
+      sessionActive: Boolean(session),
+      inspectedSessionStatus: inspectedSession?.status ?? null,
+      activeDeviceCount: recoveryIdentityId ? sessions.length : null,
+    }),
     sessions: sessions.map((row) => ({
       id: row.id,
       identityId: row.identity_id,
@@ -1505,10 +1585,19 @@ reviewRoomRoutes.get('/review-room/session/accept', async (req: Request, res: Re
 reviewRoomRoutes.post('/review-room/api/session/enrollments', async (req: Request, res: Response) => {
   const session = await getReviewRoomSession(req);
   if (!session) {
+    const inspectedSession = await storeInspectReviewRoomSession(getReviewRoomSessionCookie(req));
+    const activeSessions = inspectedSession
+      ? await storeListReviewRoomSessions(inspectedSession.identity_id)
+      : [];
     res.status(401).json({
       success: false,
-      code: 'SESSION_REQUIRED',
+      code: 'NO_AUTHENTICATED_DEVICE',
       error: 'Create a device enrollment link from an authenticated Review Room browser.',
+      recovery: buildReviewRoomRecoveryState({
+        sessionActive: false,
+        inspectedSessionStatus: inspectedSession?.status ?? null,
+        activeDeviceCount: inspectedSession ? activeSessions.length : null,
+      }),
     });
     return;
   }

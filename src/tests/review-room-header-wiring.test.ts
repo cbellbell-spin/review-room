@@ -84,7 +84,8 @@ assert(
     && editorSource.includes('shared document links can still grant document access')
     && editorSource.includes("fetch('/review-room/api/session/enrollments'")
     && editorSource.includes('Create device enrollment link')
-    && editorSource.includes('Losing every authenticated device remains a separate recovery decision.')
+    && editorSource.includes('payload.recovery?.guidance?.summary')
+    && editorSource.includes('role-scoped document link')
     && editorSource.includes("fetch(`/review-room/api/sessions/${encodeURIComponent(deviceSession.id || '')}`"),
   'Expected Review Room document chrome to expose identity continuity, rename, device enrollment, and session revocation controls',
 );
@@ -97,7 +98,9 @@ assert(
     && reviewRoomRoutesSource.includes("profileEnrollment.addEventListener('click'")
     && reviewRoomRoutesSource.includes('/review-room/api/session/enrollments')
     && reviewRoomRoutesSource.includes('/review-room/api/sessions/')
-    && reviewRoomRoutesSource.includes('Losing every authenticated device remains a separate recovery decision.'),
+    && reviewRoomRoutesSource.includes('profile-recovery-copy')
+    && reviewRoomRoutesSource.includes('NO_AUTHENTICATED_DEVICE')
+    && reviewRoomRoutesSource.includes('Invitation email delivery is disabled'),
   'Expected the Review Room dashboard to expose the same identity continuity, enrollment, and device revocation controls',
 );
 assert(

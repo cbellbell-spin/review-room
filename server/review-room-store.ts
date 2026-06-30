@@ -481,6 +481,10 @@ export type ReviewRoomSession = {
   last_seen_at: string;
 };
 
+export type ReviewRoomSessionInspection = ReviewRoomSession & {
+  status: 'active' | 'revoked' | 'expired';
+};
+
 export type ReviewRoomDeviceEnrollment = {
   id: string;
   identity_id: string;
@@ -649,6 +653,24 @@ export async function storeResolveReviewRoomSession(secret: string | null | unde
     WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
     RETURNING id, identity_id, expires_at, revoked_at, created_at, last_seen_at
   `, [now, hashSecret(trimmed), now]);
+}
+
+export async function storeInspectReviewRoomSession(secret: string | null | undefined): Promise<ReviewRoomSessionInspection | null> {
+  const trimmed = (secret ?? '').trim();
+  if (!trimmed) return null;
+  const row = await execute<ReviewRoomSession>(`
+    SELECT id, identity_id, expires_at, revoked_at, created_at, last_seen_at
+    FROM review_room_sessions
+    WHERE token_hash = ?
+    LIMIT 1
+  `, [hashSecret(trimmed)]);
+  if (!row) return null;
+  const status = row.revoked_at
+    ? 'revoked'
+    : Date.parse(row.expires_at) <= Date.now()
+      ? 'expired'
+      : 'active';
+  return { ...row, status };
 }
 
 export async function storeListReviewRoomSessions(identityId: string): Promise<ReviewRoomSession[]> {

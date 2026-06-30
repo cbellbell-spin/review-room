@@ -186,6 +186,14 @@ async function run(): Promise<void> {
     const sessionIdentity = await readJson<{
       currentIdentity: { id: string; display_name: string };
       session: { active: boolean };
+      recovery: {
+        state: string;
+        canCreateEnrollment: boolean;
+        canSelfRecover: boolean;
+        activeDeviceCount: number | null;
+        emailDelivery: { enabled: boolean; reason: string };
+        guidance: { summary: string; owner: string; editor: string; commenter: string; viewer: string };
+      };
       sessions: Array<{ id: string; current: boolean; createdAt: string; lastSeenAt: string; expiresAt: string }>;
     }>(await fetch(`${base}/review-room/api/identity`, {
       headers: {
@@ -196,6 +204,15 @@ async function run(): Promise<void> {
     }));
     assert(sessionIdentity.currentIdentity.id === 'session-sam', 'Expected session identity to override a legacy identity header');
     assert(sessionIdentity.session.active === true, 'Expected identity endpoint to report the active session');
+    assert(sessionIdentity.recovery.state === 'session_active', 'Expected active sessions to report the active recovery state');
+    assert(sessionIdentity.recovery.canCreateEnrollment === true, 'Expected active sessions to allow device enrollment');
+    assert(sessionIdentity.recovery.canSelfRecover === false, 'Expected self-service account recovery to stay disabled');
+    assert(sessionIdentity.recovery.activeDeviceCount === 1, 'Expected active-device count for the stable identity');
+    assert(sessionIdentity.recovery.emailDelivery.enabled === false, 'Expected invitation email delivery to remain disabled');
+    assert(
+      sessionIdentity.recovery.guidance.owner.includes('owner-capable document link'),
+      'Expected owner recovery guidance to preserve document authority',
+    );
     assert(sessionIdentity.sessions.length === 1, 'Expected identity endpoint to list the active browser session');
     assert(sessionIdentity.sessions[0]?.current === true, 'Expected session list to mark the current browser session');
     assert(typeof sessionIdentity.sessions[0]?.createdAt === 'string', 'Expected session creation metadata');
@@ -286,11 +303,15 @@ async function run(): Promise<void> {
     const secondBrowserAfterRevoke = await readJson<{
       currentIdentity: { id: string };
       session: { active: boolean };
+      recovery: { state: string; activeDeviceCount: number | null; canSelfRecover: boolean };
     }>(await fetch(`${base}/review-room/api/identity`, {
       headers: { ...CLIENT_HEADERS, Cookie: secondSessionCookie },
     }));
     assert(secondBrowserAfterRevoke.currentIdentity.id === 'local-human', 'Expected revoked second browser to lose the enrolled identity');
     assert(secondBrowserAfterRevoke.session.active === false, 'Expected revoked second browser session to be inactive');
+    assert(secondBrowserAfterRevoke.recovery.state === 'session_revoked', 'Expected revoked browser to report a revoked-session recovery state');
+    assert(secondBrowserAfterRevoke.recovery.activeDeviceCount === 1, 'Expected revoked browser to see that another device remains');
+    assert(secondBrowserAfterRevoke.recovery.canSelfRecover === false, 'Expected revoked browser not to self-recover');
 
     const renamedIdentity = await readJson<{
       currentIdentity: { id: string; display_name: string };
@@ -314,11 +335,27 @@ async function run(): Promise<void> {
     const revokedSessionIdentity = await readJson<{
       currentIdentity: { id: string };
       session: { active: boolean };
+      recovery: { state: string; activeDeviceCount: number | null; canCreateEnrollment: boolean; emailDelivery: { enabled: boolean } };
     }>(await fetch(`${base}/review-room/api/identity`, {
       headers: { ...CLIENT_HEADERS, Cookie: sessionCookie },
     }));
     assert(revokedSessionIdentity.currentIdentity.id === 'local-human', 'Expected revoked session to stop asserting the collaborator identity');
     assert(revokedSessionIdentity.session.active === false, 'Expected revoked session to report inactive');
+    assert(revokedSessionIdentity.recovery.state === 'no_authenticated_devices', 'Expected loss of the last session to report no authenticated devices');
+    assert(revokedSessionIdentity.recovery.activeDeviceCount === 0, 'Expected no remaining active devices for the previous identity');
+    assert(revokedSessionIdentity.recovery.canCreateEnrollment === false, 'Expected no-device recovery state to block enrollment creation');
+    assert(revokedSessionIdentity.recovery.emailDelivery.enabled === false, 'Expected email delivery to stay disabled without a recovery factor');
+
+    const enrollmentWithoutDevice = await fetch(`${base}/review-room/api/session/enrollments`, {
+      method: 'POST',
+      headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json', Cookie: sessionCookie },
+      body: JSON.stringify({}),
+    });
+    assert(enrollmentWithoutDevice.status === 401, `Expected no-device enrollment status 401, got ${enrollmentWithoutDevice.status}`);
+    const noDevicePayload = await enrollmentWithoutDevice.json() as { code?: string; recovery?: { state?: string; canSelfRecover?: boolean } };
+    assert(noDevicePayload.code === 'NO_AUTHENTICATED_DEVICE', 'Expected enrollment failure to use explicit no-device code');
+    assert(noDevicePayload.recovery?.state === 'no_authenticated_devices', 'Expected enrollment failure to include no-device recovery state');
+    assert(noDevicePayload.recovery?.canSelfRecover === false, 'Expected enrollment failure to keep self-recovery disabled');
 
     const editorList = await readJson<{ documents: Array<{ proofSlug?: string; currentRole?: string; capabilities?: { canEdit?: boolean } }> }>(
       await fetch(`${base}/review-room/api/documents?identityId=editor-alice`, { headers: CLIENT_HEADERS }),
