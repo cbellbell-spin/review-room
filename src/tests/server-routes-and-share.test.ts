@@ -24,6 +24,16 @@ const CLIENT_HEADERS = {
   'X-Proof-Client-Build': 'tests',
   'X-Proof-Client-Protocol': '3',
 };
+const REVIEW_ROOM_PRODUCTION_ORIGIN = 'https://review-room.chrisjbell.dev';
+const REVIEW_ROOM_MCP_URL = `${REVIEW_ROOM_PRODUCTION_ORIGIN}/mcp`;
+const RETIRED_REVIEW_ROOM_HOSTS = [
+  'proof-sdk-psi.vercel.app',
+  'chrisjbell-gdccqv48f.vercel.app',
+  'alt.chrisjbell.dev',
+  'review-room.fly.dev',
+  'localhost',
+  '127.0.0.1',
+];
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -41,6 +51,63 @@ function assertIncludes(haystack: string, needle: string, message?: string): voi
   if (!haystack.includes(needle)) {
     throw new Error(message ?? `Expected ${haystack} to include ${needle}`);
   }
+}
+
+function assertExcludes(haystack: string, needle: string, message?: string): void {
+  if (haystack.includes(needle)) {
+    throw new Error(message ?? `Expected ${haystack} not to include ${needle}`);
+  }
+}
+
+function assertNoRetiredReviewRoomHosts(text: string, label: string): void {
+  for (const host of RETIRED_REVIEW_ROOM_HOSTS) {
+    assertExcludes(text, host, `${label} should not contain retired or local host ${host}`);
+  }
+}
+
+function unzipStoredEntries(zip: Buffer): Map<string, string> {
+  const entries = new Map<string, string>();
+  let offset = 0;
+
+  while (offset + 4 <= zip.length) {
+    const signature = zip.readUInt32LE(offset);
+    if (signature === 0x02014b50 || signature === 0x06054b50) break;
+    assert(signature === 0x04034b50, `Unexpected ZIP local header signature at ${offset}`);
+
+    const compressionMethod = zip.readUInt16LE(offset + 8);
+    assert(compressionMethod === 0, 'Expected plugin package ZIP entries to be stored without compression');
+    const compressedSize = zip.readUInt32LE(offset + 18);
+    const fileNameLength = zip.readUInt16LE(offset + 26);
+    const extraFieldLength = zip.readUInt16LE(offset + 28);
+    const nameStart = offset + 30;
+    const dataStart = nameStart + fileNameLength + extraFieldLength;
+    const dataEnd = dataStart + compressedSize;
+    const name = zip.subarray(nameStart, nameStart + fileNameLength).toString('utf8');
+    entries.set(name, zip.subarray(dataStart, dataEnd).toString('utf8'));
+    offset = dataEnd;
+  }
+
+  return entries;
+}
+
+function assertReviewRoomPluginPackageHygiene(zip: Buffer, label: string): void {
+  const entries = unzipStoredEntries(zip);
+  const manifest = entries.get('.claude-plugin/plugin.json');
+  const mcpConfig = entries.get('.mcp.json');
+  const skill = entries.get('skills/review-room/SKILL.md');
+
+  assert(typeof manifest === 'string', `${label} should include Claude plugin manifest`);
+  assert(typeof mcpConfig === 'string', `${label} should include MCP config`);
+  assert(typeof skill === 'string', `${label} should include Review Room skill`);
+
+  const packageText = Array.from(entries.entries())
+    .map(([name, text]) => `--- ${name} ---\n${text}`)
+    .join('\n');
+  assertIncludes(mcpConfig, REVIEW_ROOM_MCP_URL, `${label} MCP config should target production Review Room MCP`);
+  assertIncludes(skill, REVIEW_ROOM_MCP_URL, `${label} skill should document the production Review Room MCP endpoint`);
+  assertIncludes(skill, `${REVIEW_ROOM_PRODUCTION_ORIGIN}/agent-docs`, `${label} skill should document production agent docs`);
+  assertIncludes(skill, 'Review Room is BYO agent', `${label} skill should preserve BYO-agent setup guidance`);
+  assertNoRetiredReviewRoomHosts(packageText, label);
 }
 
 async function get(base: string, path: string, headers: Record<string, string> = {}): Promise<any> {
@@ -378,6 +445,23 @@ async function runServerSourceTests(): Promise<void> {
       'app.use(discoveryRoutes);',
       'server source should mount discovery metadata routes',
     );
+  });
+
+  await test('D1: distributed Review Room plugin sources advertise only production endpoints', async () => {
+    const agentDocs = readFileSync(path.resolve(process.cwd(), 'docs', 'agent-docs.md'), 'utf8');
+    const pluginMcpConfig = readFileSync(path.resolve(process.cwd(), 'cowork-plugin', '.mcp.json'), 'utf8');
+    const pluginSkill = readFileSync(path.resolve(process.cwd(), 'cowork-plugin', 'skills', 'review-room', 'SKILL.md'), 'utf8');
+    const publicOnboardingText = [
+      agentDocs,
+      pluginMcpConfig,
+      pluginSkill,
+    ].join('\n');
+
+    assertIncludes(agentDocs, REVIEW_ROOM_MCP_URL, 'Public agent docs should advertise production Review Room MCP');
+    assertIncludes(agentDocs, `${REVIEW_ROOM_PRODUCTION_ORIGIN}/review-room/claude-plugin.zip`, 'Public agent docs should link the production plugin package');
+    assertIncludes(pluginMcpConfig, REVIEW_ROOM_MCP_URL, 'Distributed plugin MCP config should target production Review Room MCP');
+    assertIncludes(pluginSkill, `${REVIEW_ROOM_PRODUCTION_ORIGIN}/.well-known/agent.json`, 'Distributed plugin skill should document production discovery');
+    assertNoRetiredReviewRoomHosts(publicOnboardingText, 'Review Room public onboarding sources');
   });
 
   await test('D1: server source publishes a health endpoint', async () => {
@@ -1412,17 +1496,11 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(plugin.status === 200, `Expected Claude plugin zip 200, got ${plugin.status}`);
       assert(plugin.headers.get('content-type')?.includes('application/zip') === true, 'Expected Claude plugin zip content type');
       assert(plugin.body.subarray(0, 4).toString('hex') === '504b0304', 'Expected plugin download to be a ZIP archive');
-      const zipText = plugin.body.toString('latin1');
-      assertIncludes(zipText, '.claude-plugin/plugin.json', 'Expected plugin zip to include Claude plugin manifest');
-      assertIncludes(zipText, '.mcp.json', 'Expected plugin zip to include MCP config');
-      assertIncludes(zipText, 'skills/review-room/SKILL.md', 'Expected plugin zip to include Review Room skill');
+      assertReviewRoomPluginPackageHygiene(plugin.body, 'Served Claude/Cowork plugin package');
 
       const fallbackZip = buildClaudePluginZip(path.join(os.tmpdir(), 'review-room-missing-plugin-root'));
       assert(fallbackZip.subarray(0, 4).toString('hex') === '504b0304', 'Expected embedded fallback plugin package to be a ZIP archive');
-      const fallbackZipText = fallbackZip.toString('latin1');
-      assertIncludes(fallbackZipText, '.claude-plugin/plugin.json', 'Expected embedded fallback package to include Claude plugin manifest');
-      assertIncludes(fallbackZipText, '.mcp.json', 'Expected embedded fallback package to include MCP config');
-      assertIncludes(fallbackZipText, 'skills/review-room/SKILL.md', 'Expected embedded fallback package to include Review Room skill');
+      assertReviewRoomPluginPackageHygiene(fallbackZip, 'Embedded fallback Claude/Cowork plugin package');
     });
 
     await test('D2: /d/:slug token query sets cookie (no redirect; token stays in URL)', async () => {

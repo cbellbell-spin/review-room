@@ -44,6 +44,12 @@ description: Read, create, and review shared Review Room documents via MCP. Use 
 
 The Review Room MCP server is configured via \`.mcp.json\` and exposes these tools:
 
+Production endpoints:
+
+- MCP: \`https://review-room.chrisjbell.dev/mcp\`
+- Discovery: \`https://review-room.chrisjbell.dev/.well-known/agent.json\`
+- Agent docs: \`https://review-room.chrisjbell.dev/agent-docs\`
+
 - \`review_room_get_state\` \\u2014 read a document (markdown, marks, revision, links)
 - \`review_room_list_review_requests\` \\u2014 list queued and historical review requests
 - \`review_room_claim_review_request\` \\u2014 claim queued work and receive a short-lived lease token
