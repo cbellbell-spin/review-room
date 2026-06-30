@@ -68,6 +68,246 @@ export type ReviewPanelHost = {
   onToggle(expanded: boolean): void;
 };
 
+export type ReviewPanelSuggestionDecisionAction = 'accept' | 'reject';
+
+export type ReviewPanelSuggestionDecisionState =
+  | 'queued'
+  | 'applying'
+  | 'applied'
+  | 'rejected'
+  | 'failed'
+  | 'needs-refresh';
+
+export type ReviewPanelSuggestionDecisionRecord = {
+  action: ReviewPanelSuggestionDecisionAction;
+  state: ReviewPanelSuggestionDecisionState;
+  message?: string;
+};
+
+type ReviewPanelSuggestionDecisionQueueHost = Pick<
+  ReviewPanelHost,
+  | 'persistReviewMarks'
+  | 'acceptSuggestion'
+  | 'rejectSuggestion'
+  | 'refreshDocumentFromServer'
+  | 'fetchDocument'
+  | 'getSuggestionFinalizeBlockReason'
+>;
+
+type ReviewPanelSuggestionDecisionTask = {
+  action: ReviewPanelSuggestionDecisionAction;
+  markIds: string[];
+};
+
+function isPendingSuggestionMark(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const mark = raw as Record<string, unknown>;
+  const rawKind = typeof mark.kind === 'string' ? mark.kind : '';
+  const kind = rawKind === 'suggestion' && typeof mark.suggestionKind === 'string'
+    ? mark.suggestionKind
+    : rawKind;
+  const status = typeof mark.status === 'string' ? mark.status.trim().toLowerCase() : 'pending';
+  return (kind === 'insert' || kind === 'delete' || kind === 'replace') && status !== 'accepted' && status !== 'rejected';
+}
+
+export class ReviewPanelSuggestionDecisionQueue {
+  private readonly host: ReviewPanelSuggestionDecisionQueueHost;
+  private readonly onChange: () => void;
+  private readonly onDrain: () => Promise<void> | void;
+  private readonly queue: ReviewPanelSuggestionDecisionTask[] = [];
+  private readonly states = new Map<string, ReviewPanelSuggestionDecisionRecord>();
+  private readonly idleResolvers = new Set<() => void>();
+  private draining = false;
+
+  constructor(
+    host: ReviewPanelSuggestionDecisionQueueHost,
+    options: { onChange?: () => void; onDrain?: () => Promise<void> | void } = {},
+  ) {
+    this.host = host;
+    this.onChange = options.onChange ?? (() => undefined);
+    this.onDrain = options.onDrain ?? (() => undefined);
+  }
+
+  enqueue(action: ReviewPanelSuggestionDecisionAction, markIds: string[]): boolean {
+    const uniqueIds = Array.from(new Set(markIds.map((id) => id.trim()).filter(Boolean)));
+    const availableIds = uniqueIds.filter((markId) => this.canEnqueue(markId));
+    if (availableIds.length === 0) return false;
+    for (const markId of availableIds) {
+      this.states.set(markId, { action, state: 'queued' });
+    }
+    this.queue.push({ action, markIds: availableIds });
+    this.notify();
+    void this.drain();
+    return true;
+  }
+
+  get(markId: string): ReviewPanelSuggestionDecisionRecord | null {
+    return this.states.get(markId) ?? null;
+  }
+
+  getGroup(markIds: string[]): ReviewPanelSuggestionDecisionRecord | null {
+    const records = markIds
+      .map((markId) => this.states.get(markId))
+      .filter((record): record is ReviewPanelSuggestionDecisionRecord => Boolean(record));
+    if (records.length === 0) return null;
+    const priority: ReviewPanelSuggestionDecisionState[] = [
+      'failed',
+      'needs-refresh',
+      'applying',
+      'queued',
+      'applied',
+      'rejected',
+    ];
+    return [...records].sort((left, right) => priority.indexOf(left.state) - priority.indexOf(right.state))[0] ?? null;
+  }
+
+  isLocked(markIds: string[]): boolean {
+    return markIds.some((markId) => {
+      const record = this.states.get(markId);
+      return record
+        ? record.state !== 'failed'
+        : false;
+    });
+  }
+
+  isIdle(): boolean {
+    return !this.draining && this.queue.length === 0;
+  }
+
+  waitForIdle(): Promise<void> {
+    if (this.isIdle()) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.idleResolvers.add(resolve);
+    });
+  }
+
+  private canEnqueue(markId: string): boolean {
+    const record = this.states.get(markId);
+    return !record || record.state === 'failed';
+  }
+
+  private notify(): void {
+    this.onChange();
+  }
+
+  private resolveIdle(): void {
+    for (const resolve of this.idleResolvers) resolve();
+    this.idleResolvers.clear();
+  }
+
+  private async waitForSuggestionFinalizeReady(): Promise<string | null> {
+    let blockReason = this.host.getSuggestionFinalizeBlockReason?.() ?? null;
+    if (!blockReason) return null;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      blockReason = this.host.getSuggestionFinalizeBlockReason?.() ?? null;
+      if (!blockReason) return null;
+    }
+    return blockReason;
+  }
+
+  private setTaskState(task: ReviewPanelSuggestionDecisionTask, state: ReviewPanelSuggestionDecisionState, message?: string): void {
+    for (const markId of task.markIds) {
+      this.states.set(markId, { action: task.action, state, message });
+    }
+    this.notify();
+  }
+
+  private setMarkState(
+    markId: string,
+    action: ReviewPanelSuggestionDecisionAction,
+    state: ReviewPanelSuggestionDecisionState,
+    message?: string,
+  ): void {
+    this.states.set(markId, { action, state, message });
+    this.notify();
+  }
+
+  private async reconcileMarkDecision(
+    markId: string,
+    action: ReviewPanelSuggestionDecisionAction,
+  ): Promise<ReviewPanelSuggestionDecisionState> {
+    const doc = await this.host.fetchDocument().catch(() => null);
+    if (!doc) return 'needs-refresh';
+    const marks = doc.marks && typeof doc.marks === 'object' && !Array.isArray(doc.marks)
+      ? doc.marks as Record<string, unknown>
+      : {};
+    const mark = marks[markId];
+    if (!mark) return action === 'accept' ? 'applied' : 'rejected';
+    if (!isPendingSuggestionMark(mark)) return action === 'accept' ? 'applied' : 'rejected';
+    return 'failed';
+  }
+
+  private async drain(): Promise<void> {
+    if (this.draining) return;
+    this.draining = true;
+    let shouldRefresh = false;
+    try {
+      while (this.queue.length > 0) {
+        const task = this.queue.shift();
+        if (!task) continue;
+        const activeIds = task.markIds.filter((markId) => this.states.get(markId)?.state === 'queued');
+        if (activeIds.length === 0) continue;
+        const activeTask = { ...task, markIds: activeIds };
+
+        const blockReason = await this.waitForSuggestionFinalizeReady();
+        if (blockReason) {
+          this.setTaskState(activeTask, 'needs-refresh', blockReason);
+          shouldRefresh = true;
+          continue;
+        }
+
+        if (task.action === 'accept') {
+          this.setTaskState(activeTask, 'applying');
+          const persisted = await this.host.persistReviewMarks().catch(() => false);
+          if (!persisted) {
+            this.setTaskState(activeTask, 'failed', 'Could not save before accepting this suggestion.');
+            continue;
+          }
+        }
+
+        for (const markId of activeIds) {
+          this.setMarkState(markId, task.action, 'applying');
+          const mutationBlockReason = await this.waitForSuggestionFinalizeReady();
+          if (mutationBlockReason) {
+            this.setMarkState(markId, task.action, 'needs-refresh', mutationBlockReason);
+            shouldRefresh = true;
+            continue;
+          }
+          const succeeded = task.action === 'accept'
+            ? await this.host.acceptSuggestion(markId).catch(() => false)
+            : await this.host.rejectSuggestion(markId).catch(() => false);
+          if (succeeded) {
+            this.setMarkState(markId, task.action, task.action === 'accept' ? 'applied' : 'rejected');
+            shouldRefresh = true;
+            continue;
+          }
+          const recovered = await this.reconcileMarkDecision(markId, task.action);
+          this.setMarkState(
+            markId,
+            task.action,
+            recovered,
+            recovered === 'failed' ? `Could not ${task.action} this suggestion.` : undefined,
+          );
+          shouldRefresh = true;
+        }
+      }
+    } finally {
+      if (shouldRefresh) {
+        await this.host.refreshDocumentFromServer().catch(() => undefined);
+        await this.onDrain();
+      }
+      this.draining = false;
+      this.notify();
+      if (this.queue.length > 0) {
+        void this.drain();
+      } else {
+        this.resolveIdle();
+      }
+    }
+  }
+}
+
 export const REVIEW_PANEL_ID = 'review-room-review-sidebar';
 
 type ReviewPanelTab = 'suggestions' | 'comments' | 'audit' | 'history' | 'tasks' | 'publish';
@@ -202,17 +442,6 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     renderState('Review items could not load', message, 'error', retry);
   };
 
-  const waitForSuggestionFinalizeReady = async (): Promise<string | null> => {
-    let blockReason = host.getSuggestionFinalizeBlockReason?.() ?? null;
-    if (!blockReason) return null;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      blockReason = host.getSuggestionFinalizeBlockReason?.() ?? null;
-      if (!blockReason) return null;
-    }
-    return blockReason;
-  };
-
   const smallButton = (label: string, variant: 'primary' | 'secondary' | 'danger' = 'secondary'): HTMLButtonElement => {
     const button = document.createElement('button');
     button.type = 'button';
@@ -224,6 +453,48 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
         : 'border:1px solid var(--rr-control-border);background:var(--rr-surface);color:var(--rr-ink);';
     button.style.cssText = `${palette}border-radius:var(--rr-radius);min-height:32px;padding:0 10px;font-size:13px;font-weight:650;cursor:pointer;font-family:inherit;`;
     return button;
+  };
+
+  let decisionQueue: ReviewPanelSuggestionDecisionQueue;
+
+  const decisionStatusLabel = (record: ReviewPanelSuggestionDecisionRecord | null): string => {
+    if (!record) return '';
+    if (record.state === 'queued') return 'Queued';
+    if (record.state === 'applying') return 'Applying';
+    if (record.state === 'applied') return 'Applied';
+    if (record.state === 'rejected') return 'Rejected';
+    if (record.state === 'needs-refresh') return 'Needs refresh';
+    return 'Failed - try again';
+  };
+
+  const updateRenderedSuggestionDecisionStates = () => {
+    if (!decisionQueue) return;
+    for (const item of body.querySelectorAll<HTMLElement>('[data-review-suggestion-ids]')) {
+      const ids = (item.dataset.reviewSuggestionIds ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+      const record = decisionQueue.getGroup(ids);
+      const locked = decisionQueue.isLocked(ids);
+      const status = item.querySelector<HTMLElement>('[data-decision-status]');
+      if (status) {
+        const label = decisionStatusLabel(record);
+        status.textContent = record?.message && record.state === 'needs-refresh' ? `${label}: ${record.message}` : label;
+        status.style.display = label ? 'inline-flex' : 'none';
+        status.style.color = record?.state === 'failed' || record?.state === 'needs-refresh'
+          ? 'var(--rr-danger)'
+          : 'var(--rr-muted)';
+        status.style.borderColor = record?.state === 'failed' || record?.state === 'needs-refresh'
+          ? 'var(--rr-danger-border)'
+          : 'var(--rr-border-soft)';
+      }
+      for (const button of item.querySelectorAll<HTMLButtonElement>('[data-decision-action]')) {
+        button.disabled = locked;
+        button.style.opacity = locked ? '0.62' : '1';
+        button.style.cursor = locked ? 'default' : 'pointer';
+      }
+      const refresh = item.querySelector<HTMLButtonElement>('[data-decision-refresh]');
+      if (refresh) {
+        refresh.style.display = record?.state === 'needs-refresh' ? 'inline-flex' : 'none';
+      }
+    }
   };
 
   const pillButton = (label: string, active: boolean): HTMLButtonElement => {
@@ -841,6 +1112,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
     }
     for (const suggestion of visibleSuggestions) {
       const item = row();
+      item.dataset.reviewSuggestionIds = suggestion.ids.join(',');
       item.style.borderLeft = `4px solid ${getActorColor(suggestion.by).accent}`;
       attachReviewItemFocus(item, suggestion.id);
       applyFocusedItemStyle(item, suggestion.ids.includes(focusedMarkId ?? ''));
@@ -862,44 +1134,30 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       content.textContent = suggestion.kind === 'delete' ? 'Delete selected text' : suggestion.content;
       content.style.cssText = 'font-size:14px;line-height:1.45;color:var(--rr-ink);overflow-wrap:anywhere;';
       const actions = document.createElement('div');
-      actions.style.cssText = 'display:flex;gap:8px;align-items:center;';
+      actions.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;';
       const accept = smallButton('Accept', 'primary');
       const reject = smallButton('Reject');
-      const runAction = async (action: 'accept' | 'reject') => {
-        accept.disabled = true;
-        reject.disabled = true;
-        const blockReason = await waitForSuggestionFinalizeReady();
-        if (blockReason) {
-          renderError(blockReason);
-          return;
-        }
-        if (action === 'accept') {
-          const saved = await host.persistReviewMarks();
-          if (!saved) {
-            renderError('Could not save before accepting this suggestion.');
-            return;
-          }
-        }
-        for (const suggestionId of suggestion.ids) {
-          const mutationBlockReason = await waitForSuggestionFinalizeReady();
-          if (mutationBlockReason) {
-            renderError(mutationBlockReason);
-            return;
-          }
-          const succeeded = action === 'accept'
-            ? await host.acceptSuggestion(suggestionId)
-            : await host.rejectSuggestion(suggestionId);
-          if (!succeeded) {
-            renderError(`Could not ${action} this suggestion.`);
-            return;
-          }
-        }
-        await host.refreshDocumentFromServer();
-        await loadPanel();
+      accept.dataset.decisionAction = 'accept';
+      reject.dataset.decisionAction = 'reject';
+      const decisionStatus = document.createElement('span');
+      decisionStatus.dataset.decisionStatus = 'true';
+      decisionStatus.style.cssText = 'display:none;align-items:center;min-height:28px;border:1px solid var(--rr-border-soft);border-radius:var(--rr-radius-pill);padding:0 9px;font-size:12px;font-weight:750;color:var(--rr-muted);background:var(--rr-surface);';
+      const refresh = smallButton('Refresh');
+      refresh.dataset.decisionRefresh = 'true';
+      refresh.style.display = 'none';
+      const queueAction = (action: ReviewPanelSuggestionDecisionAction) => {
+        decisionQueue.enqueue(action, suggestion.ids);
+        updateRenderedSuggestionDecisionStates();
       };
-      accept.onclick = () => { void runAction('accept'); };
-      reject.onclick = () => { void runAction('reject'); };
-      actions.append(accept, reject);
+      accept.onclick = () => { queueAction('accept'); };
+      reject.onclick = () => { queueAction('reject'); };
+      refresh.onclick = () => {
+        void (async () => {
+          await host.refreshDocumentFromServer();
+          await loadPanel();
+        })();
+      };
+      actions.append(accept, reject, decisionStatus, refresh);
       if (quote) {
         item.append(meta, quote, content, actions);
       } else {
@@ -907,6 +1165,7 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       }
       body.appendChild(item);
     }
+    updateRenderedSuggestionDecisionStates();
   };
 
   const renderComments = (comments: ReviewComment[]) => {
@@ -1095,6 +1354,13 @@ export async function openReviewRoomReviewPanel(host: ReviewPanelHost, options: 
       renderError(error instanceof Error ? error.message : 'Could not load review items.');
     }
   };
+
+  decisionQueue = new ReviewPanelSuggestionDecisionQueue(host, {
+    onChange: updateRenderedSuggestionDecisionStates,
+    onDrain: async () => {
+      await loadPanel();
+    },
+  });
 
   await loadPanel();
 }

@@ -362,8 +362,9 @@ assert(
     && editorSource.includes("this.collabConnectionStatus !== 'connected'")
     && editorSource.includes('this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0')
     && editorSource.includes('getSuggestionFinalizeBlockReason: () => this.getReviewRoomSuggestionFinalizeBlockReason()')
-    && reviewPanelSource.includes('const waitForSuggestionFinalizeReady = async ()')
-    && reviewPanelSource.includes('await waitForSuggestionFinalizeReady()'),
+    && reviewPanelSource.includes('private async waitForSuggestionFinalizeReady(): Promise<string | null>')
+    && reviewPanelSource.includes("this.setTaskState(activeTask, 'needs-refresh', blockReason)")
+    && reviewPanelSource.includes("this.setMarkState(markId, task.action, 'needs-refresh', mutationBlockReason)"),
   'Expected Review Room accept/reject to be blocked while live collaboration is unhealthy or unsynced',
 );
 assert(
