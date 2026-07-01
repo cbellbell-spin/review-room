@@ -157,6 +157,10 @@ async function run(): Promise<void> {
       headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
     });
     assert(revokedInvite.status === 410, `Expected replaced invitation status 410, got ${revokedInvite.status}`);
+    assert(
+      (await revokedInvite.text()).includes('no longer available'),
+      'Expected replaced invitation not to reveal whether it was revoked, expired, or used',
+    );
 
     const acceptedInvite = await fetch(`${base}${replacementSessionInvite.identityInvitePath}`, {
       headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
@@ -182,6 +186,10 @@ async function run(): Promise<void> {
       headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
     });
     assert(replayedInvite.status === 410, `Expected consumed invitation replay status 410, got ${replayedInvite.status}`);
+    assert(
+      (await replayedInvite.text()).includes('no longer available'),
+      'Expected replayed invitation not to reveal whether it was revoked, expired, or used',
+    );
 
     const sessionIdentity = await readJson<{
       currentIdentity: { id: string; display_name: string };
@@ -195,6 +203,7 @@ async function run(): Promise<void> {
         guidance: { summary: string; owner: string; editor: string; commenter: string; viewer: string };
       };
       sessions: Array<{ id: string; current: boolean; createdAt: string; lastSeenAt: string; expiresAt: string }>;
+      identities: Array<{ id: string; display_name: string }>;
     }>(await fetch(`${base}/review-room/api/identity`, {
       headers: {
         ...CLIENT_HEADERS,
@@ -217,6 +226,33 @@ async function run(): Promise<void> {
     assert(sessionIdentity.sessions[0]?.current === true, 'Expected session list to mark the current browser session');
     assert(typeof sessionIdentity.sessions[0]?.createdAt === 'string', 'Expected session creation metadata');
     assert(typeof sessionIdentity.sessions[0]?.lastSeenAt === 'string', 'Expected session last-used metadata');
+    assert(
+      sessionIdentity.identities.length === 1 && sessionIdentity.identities[0]?.id === 'session-sam',
+      'Expected identity directory payload to be scoped to the active session identity',
+    );
+
+    const untrustedIdentityLookup = await readJson<{
+      currentIdentity: { id: string; display_name: string };
+      session: { active: boolean };
+      recovery: { activeDeviceCount: number | null };
+      sessions: unknown[];
+      identities: unknown[];
+    }>(await fetch(`${base}/review-room/api/identity?identityId=session-sam`, {
+      headers: CLIENT_HEADERS,
+    }));
+    assert(untrustedIdentityLookup.currentIdentity.id === 'session-sam', 'Expected legacy identity id to be reflected');
+    assert(untrustedIdentityLookup.currentIdentity.display_name === 'session-sam', 'Expected legacy identity lookup not to reveal stored display names');
+    assert(untrustedIdentityLookup.session.active === false, 'Expected legacy identity lookup not to create a session');
+    assert(untrustedIdentityLookup.recovery.activeDeviceCount === null, 'Expected legacy identity lookup not to reveal device counts');
+    assert(untrustedIdentityLookup.sessions.length === 0, 'Expected legacy identity lookup not to list device sessions');
+    assert(untrustedIdentityLookup.identities.length === 0, 'Expected legacy identity lookup not to expose the workspace identity directory');
+
+    const untrustedRename = await fetch(`${base}/review-room/api/identity`, {
+      method: 'PATCH',
+      headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json', 'x-review-room-identity-id': 'session-sam' },
+      body: JSON.stringify({ displayName: 'Spoofed Session' }),
+    });
+    assert(untrustedRename.status === 403, `Expected header-only profile rename status 403, got ${untrustedRename.status}`);
 
     const firstEnrollment = await readJson<{
       enrollmentPath: string;
@@ -237,8 +273,8 @@ async function run(): Promise<void> {
     });
     assert(revokedEnrollment.status === 410, `Expected revoked enrollment link status 410, got ${revokedEnrollment.status}`);
     assert(
-      (await revokedEnrollment.text()).includes('was revoked'),
-      'Expected revoked enrollment link to explain the terminal state',
+      (await revokedEnrollment.text()).includes('no longer available'),
+      'Expected revoked enrollment link to avoid revealing the terminal state',
     );
 
     const alreadyEnrolled = await fetch(`${base}${replacementEnrollment.enrollmentPath}`, {
@@ -268,8 +304,8 @@ async function run(): Promise<void> {
     });
     assert(replayedEnrollment.status === 410, `Expected enrollment replay status 410, got ${replayedEnrollment.status}`);
     assert(
-      (await replayedEnrollment.text()).includes('already used'),
-      'Expected replayed enrollment link to explain the terminal state',
+      (await replayedEnrollment.text()).includes('no longer available'),
+      'Expected replayed enrollment link to avoid revealing the terminal state',
     );
 
     const { storeCreateReviewRoomDeviceEnrollment } = await import('../../server/review-room-store.js');
@@ -282,7 +318,7 @@ async function run(): Promise<void> {
       headers: { ...CLIENT_HEADERS, Accept: 'application/json' },
     });
     assert(expiredResponse.status === 410, `Expected expired enrollment status 410, got ${expiredResponse.status}`);
-    assert((await expiredResponse.text()).includes('has expired'), 'Expected expired enrollment message');
+    assert((await expiredResponse.text()).includes('no longer available'), 'Expected expired enrollment not to reveal the terminal state');
 
     const sessionsAfterEnrollment = await readJson<{
       sessions: Array<{ id: string; current: boolean }>;

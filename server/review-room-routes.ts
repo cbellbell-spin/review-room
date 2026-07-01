@@ -74,6 +74,8 @@ import {
 } from './review-room-store.js';
 import {
   REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
+  REVIEW_ROOM_LOCAL_HUMAN_ID,
+  REVIEW_ROOM_LOCAL_HUMAN_NAME,
   REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
   normalizeReviewRoomIdentityId,
   reviewRoomActorForIdentity,
@@ -183,6 +185,24 @@ function buildReviewRoomRecoveryState(input: {
       commenter: 'Commenters who lose every authenticated device need the document owner to send a fresh identity invitation, or they can continue through an unrevoked commenter document link.',
       viewer: 'Viewers who lose every authenticated device need the document owner to send a fresh identity invitation, or they can continue through an unrevoked viewer document link.',
     },
+  };
+}
+
+function serializeReviewRoomSession(row: Awaited<ReturnType<typeof storeListReviewRoomSessions>>[number], currentSessionId: string | null): Record<string, unknown> {
+  return {
+    id: row.id,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+    current: row.id === currentSessionId,
+  };
+}
+
+function buildUntrustedReviewRoomIdentity(identityId: string): Record<string, unknown> {
+  return {
+    id: identityId,
+    display_name: identityId === REVIEW_ROOM_LOCAL_HUMAN_ID ? REVIEW_ROOM_LOCAL_HUMAN_NAME : identityId,
+    kind: 'human',
   };
 }
 
@@ -1522,28 +1542,24 @@ reviewRoomRoutes.get('/review-room/api/identity', async (req: Request, res: Resp
   const inspectedSession = session ? null : await storeInspectReviewRoomSession(getReviewRoomSessionCookie(req));
   const recoveryIdentityId = session?.identity_id ?? inspectedSession?.identity_id ?? null;
   const sessions = recoveryIdentityId ? await storeListReviewRoomSessions(recoveryIdentityId) : [];
+  const currentIdentity = await storeGetReviewRoomIdentity(identityId);
+  const sessionBacked = Boolean(session);
+  const trustedDeviceContext = sessionBacked || Boolean(inspectedSession);
   res.json({
     success: true,
     workspace: {
       id: REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
       name: REVIEW_ROOM_LOCAL_WORKSPACE_NAME,
     },
-    currentIdentity: await storeGetReviewRoomIdentity(identityId),
+    currentIdentity: sessionBacked ? currentIdentity : buildUntrustedReviewRoomIdentity(identityId),
     session: session ? { active: true, expiresAt: session.expires_at } : { active: false },
     recovery: buildReviewRoomRecoveryState({
       sessionActive: Boolean(session),
       inspectedSessionStatus: inspectedSession?.status ?? null,
-      activeDeviceCount: recoveryIdentityId ? sessions.length : null,
+      activeDeviceCount: trustedDeviceContext && recoveryIdentityId ? sessions.length : null,
     }),
-    sessions: sessions.map((row) => ({
-      id: row.id,
-      identityId: row.identity_id,
-      expiresAt: row.expires_at,
-      createdAt: row.created_at,
-      lastSeenAt: row.last_seen_at,
-      current: row.id === session?.id,
-    })),
-    identities: await storeListReviewRoomIdentities(REVIEW_ROOM_DEFAULT_WORKSPACE_ID),
+    sessions: sessionBacked ? sessions.map((row) => serializeReviewRoomSession(row, session?.id ?? null)) : [],
+    identities: sessionBacked ? [currentIdentity].filter(Boolean) : [],
   });
 });
 
@@ -1557,13 +1573,13 @@ reviewRoomRoutes.get('/review-room/session/accept', async (req: Request, res: Re
   }
   const invitation = await storeConsumeReviewRoomIdentityInvitation(secret);
   if (!invitation) {
-    res.status(410).type('text/plain').send('This identity invitation has expired or was already used.');
+    res.status(410).type('text/plain').send('This identity invitation is no longer available.');
     return;
   }
   const identity = await storeGetReviewRoomIdentity(invitation.identity_id);
   const member = await storeGetReviewRoomDocumentMemberForProofSlug(invitation.proof_slug, invitation.identity_id);
   if (!identity || !member) {
-    res.status(409).type('text/plain').send('This invitation no longer has a matching collaborator membership.');
+    res.status(410).type('text/plain').send('This identity invitation is no longer available.');
     return;
   }
   const { session, secret: sessionSecret } = await storeCreateReviewRoomSession(invitation.identity_id);
@@ -1647,26 +1663,18 @@ reviewRoomRoutes.get('/review-room/session/enroll', async (req: Request, res: Re
     return;
   }
   const nowMs = Date.now();
-  if (enrollment.revoked_at) {
-    res.status(410).type('text/plain').send('This device enrollment link was revoked.');
-    return;
-  }
-  if (enrollment.accepted_at) {
-    res.status(410).type('text/plain').send('This device enrollment link was already used.');
-    return;
-  }
-  if (Date.parse(enrollment.expires_at) <= nowMs) {
-    res.status(410).type('text/plain').send('This device enrollment link has expired.');
+  if (enrollment.revoked_at || enrollment.accepted_at || Date.parse(enrollment.expires_at) <= nowMs) {
+    res.status(410).type('text/plain').send('This device enrollment link is no longer available.');
     return;
   }
   const consumed = await storeConsumeReviewRoomDeviceEnrollment(secret);
   if (!consumed) {
-    res.status(410).type('text/plain').send('This device enrollment link has expired, was revoked, or was already used.');
+    res.status(410).type('text/plain').send('This device enrollment link is no longer available.');
     return;
   }
   const identity = await storeGetReviewRoomIdentity(consumed.identity_id);
   if (!identity) {
-    res.status(409).type('text/plain').send('This device enrollment link no longer has a matching Review Room identity.');
+    res.status(410).type('text/plain').send('This device enrollment link is no longer available.');
     return;
   }
   const { session, secret: sessionSecret } = await storeCreateReviewRoomSession(consumed.identity_id);
@@ -1713,13 +1721,22 @@ reviewRoomRoutes.delete('/review-room/api/sessions/:sessionId', async (req: Requ
 });
 
 reviewRoomRoutes.patch('/review-room/api/identity', async (req: Request, res: Response) => {
-  const identityId = await getCurrentReviewRoomIdentityId(req);
+  const session = await getReviewRoomSession(req);
+  const identityId = session?.identity_id ?? getExplicitReviewRoomIdentityId(req) ?? normalizeReviewRoomIdentityId(null);
   const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim().slice(0, 120) : '';
   if (!displayName) {
     res.status(400).json({ success: false, code: 'DISPLAY_NAME_REQUIRED', error: 'Display name is required.' });
     return;
   }
   const existing = await storeGetReviewRoomIdentity(identityId);
+  if (!session && existing && identityId !== REVIEW_ROOM_LOCAL_HUMAN_ID) {
+    res.status(403).json({
+      success: false,
+      code: 'SESSION_REQUIRED',
+      error: 'An authenticated Review Room session is required to update this identity.',
+    });
+    return;
+  }
   const identity = await storeUpsertReviewRoomIdentity({
     id: identityId,
     workspaceId: existing?.workspace_id ?? REVIEW_ROOM_DEFAULT_WORKSPACE_ID,
