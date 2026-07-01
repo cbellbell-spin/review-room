@@ -6302,7 +6302,16 @@ class ProofEditorImpl implements ProofEditor {
       // The bound Y.Doc is the content authority in live collaboration. Writing a
       // serialized editor snapshot here races the Yjs projection and can persist
       // duplicated remote content immediately before an accept/reject mutation.
-      collabClient.setMarksMetadata(snapshot.marks);
+      //
+      // The editor may also be only partially hydrated when suggestions were
+      // created out-of-band (MCP/agent). Merge server-known pending marks back in
+      // before syncing, otherwise accepting one visible suggestion can wipe its
+      // pending siblings from the collab marks map.
+      const mergedMarks = mergePendingServerMarks(
+        snapshot.marks as Record<string, StoredMark>,
+        this.lastReceivedServerMarks,
+      );
+      collabClient.setMarksMetadata(mergedMarks);
       const deadline = Date.now() + 5_000;
       while (
         Date.now() < deadline
@@ -6312,8 +6321,11 @@ class ProofEditorImpl implements ProofEditor {
       }
       if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) return false;
 
-      this.lastReceivedServerMarks = { ...snapshot.marks } as Record<string, StoredMark>;
-      this.captureReviewRoomPersistedReviewSnapshot(snapshot);
+      this.lastReceivedServerMarks = { ...mergedMarks };
+      this.captureReviewRoomPersistedReviewSnapshot({
+        markdown: snapshot.markdown,
+        marks: mergedMarks,
+      });
       return true;
     }
     return shareClient.pushMarks(snapshot.marks, getCurrentActor());

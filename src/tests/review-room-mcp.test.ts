@@ -223,6 +223,24 @@ async function run(): Promise<void> {
     }, token));
     assert(suggestion.success === true && typeof suggestion.markId === 'string', 'Expected MCP suggestion tool to create a mark');
 
+    const siblingSuggestion = parseToolBody(await mcp(base, {
+      method: 'tools/call',
+      params: {
+        name: 'review_room_add_suggestion',
+        arguments: {
+          slug,
+          kind: 'insert',
+          quote: 'MCP Review Room test',
+          content: ' accepted-one-keeps-siblings',
+          by: 'ai:mcp-test',
+        },
+      },
+    }, token));
+    assert(
+      siblingSuggestion.success === true && typeof siblingSuggestion.markId === 'string',
+      'Expected MCP to create a second pending suggestion',
+    );
+
     const accepted = parseToolBody(await mcp(base, {
       method: 'tools/call',
       params: {
@@ -237,6 +255,20 @@ async function run(): Promise<void> {
     assert(
       accepted.success === true && String(accepted.markdown).includes('Original paragraph revised through MCP.'),
       'Expected MCP accept tool to apply the suggestion',
+    );
+    const stateAfterSingleAccept = parseToolBody(await mcp(base, {
+      method: 'tools/call',
+      params: {
+        name: 'review_room_get_state',
+        arguments: { slug },
+      },
+    }, token));
+    const marksAfterSingleAccept = stateAfterSingleAccept.marks && typeof stateAfterSingleAccept.marks === 'object' && !Array.isArray(stateAfterSingleAccept.marks)
+      ? stateAfterSingleAccept.marks as Record<string, { kind?: string; status?: string }>
+      : {};
+    assert(
+      marksAfterSingleAccept[String(siblingSuggestion.markId)]?.status === 'pending',
+      'Accepting one suggestion must leave sibling suggestions pending',
     );
     const historyAfterMcpAccept = await json<{
       success: boolean;

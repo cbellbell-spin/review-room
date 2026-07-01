@@ -320,6 +320,12 @@ assert(
   'Expected Review Room mark sync to push quote/range-enriched metadata instead of raw plugin metadata',
 );
 assert(
+  editorSource.includes('const mergedMarks = mergePendingServerMarks(')
+    && editorSource.includes('collabClient.setMarksMetadata(mergedMarks)')
+    && editorSource.includes('this.lastReceivedServerMarks = { ...mergedMarks };'),
+  'Expected pre-accept Review Room mark persistence to preserve server-known pending suggestions instead of replacing the collab marks map with a partially hydrated editor snapshot',
+);
+assert(
   editorSource.includes('if (this.isShareMode && !this.reviewRoomRestSaveMode) {\n      this.flushShareMarks();\n    }'),
   'Expected Review Room manual-save mode to avoid marks-only REST pushes before suggested text is saved',
 );
