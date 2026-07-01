@@ -1,4 +1,4 @@
-import type { ReviewRoomAssignmentTask, ReviewRoomHistoryEvent, ReviewRoomPublishedVersion } from '../bridge/share-client';
+import type { ReviewRoomAssignmentTask, ReviewRoomHistoryEvent, ReviewRoomPublishedVersion } from './client';
 import {
   collectReviewCommentActors,
   collectReviewHistoryActors,

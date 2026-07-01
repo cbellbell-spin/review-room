@@ -1,4 +1,4 @@
-import type { ReviewRoomAssignmentTask, ReviewRoomAssignmentTaskStatus, ReviewRoomHistoryEvent } from '../bridge/share-client';
+import type { ReviewRoomAssignmentTask, ReviewRoomAssignmentTaskStatus, ReviewRoomHistoryEvent } from './client';
 import { getReviewRoomSuggestionGroups, type ReviewRoomSuggestionGroup, type ReviewRoomSuggestionKind } from './suggestion-groups';
 
 // Pure Review Room review-item logic, extracted from the editor monolith so the

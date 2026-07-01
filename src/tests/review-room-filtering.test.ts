@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import type { ReviewRoomAssignmentTask, ReviewRoomHistoryEvent } from '../bridge/share-client';
+import type { ReviewRoomAssignmentTask, ReviewRoomHistoryEvent } from '../review-room/client';
 import {
   collectReviewCommentActors,
   collectReviewHistoryActors,

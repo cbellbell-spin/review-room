@@ -19,6 +19,7 @@ const editorSource = readFileSync(path.join(root, 'src/editor/index.ts'), 'utf8'
 const serverIndexSource = readFileSync(path.join(root, 'server/index.ts'), 'utf8');
 const reviewRoomRoutesSource = readFileSync(path.join(root, 'server/review-room-routes.ts'), 'utf8');
 const reviewRoomMcpSource = readFileSync(path.join(root, 'server/review-room-mcp-routes.ts'), 'utf8');
+const reviewRoomClientSource = readFileSync(path.join(root, 'src/review-room/client.ts'), 'utf8');
 const reviewPanelSource = readFileSync(path.join(root, 'src/review-room/review-panel.ts'), 'utf8');
 const reviewItemsSource = readFileSync(path.join(root, 'src/review-room/review-items.ts'), 'utf8');
 const reviewTokensSource = readFileSync(path.join(root, 'src/review-room/tokens.ts'), 'utf8');
@@ -137,7 +138,7 @@ assert(
     && reviewPanelSource.includes('Comments (${visibleComments.length})')
     && reviewPanelSource.includes('No resolved comment threads.')
     && reviewPanelSource.includes('Review items could not load')
-    && editorSource.includes('shareClient.fetchReviewRoomHistory({ limit })')
+    && editorSource.includes('reviewRoomClient.fetchHistory({ limit })')
     && reviewPanelSource.includes('host.fetchHistory(100)')
     && reviewPanelSource.includes('renderAuditInbox(historyEvents)')
     && reviewPanelSource.includes('Mark reviewed')
@@ -150,6 +151,19 @@ assert(
     && markPopoverSource.includes('void proof.openReviewRoomReviewSidebar({')
     && markPopoverSource.includes('focusMarkId: markId'),
   'Expected Review Room comment threads and accepted suggestion history to open inside the Review sidebar',
+);
+assert(
+  editorSource.includes("import {\n  reviewRoomClient,")
+    && reviewRoomClientSource.includes('export class ReviewRoomClient')
+    && reviewRoomClientSource.includes('fetchHistory(options?')
+    && reviewRoomClientSource.includes('return shareClient.fetchReviewRoomHistory(options);')
+    && reviewRoomClientSource.includes('fetchMembers(options?')
+    && reviewRoomClientSource.includes('return shareClient.fetchReviewRoomMembers(options);')
+    && reviewRoomClientSource.includes('fetchAgentReviewRuns(options?')
+    && reviewRoomClientSource.includes('return shareClient.fetchReviewRoomAgentReviewRuns(options);')
+    && reviewPanelSource.includes("from './client'")
+    && reviewItemsSource.includes("from './client'"),
+  'Expected Review Room product APIs and types to route through the Review Room client boundary while shareClient keeps compatibility wrappers',
 );
 assert(
   reviewTokensSource.includes('--rr-accent: #266854;')
@@ -173,8 +187,8 @@ assert(
     && shareClientSource.includes('async updateReviewRoomTaskStatus(')
     && shareClientSource.includes('async markReviewRoomAuditEventReviewed(')
     && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/audit/${encodeURIComponent(eventId)}/reviewed')
-    && editorSource.includes('shareClient.fetchReviewRoomTasks({ status: \'all\' })')
-    && editorSource.includes('shareClient.updateReviewRoomTaskStatus(taskId, status)')
+    && editorSource.includes('reviewRoomClient.fetchTasks({ status: \'all\' })')
+    && editorSource.includes('reviewRoomClient.updateTaskStatus(taskId, status)')
     && editorSource.includes('filterOpenReviewAuditEvents(history.events)')
     && editorSource.includes('1 direct change to review')
     && markPopoverSource.includes("mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace'")
@@ -185,8 +199,8 @@ assert(
     && shareClientSource.includes('async fetchReviewRoomBaselines(')
     && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/baselines?limit=${limit}')
     && shareClientSource.includes('async createReviewRoomBaseline(')
-    && editorSource.includes('shareClient.fetchReviewRoomBaselines({ limit: 10 })')
-    && editorSource.includes('shareClient.createReviewRoomBaseline({ note })')
+    && editorSource.includes('reviewRoomClient.fetchBaselines({ limit: 10 })')
+    && editorSource.includes('reviewRoomClient.createBaseline({ note })')
     && reviewPanelSource.includes('renderPublish(baselines, historyEvents)')
     && reviewPanelSource.includes('Changes since baseline')
     && reviewItemsSource.includes('Created baseline'),
@@ -210,9 +224,9 @@ assert(
     && editorSource.includes('Your document access:')
     && editorSource.includes('Agent access is separate, request-scoped')
     && editorSource.includes('Rotate access')
-    && editorSource.includes("revokeReviewRoomMember(member.identityId)")
-    && editorSource.includes('shareClient.fetchReviewRoomMembers()')
-    && editorSource.includes('shareClient.upsertReviewRoomMember({')
+    && editorSource.includes("reviewRoomClient.revokeMember(member.identityId)")
+    && editorSource.includes('reviewRoomClient.fetchMembers()')
+    && editorSource.includes('reviewRoomClient.upsertMember({')
     && editorSource.includes('this.reviewRoomCanManageMembers = this.documentCapabilities.canManageMembers;')
     && editorSource.includes('this.reviewRoomAgentReviewCanStart = this.documentCapabilities.canRequestAgentReview;')
     && editorSource.includes('canCreateBaseline: () => this.documentCapabilities.canCreateBaseline')
@@ -293,7 +307,7 @@ assert(
     && reviewRoomMcpSource.includes('lifecycle: buildAgentReviewRunLifecycle(run)')
     && editorSource.includes('the agent brings its own model and credentials')
     && editorSource.includes('This is a request-scoped agent credential')
-    && editorSource.includes('shareClient.createReviewRoomAgentCredential(request.id)')
+    && editorSource.includes('reviewRoomClient.createAgentCredential(request.id)')
     && reviewRoomRoutesSource.includes("reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs'")
     && reviewRoomRoutesSource.includes("reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/retry'")
     && reviewRoomRoutesSource.includes("reviewRoomRoutes.post('/review-room/api/documents/:proofSlug/review-runs/:runId/cancel'")

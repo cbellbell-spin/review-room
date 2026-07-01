@@ -149,14 +149,17 @@ import { fileClient } from '../bridge/file-client';
 import {
   shareClient,
   type CollabSessionInfo,
-  type ReviewRoomAgentReviewRun,
-  type ReviewRoomDocumentMember,
-  type ReviewRoomRole,
   type ShareCapabilities,
   type SharePendingEvent,
   type ShareRequestError,
   type ShareState,
 } from '../bridge/share-client';
+import {
+  reviewRoomClient,
+  type ReviewRoomAgentReviewRun,
+  type ReviewRoomDocumentMember,
+  type ReviewRoomRole,
+} from '../review-room/client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
 import { countOpenReviewItems, filterOpenReviewAuditEvents } from '../review-room/review-items';
@@ -4984,7 +4987,7 @@ class ProofEditorImpl implements ProofEditor {
       loading.style.cssText = 'color:rgba(255,255,255,0.68);font-size:12px;';
       body.appendChild(loading);
 
-      const response = await shareClient.fetchReviewRoomMembers();
+      const response = await reviewRoomClient.fetchMembers();
       body.replaceChildren();
       if (!response || this.isShareRequestError(response) || response.success !== true) {
         const error = document.createElement('div');
@@ -5075,7 +5078,7 @@ class ProofEditorImpl implements ProofEditor {
           if (!identityId) return;
           submit.disabled = true;
           setStatus('Saving...');
-          const saved = await shareClient.upsertReviewRoomMember({
+          const saved = await reviewRoomClient.upsertMember({
             identityId,
             displayName: displayName.value.trim() || identityId,
             role: this.parseReviewRoomRole(role.value) ?? 'viewer',
@@ -5162,7 +5165,7 @@ class ProofEditorImpl implements ProofEditor {
         void (async () => {
           rotate.disabled = true;
           setStatus('Rotating access...');
-          const saved = await shareClient.upsertReviewRoomMember({
+          const saved = await reviewRoomClient.upsertMember({
             identityId: member.identityId,
             displayName: member.displayName,
             role: member.role,
@@ -5188,7 +5191,7 @@ class ProofEditorImpl implements ProofEditor {
         void (async () => {
           revoke.disabled = true;
           setStatus('Revoking access...');
-          const revoked = await shareClient.revokeReviewRoomMember(member.identityId);
+          const revoked = await reviewRoomClient.revokeMember(member.identityId);
           if (!revoked || this.isShareRequestError(revoked) || revoked.success !== true) {
             setStatus(this.isShareRequestError(revoked) ? revoked.error.message : 'Could not revoke access.', 'error');
             revoke.disabled = false;
@@ -5840,7 +5843,7 @@ class ProofEditorImpl implements ProofEditor {
     let message = this.getAgentInviteMessage();
     const request = this.reviewRoomLatestAgentReviewRun;
     if (request?.status === 'queued' && this.reviewRoomAgentReviewCanStart) {
-      const response = await shareClient.createReviewRoomAgentCredential(request.id);
+      const response = await reviewRoomClient.createAgentCredential(request.id);
       if (!response || this.isShareRequestError(response) || response.success !== true || !response.credential.token) return false;
       message = this.getAgentInviteMessage({
         agentToken: response.credential.token,
@@ -6195,7 +6198,7 @@ class ProofEditorImpl implements ProofEditor {
     try {
       const [doc, history] = await Promise.all([
         shareClient.fetchDocument(),
-        shareClient.fetchReviewRoomHistory({ limit: 100 }).catch(() => null),
+        reviewRoomClient.fetchHistory({ limit: 100 }).catch(() => null),
       ]);
       if (!doc || this.reviewRoomReviewButtonEl !== button) return;
       const count = countOpenReviewItems(doc);
@@ -6436,27 +6439,27 @@ class ProofEditorImpl implements ProofEditor {
       focusMark: (markId) => this.focusReviewRoomMark(markId),
       fetchDocument: () => this.fetchReviewDocumentForPanel(),
       fetchHistory: async (limit) => {
-        const result = await shareClient.fetchReviewRoomHistory({ limit });
+        const result = await reviewRoomClient.fetchHistory({ limit });
         return result && !('error' in result) && result.success ? result.events : [];
       },
       fetchBaselines: async () => {
-        const result = await shareClient.fetchReviewRoomBaselines({ limit: 10 });
+        const result = await reviewRoomClient.fetchBaselines({ limit: 10 });
         return result && !('error' in result) && result.success ? result.baselines : [];
       },
       createBaseline: async (note) => {
-        const result = await shareClient.createReviewRoomBaseline({ note });
+        const result = await reviewRoomClient.createBaseline({ note });
         return result && !('error' in result) && result.success ? result.baseline : null;
       },
       fetchTasks: async () => {
-        const result = await shareClient.fetchReviewRoomTasks({ status: 'all' });
+        const result = await reviewRoomClient.fetchTasks({ status: 'all' });
         return result && !('error' in result) && result.success ? result.tasks : [];
       },
       updateTaskStatus: async (taskId, status) => {
-        const result = await shareClient.updateReviewRoomTaskStatus(taskId, status);
+        const result = await reviewRoomClient.updateTaskStatus(taskId, status);
         return Boolean(result && !('error' in result) && result.success === true);
       },
       markAuditEventReviewed: async (eventId) => {
-        const result = await shareClient.markReviewRoomAuditEventReviewed(eventId);
+        const result = await reviewRoomClient.markAuditEventReviewed(eventId);
         if (result && !('error' in result) && result.success === true) {
           void this.updateReviewRoomReviewButtonCount();
           return true;
@@ -6868,7 +6871,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.isReviewRoomRuntime() || this.reviewRoomAgentReviewRefreshInFlight) return;
     this.reviewRoomAgentReviewRefreshInFlight = true;
     try {
-      const response = await shareClient.fetchReviewRoomAgentReviewRuns({ limit: 5 });
+      const response = await reviewRoomClient.fetchAgentReviewRuns({ limit: 5 });
       if (!response || this.isShareRequestError(response) || response.success !== true) return;
       const previousStatus = this.reviewRoomLatestAgentReviewRun?.status ?? null;
       this.reviewRoomLatestAgentReviewRun = response.runs[0] ?? null;
@@ -6889,7 +6892,7 @@ class ProofEditorImpl implements ProofEditor {
     const idempotencyKey = typeof crypto?.randomUUID === 'function'
       ? crypto.randomUUID()
       : `review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const response = await shareClient.startReviewRoomAgentReview(idempotencyKey, {
+    const response = await reviewRoomClient.startAgentReview(idempotencyKey, {
       scope: 'document',
       instructions: 'Review the document and submit only high-confidence comments or suggestions. Humans retain all decision authority.',
     });
@@ -6904,7 +6907,7 @@ class ProofEditorImpl implements ProofEditor {
   private async retryReviewRoomAgentReview(): Promise<boolean> {
     const run = this.reviewRoomLatestAgentReviewRun;
     if (!run || !['failed', 'cancelled', 'lease_expired'].includes(run.status) || !this.reviewRoomAgentReviewCanStart) return false;
-    const response = await shareClient.retryReviewRoomAgentReview(run.id);
+    const response = await reviewRoomClient.retryAgentReview(run.id);
     if (!response || this.isShareRequestError(response) || response.success !== true) return false;
     this.reviewRoomLatestAgentReviewRun = response.run;
     this.updateShareBannerAgentControlDisplay();
@@ -6916,7 +6919,7 @@ class ProofEditorImpl implements ProofEditor {
   private async cancelReviewRoomAgentReview(): Promise<boolean> {
     const run = this.reviewRoomLatestAgentReviewRun;
     if (!run || !['queued', 'claimed', 'running'].includes(run.status) || !this.reviewRoomAgentReviewCanStart) return false;
-    const response = await shareClient.cancelReviewRoomAgentReview(run.id);
+    const response = await reviewRoomClient.cancelAgentReview(run.id);
     if (!response || this.isShareRequestError(response) || response.success !== true) return false;
     this.reviewRoomLatestAgentReviewRun = response.run;
     this.updateShareBannerAgentControlDisplay();
