@@ -294,6 +294,14 @@ export type ReviewRoomAgentReviewRun = {
   completed_at: string | null;
 };
 
+export type ReviewRoomAgentReviewLifecycleEvent = {
+  eventType: string;
+  status: ReviewRoomAgentReviewRunStatus | 'access_created' | 'access_revoked' | 'access_expired';
+  occurredAt: string;
+  actorId: string | null;
+  message: string | null;
+};
+
 export type ReviewRoomAgentReviewOutput = {
   run_id: string;
   item_key: string;
@@ -304,6 +312,103 @@ export type ReviewRoomAgentReviewOutput = {
   created_at: string;
   updated_at: string;
 };
+
+export function buildAgentReviewRunLifecycle(
+  run: ReviewRoomAgentReviewRun,
+  credential?: ReviewRoomAgentCredential | null,
+): ReviewRoomAgentReviewLifecycleEvent[] {
+  const events: ReviewRoomAgentReviewLifecycleEvent[] = [];
+  events.push({
+    eventType: 'agent_review.requested',
+    status: 'queued',
+    occurredAt: run.created_at,
+    actorId: run.requested_by_identity_id,
+    message: run.instructions,
+  });
+  if (credential?.created_at) {
+    events.push({
+      eventType: 'agent_access.created',
+      status: 'access_created',
+      occurredAt: credential.created_at,
+      actorId: credential.created_by_identity_id,
+      message: null,
+    });
+  }
+  if (credential?.revoked_at) {
+    events.push({
+      eventType: 'agent_access.revoked',
+      status: 'access_revoked',
+      occurredAt: credential.revoked_at,
+      actorId: credential.agent_id,
+      message: null,
+    });
+  } else if (credential?.expires_at && new Date(credential.expires_at).getTime() <= Date.now()) {
+    events.push({
+      eventType: 'agent_access.expired',
+      status: 'access_expired',
+      occurredAt: credential.expires_at,
+      actorId: credential.agent_id,
+      message: null,
+    });
+  }
+  if (run.claimed_at) {
+    events.push({
+      eventType: 'agent_review.claimed',
+      status: 'claimed',
+      occurredAt: run.claimed_at,
+      actorId: run.agent_id || null,
+      message: null,
+    });
+  }
+  if (run.started_at) {
+    events.push({
+      eventType: 'agent_review.started',
+      status: 'running',
+      occurredAt: run.started_at,
+      actorId: run.agent_id || null,
+      message: null,
+    });
+  }
+  if (run.cancelled_at) {
+    events.push({
+      eventType: 'agent_review.cancelled',
+      status: 'cancelled',
+      occurredAt: run.cancelled_at,
+      actorId: run.requested_by_identity_id,
+      message: null,
+    });
+  }
+  if (run.completed_at && run.status === 'completed') {
+    events.push({
+      eventType: 'agent_review.completed',
+      status: 'completed',
+      occurredAt: run.completed_at,
+      actorId: run.agent_id || null,
+      message: null,
+    });
+  }
+  if (run.completed_at && run.status === 'failed') {
+    events.push({
+      eventType: 'agent_review.failed',
+      status: 'failed',
+      occurredAt: run.completed_at,
+      actorId: run.agent_id || null,
+      message: run.error_message,
+    });
+  }
+  if (run.completed_at && run.status === 'lease_expired') {
+    events.push({
+      eventType: 'agent_review.lease_expired',
+      status: 'lease_expired',
+      occurredAt: run.completed_at,
+      actorId: run.agent_id || null,
+      message: run.error_message,
+    });
+  }
+  return events
+    .filter((event) => Boolean(event.occurredAt))
+    .sort((left, right) => new Date(left.occurredAt).getTime() - new Date(right.occurredAt).getTime());
+}
 
 export type ReviewRoomAgentCredential = {
   id: string;
@@ -1590,8 +1695,8 @@ export async function storeCancelAgentReviewRun(id: string): Promise<ReviewRoomA
 export async function storeExpireAgentReviewRunLeases(documentId?: string): Promise<number> {
   const db = await ensureStore();
   const now = new Date().toISOString();
-  const expiring = await executeAll<{ id: string }>(`
-    SELECT id FROM review_room_agent_review_runs
+  const expiring = await executeAll<ReviewRoomAgentReviewRun>(`
+    SELECT * FROM review_room_agent_review_runs
     WHERE status IN ('claimed', 'running') AND lease_expires_at <= ?
       AND (? IS NULL OR document_id = ?)
   `, [now, documentId ?? null, documentId ?? null]);
@@ -1604,8 +1709,31 @@ export async function storeExpireAgentReviewRunLeases(documentId?: string): Prom
             AND (? IS NULL OR document_id = ?)`,
     args: [now, now, now, documentId ?? null, documentId ?? null],
   });
-  for (const run of expiring) await storeRevokeReviewRoomAgentCredentials(run.id);
-  return Number(result.rowsAffected ?? 0);
+  const expiredCount = Number(result.rowsAffected ?? 0);
+  if (expiredCount <= 0) return 0;
+  for (const run of expiring) {
+    await storeRevokeReviewRoomAgentCredentials(run.id);
+    await storeCreateReviewRoomHistoryEvent({
+      documentId: run.document_id,
+      actorId: 'review-room-system',
+      actorType: 'system',
+      eventType: 'agent_review.lease_expired',
+      targetType: 'agent_review_run',
+      targetId: run.id,
+      before: {
+        status: run.status,
+        agentId: run.agent_id || null,
+        leaseExpiresAt: run.lease_expires_at,
+        heartbeatAt: run.heartbeat_at,
+      },
+      after: {
+        status: 'lease_expired',
+        agentId: run.agent_id || null,
+        message: 'The external agent lease expired.',
+      },
+    });
+  }
+  return expiredCount;
 }
 
 export async function storeCountAgentReviewOutputs(runId: string): Promise<number> {

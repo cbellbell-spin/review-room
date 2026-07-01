@@ -271,9 +271,15 @@ export function historyEventTitle(event: ReviewRoomHistoryEvent): string {
   if (event.eventType === 'task.created') return 'Created task';
   if (event.eventType === 'task.status_changed') return 'Updated task status';
   if (event.eventType === 'baseline.created') return 'Created baseline';
+  if (event.eventType === 'agent_review.requested') return 'Requested agent review';
+  if (event.eventType === 'agent_review.claimed') return 'Claimed agent review';
   if (event.eventType === 'agent_review.started') return 'Started agent review';
   if (event.eventType === 'agent_review.completed') return 'Completed agent review';
   if (event.eventType === 'agent_review.failed') return 'Agent review failed';
+  if (event.eventType === 'agent_review.released') return 'Released agent review';
+  if (event.eventType === 'agent_review.requeued') return 'Requeued agent review';
+  if (event.eventType === 'agent_review.cancelled') return 'Cancelled agent review';
+  if (event.eventType === 'agent_review.lease_expired') return 'Agent lease expired';
   return event.eventType.replace(/\./g, ' ');
 }
 
@@ -453,11 +459,15 @@ function shapeAgentReviewHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewH
   const status = readHistoryText(event.after, ['status']);
   const agentId = readHistoryText(event.after, ['agentId']);
   const message = readHistoryText(event.after, ['message']);
+  const attemptCount = readHistoryNumber(event.after, ['attemptCount']);
+  const leaseExpiresAt = readHistoryText(event.after, ['leaseExpiresAt']) || readHistoryText(event.before, ['leaseExpiresAt']);
   const resultCount = readHistoryNumber(event.after, ['resultCount']);
   const failedOutputCount = readHistoryNumber(event.after, ['failedOutputCount']);
   const details: ReviewHistoryRow['details'] = [];
   if (status) details.push({ label: 'Status', text: status, tone: 'neutral' });
   if (agentId) details.push({ label: 'Agent', text: agentId, tone: 'neutral' });
+  if (attemptCount !== null) details.push({ label: 'Attempt', text: String(attemptCount), tone: 'neutral' });
+  if (leaseExpiresAt) details.push({ label: 'Lease expires', text: formatReviewTimestamp(leaseExpiresAt), tone: 'neutral' });
   if (resultCount !== null) details.push({ label: 'Review items', text: String(resultCount), tone: 'added' });
   if (failedOutputCount !== null && failedOutputCount > 0) details.push({ label: 'Skipped outputs', text: String(failedOutputCount), tone: 'neutral' });
   if (message) details.push({ label: 'Failure', text: message, tone: 'removed' });
@@ -470,6 +480,7 @@ function shapeAgentReviewHistoryRow(event: ReviewRoomHistoryEvent): Pick<ReviewH
     'agent_review.requeued': 'Review request was requeued.',
     'agent_review.cancelled': 'Review request was cancelled.',
     'agent_review.failed': `Agent review failed${message ? `: ${previewHistoryText(message)}` : '.'}`,
+    'agent_review.lease_expired': 'External agent lease expired before the review completed.',
   };
   return {
     summary: summaryByType[event.eventType] || historyEventTitle(event),

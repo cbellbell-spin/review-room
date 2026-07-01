@@ -102,7 +102,15 @@ async function run(): Promise<void> {
     });
     assert(forbidden.status === 403, `Expected editor request creation to be forbidden, got ${forbidden.status}`);
 
-    const first = await json<{ run: { id: string; status: string; instructions: string }; reused: boolean }>(
+    const first = await json<{
+      run: {
+        id: string;
+        status: string;
+        instructions: string;
+        lifecycle: Array<{ eventType: string; status: string; actorId?: string | null; message?: string | null }>;
+      };
+      reused: boolean;
+    }>(
       await fetch(`${base}/review-room/api/documents/${slug}/review-runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-share-token': ownerToken },
@@ -115,6 +123,14 @@ async function run(): Promise<void> {
     );
     assert(first.run.status === 'queued', 'Creating a review request must only queue work');
     assert(first.run.instructions.includes('ambiguous ownership'), 'Expected owner instructions to persist');
+    assert(
+      first.run.lifecycle.some((event) => (
+        event.eventType === 'agent_review.requested'
+        && event.status === 'queued'
+        && event.actorId === 'review-owner'
+      )),
+      'Owner-visible review runs should include a requested lifecycle milestone',
+    );
 
     const duplicate = await json<{ run: { id: string }; reused: boolean }>(
       await fetch(`${base}/review-room/api/documents/${slug}/review-runs`, {
@@ -142,6 +158,16 @@ async function run(): Promise<void> {
     const firstCredential = await mintAgentCredential(first.run.id);
     const agentToken = firstCredential.credential.token;
     assert(agentToken !== ownerToken && agentToken !== editorToken, 'Agent access must use a distinct scoped credential');
+    const waitingRuns = await json<{ runs: Array<{ id: string; lifecycle: Array<{ eventType: string; status: string; actorId?: string | null }> }> }>(
+      await fetch(`${base}/review-room/api/documents/${slug}/review-runs`, {
+        headers: { 'x-share-token': ownerToken },
+      }),
+    );
+    const waitingRun = waitingRuns.runs.find((run) => run.id === first.run.id);
+    assert(
+      waitingRun?.lifecycle.some((event) => event.eventType === 'agent_access.created' && event.status === 'access_created'),
+      'Owner-visible review runs should show when scoped agent access was created',
+    );
 
     const listed = await callTool<{ requests: Array<{ id: string; status: string }> }>(base, 'review_room_list_review_requests', {
       slug,
@@ -172,6 +198,17 @@ async function run(): Promise<void> {
       leaseToken: claim.leaseToken,
     });
     assert(heartbeat.request.status === 'running' && Boolean(heartbeat.request.leaseExpiresAt), 'Heartbeat should start work and renew the lease');
+    const runningRuns = await json<{ runs: Array<{ id: string; lifecycle: Array<{ eventType: string; status: string; actorId?: string | null }> }> }>(
+      await fetch(`${base}/review-room/api/documents/${slug}/review-runs`, {
+        headers: { 'x-share-token': ownerToken },
+      }),
+    );
+    const runningRun = runningRuns.runs.find((run) => run.id === first.run.id);
+    assert(
+      runningRun?.lifecycle.some((event) => event.eventType === 'agent_review.claimed' && event.status === 'claimed')
+      && runningRun.lifecycle.some((event) => event.eventType === 'agent_review.started' && event.status === 'running'),
+      'Owner-visible review runs should expose claimed and running lifecycle milestones',
+    );
 
     const reservations = await Promise.all([
       storeReserveAgentReviewOutput({ runId: first.run.id, itemKey: 'atomic-reservation-fixture', itemType: 'comment' }),
@@ -397,6 +434,18 @@ async function run(): Promise<void> {
       !expiredCompletion.success && expiredCompletion.code === 'REQUEST_LEASE_EXPIRED',
       'Completion after lease expiry should return a specific lease-expired code',
     );
+    const history = await json<{ events: Array<{ eventType: string; targetId?: string | null; actorType?: string; after?: Record<string, unknown> | null }> }>(
+      await fetch(`${base}/review-room/api/documents/${slug}/history?limit=50`, {
+        headers: { 'x-share-token': ownerToken },
+      }),
+    );
+    const expiryEvent = history.events.find((event) => (
+      event.eventType === 'agent_review.lease_expired'
+      && event.targetId === expiring.run.id
+    ));
+    assert(expiryEvent?.actorType === 'system', 'Lease expiry should be recorded as a system lifecycle event');
+    assert(expiryEvent?.after?.status === 'lease_expired', 'Lease expiry history should expose the terminal status');
+    assert(!JSON.stringify(expiryEvent).includes(expiredSecret), 'Lease expiry history must not expose lease tokens');
 
     console.log('✓ Review Room BYO agent review-request protocol');
   } finally {

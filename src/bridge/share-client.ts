@@ -191,6 +191,20 @@ export type ReviewRoomAgentReviewRunStatus =
   | 'cancelled'
   | 'lease_expired';
 
+export type ReviewRoomAgentReviewLifecycleStatus =
+  | ReviewRoomAgentReviewRunStatus
+  | 'access_created'
+  | 'access_revoked'
+  | 'access_expired';
+
+export interface ReviewRoomAgentReviewLifecycleEvent {
+  eventType: string;
+  status: ReviewRoomAgentReviewLifecycleStatus;
+  occurredAt: string;
+  actorId?: string | null;
+  message?: string | null;
+}
+
 export interface ReviewRoomAgentReviewRun {
   id: string;
   documentId: string;
@@ -214,6 +228,8 @@ export interface ReviewRoomAgentReviewRun {
   updatedAt: string;
   startedAt?: string | null;
   completedAt?: string | null;
+  cancelledAt?: string | null;
+  lifecycle: ReviewRoomAgentReviewLifecycleEvent[];
 }
 
 export interface ReviewRoomAgentReviewRunsResponse {
@@ -352,6 +368,19 @@ function isReviewRoomAssignmentTaskStatus(value: unknown): value is ReviewRoomAs
     || value === 'delegated'
     || value === 'dismissed'
     || value === 'completed';
+}
+
+function isReviewRoomAgentReviewLifecycleStatus(value: unknown): value is ReviewRoomAgentReviewLifecycleStatus {
+  return value === 'queued'
+    || value === 'claimed'
+    || value === 'running'
+    || value === 'completed'
+    || value === 'failed'
+    || value === 'cancelled'
+    || value === 'lease_expired'
+    || value === 'access_created'
+    || value === 'access_revoked'
+    || value === 'access_expired';
 }
 
 function parseReviewRoomPublishedVersion(value: Record<string, unknown>): ReviewRoomPublishedVersion {
@@ -1199,6 +1228,19 @@ export class ShareClient {
       updatedAt: typeof run.updatedAt === 'string' ? run.updatedAt : '',
       startedAt: typeof run.startedAt === 'string' ? run.startedAt : null,
       completedAt: typeof run.completedAt === 'string' ? run.completedAt : null,
+      cancelledAt: typeof run.cancelledAt === 'string' ? run.cancelledAt : null,
+      lifecycle: Array.isArray(run.lifecycle)
+        ? run.lifecycle
+          .filter((event): event is Record<string, unknown> => Boolean(event) && typeof event === 'object' && !Array.isArray(event))
+          .map((event) => ({
+            eventType: typeof event.eventType === 'string' ? event.eventType : 'agent_review.status',
+            status: isReviewRoomAgentReviewLifecycleStatus(event.status) ? event.status : status,
+            occurredAt: typeof event.occurredAt === 'string' ? event.occurredAt : '',
+            actorId: typeof event.actorId === 'string' ? event.actorId : null,
+            message: typeof event.message === 'string' ? event.message : null,
+          }))
+          .filter((event) => Boolean(event.occurredAt))
+        : [],
     };
   }
 

@@ -32,6 +32,7 @@ import {
   resolveHostedDocumentAccess,
 } from './hosted-review-room-db.js';
 import {
+  buildAgentReviewRunLifecycle,
   storeCreatePublishedVersion,
   storeCreateAgentReviewRun,
   storeCreateReviewRoomDeviceEnrollment,
@@ -427,6 +428,7 @@ function serializeAgentReviewRun(
     cancelledAt: run.cancelled_at,
     agentAccessExpiresAt: credential?.expires_at ?? null,
     agentAccessRevokedAt: credential?.revoked_at ?? null,
+    lifecycle: buildAgentReviewRunLifecycle(run, credential),
   };
 }
 

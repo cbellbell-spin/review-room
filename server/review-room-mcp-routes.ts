@@ -11,6 +11,7 @@ import { getEffectiveShareStateForRole } from './share-access.js';
 import type { ShareRole } from './share-types.js';
 import { safeCreateAssignmentTasksFromCommentMentions } from './mention-tasks.js';
 import {
+  buildAgentReviewRunLifecycle,
   storeClaimAgentReviewRun,
   storeCompleteAgentReviewRun,
   storeCountAgentReviewOutputs,
@@ -401,6 +402,8 @@ function serializeReviewRequest(run: ReviewRoomAgentReviewRun): JsonRecord {
     claimedAt: run.claimed_at,
     startedAt: run.started_at,
     completedAt: run.completed_at,
+    cancelledAt: run.cancelled_at,
+    lifecycle: buildAgentReviewRunLifecycle(run),
   };
 }
 

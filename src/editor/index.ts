@@ -6947,6 +6947,50 @@ class ProofEditorImpl implements ProofEditor {
     return 'Review failed';
   }
 
+  private reviewRoomAgentReviewTimelineDetail(run: ReviewRoomAgentReviewRun): string {
+    const parts: string[] = [`Attempt ${run.attemptCount || 1}`];
+    const formatTime = (value?: string | null) => {
+      if (!value) return '';
+      const date = new Date(value);
+      return Number.isFinite(date.getTime()) ? date.toLocaleString() : '';
+    };
+    if (run.status === 'queued') {
+      const accessCreated = run.lifecycle.find((event) => event.status === 'access_created');
+      const accessRevoked = run.lifecycle.find((event) => event.status === 'access_revoked');
+      const accessExpired = run.lifecycle.find((event) => event.status === 'access_expired');
+      if (accessRevoked) {
+        parts.push('agent access revoked');
+      } else if (accessExpired) {
+        parts.push(`agent access expired ${formatTime(accessExpired.occurredAt)}`);
+      } else if (accessCreated) {
+        parts.push(`agent access copied ${formatTime(accessCreated.occurredAt)}`);
+      } else {
+        parts.push('agent access not copied yet');
+      }
+      if (run.agentAccessExpiresAt && !run.agentAccessRevokedAt) {
+        parts.push(`access expires ${formatTime(run.agentAccessExpiresAt)}`);
+      }
+    }
+    if (run.status === 'claimed' || run.status === 'running') {
+      if (run.claimedByAgentId) parts.push(`assigned to ${run.claimedByAgentId}`);
+      if (run.heartbeatAt) parts.push(`last heartbeat ${formatTime(run.heartbeatAt)}`);
+      if (run.leaseExpiresAt) parts.push(`lease expires ${formatTime(run.leaseExpiresAt)}`);
+    }
+    if (run.status === 'completed') {
+      parts.push(`${run.resultCount} review item${run.resultCount === 1 ? '' : 's'} submitted`);
+    }
+    if (run.status === 'failed' && run.errorMessage) {
+      parts.push(run.errorMessage);
+    }
+    if (run.status === 'cancelled' && run.cancelledAt) {
+      parts.push(`cancelled ${formatTime(run.cancelledAt)}`);
+    }
+    if (run.status === 'lease_expired') {
+      parts.push(run.errorMessage || 'lease expired before completion');
+    }
+    return parts.filter(Boolean).join(' - ');
+  }
+
   private reviewRoomCompletedAgentReviewChromeLabel(): string {
     const openCount = this.reviewRoomOpenReviewItemCount;
     if (typeof openCount === 'number') {
@@ -7222,11 +7266,7 @@ class ProofEditorImpl implements ProofEditor {
         reviewBody.textContent = currentRun
           ? [
             this.reviewRoomAgentReviewStatusLabel(currentRun),
-            currentRun.status === 'queued' && currentRun.agentAccessExpiresAt && !currentRun.agentAccessRevokedAt
-              ? `Agent access expires ${new Date(currentRun.agentAccessExpiresAt).toLocaleString()}.`
-              : currentRun.status === 'queued' && currentRun.agentAccessRevokedAt
-                ? 'Previous agent access was revoked; copy the request again to create fresh access.'
-                : '',
+            this.reviewRoomAgentReviewTimelineDetail(currentRun),
           ].filter(Boolean).join(' ')
           : 'Queue a review request for an external agent. Review Room coordinates the work; the agent brings its own model and credentials.';
         reviewBody.style.cssText = 'padding:0 12px 8px;color:rgba(255,255,255,0.78);font-size:12px;line-height:1.35;';

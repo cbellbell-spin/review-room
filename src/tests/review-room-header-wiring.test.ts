@@ -285,6 +285,12 @@ assert(
     && editorSource.includes("!this.isReviewRoomRuntime()")
     && editorSource.includes("this.reviewRoomOpenReviewItemCount")
     && editorSource.includes("addMenuButton('Requeue external review'")
+    && editorSource.includes('private reviewRoomAgentReviewTimelineDetail(run: ReviewRoomAgentReviewRun)')
+    && editorSource.includes('agent access not copied yet')
+    && shareClientSource.includes('ReviewRoomAgentReviewLifecycleEvent')
+    && shareClientSource.includes('isReviewRoomAgentReviewLifecycleStatus')
+    && reviewRoomRoutesSource.includes('lifecycle: buildAgentReviewRunLifecycle(run, credential)')
+    && reviewRoomMcpSource.includes('lifecycle: buildAgentReviewRunLifecycle(run)')
     && editorSource.includes('the agent brings its own model and credentials')
     && editorSource.includes('This is a request-scoped agent credential')
     && editorSource.includes('shareClient.createReviewRoomAgentCredential(request.id)')
@@ -295,6 +301,7 @@ assert(
     && reviewRoomMcpSource.includes("name: 'review_room_claim_review_request'")
     && reviewRoomMcpSource.includes("name: 'review_room_heartbeat_review_request'")
     && reviewRoomMcpSource.includes("name: 'review_room_complete_review_request'")
+    && reviewItemsSource.includes("event.eventType === 'agent_review.lease_expired'")
     && reviewItemsSource.includes("event.eventType === 'agent_review.completed'"),
   'Expected Add agent to request, monitor, cancel, and requeue a provider-neutral BYO agent review',
 );

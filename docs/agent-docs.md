@@ -65,6 +65,8 @@ When a document owner requests a review:
 
 Claims use short leases. An expired lease becomes `lease_expired`; the document owner can safely requeue it. Only one queued, claimed, or running review request is allowed per document in this first version.
 
+Review-request responses include a `lifecycle` array with status milestones such as `queued`, `claimed`, `running`, `completed`, `failed`, `cancelled`, and `lease_expired`. These entries are for display and coordination only; the secret `leaseToken` is returned only by `review_room_claim_review_request`.
+
 The credential copied by the owner is MCP-only and request-scoped. It can read, comment, suggest, claim, heartbeat, complete, fail, and release only its assigned request. It cannot use direct document mutation routes, accept or reject suggestions, publish, manage members, or access another document. Completing, failing, releasing, cancelling, or expiring the request revokes the credential.
 
 ## Agent Routes
