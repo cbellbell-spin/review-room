@@ -156,14 +156,17 @@ assert(
   editorSource.includes("import {\n  reviewRoomClient,")
     && reviewRoomClientSource.includes('export class ReviewRoomClient')
     && reviewRoomClientSource.includes('fetchHistory(options?')
-    && reviewRoomClientSource.includes('return shareClient.fetchReviewRoomHistory(options);')
     && reviewRoomClientSource.includes('fetchMembers(options?')
-    && reviewRoomClientSource.includes('return shareClient.fetchReviewRoomMembers(options);')
     && reviewRoomClientSource.includes('fetchAgentReviewRuns(options?')
-    && reviewRoomClientSource.includes('return shareClient.fetchReviewRoomAgentReviewRuns(options);')
+    && reviewRoomClientSource.includes('/review-room/api/documents/${encodeURIComponent(slug)}')
+    && reviewRoomClientSource.includes('shareClient.getShareAuthHeaders(token)')
+    && reviewRoomClientSource.includes('shareClient.parseShareRequestError(response)')
+    && !shareClientSource.includes('/review-room/api/')
+    && !shareClientSource.includes('async fetchReviewRoomHistory(')
+    && !shareClientSource.includes('ReviewRoomAgentReviewRun')
     && reviewPanelSource.includes("from './client'")
     && reviewItemsSource.includes("from './client'"),
-  'Expected Review Room product APIs and types to route through the Review Room client boundary while shareClient keeps compatibility wrappers',
+  'Expected Review Room product APIs and types to live behind the Review Room client boundary while shareClient keeps only generic share helpers',
 );
 assert(
   reviewTokensSource.includes('--rr-accent: #266854;')
@@ -177,16 +180,16 @@ assert(
   'Expected the extracted Review Room cockpit to use CJB tokens, tabs, and a realtime availability note',
 );
 assert(
-  shareClientSource.includes('async fetchReviewRoomHistory(')
-    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/history?${params.toString()}')
-    && shareClientSource.includes('ReviewRoomHistoryEvent')
-    && shareClientSource.includes('before: event.before')
-    && shareClientSource.includes('after: event.after')
-    && shareClientSource.includes('async fetchReviewRoomTasks(')
-    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/tasks?status=${encodeURIComponent(status)}')
-    && shareClientSource.includes('async updateReviewRoomTaskStatus(')
-    && shareClientSource.includes('async markReviewRoomAuditEventReviewed(')
-    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/audit/${encodeURIComponent(eventId)}/reviewed')
+  reviewRoomClientSource.includes('async fetchHistory(')
+    && reviewRoomClientSource.includes('`/history?${params.toString()}`')
+    && reviewRoomClientSource.includes('export interface ReviewRoomHistoryEvent')
+    && reviewRoomClientSource.includes('before: event.before')
+    && reviewRoomClientSource.includes('after: event.after')
+    && reviewRoomClientSource.includes('async fetchTasks(')
+    && reviewRoomClientSource.includes('`/tasks?status=${encodeURIComponent(status)}`')
+    && reviewRoomClientSource.includes('async updateTaskStatus(')
+    && reviewRoomClientSource.includes('async markAuditEventReviewed(')
+    && reviewRoomClientSource.includes('`/audit/${encodeURIComponent(eventId)}/reviewed`')
     && editorSource.includes('reviewRoomClient.fetchTasks({ status: \'all\' })')
     && editorSource.includes('reviewRoomClient.updateTaskStatus(taskId, status)')
     && editorSource.includes('filterOpenReviewAuditEvents(history.events)')
@@ -196,15 +199,15 @@ assert(
     && reviewPanelSource.includes('renderTasks(tasks)')
     && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'completed')")
     && reviewPanelSource.includes("host.updateTaskStatus(task.id, 'dismissed')")
-    && shareClientSource.includes('async fetchReviewRoomBaselines(')
-    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/baselines?limit=${limit}')
-    && shareClientSource.includes('async createReviewRoomBaseline(')
+    && reviewRoomClientSource.includes('async fetchBaselines(')
+    && reviewRoomClientSource.includes('`/baselines?limit=${limit}`')
+    && reviewRoomClientSource.includes('async createBaseline(')
     && editorSource.includes('reviewRoomClient.fetchBaselines({ limit: 10 })')
     && editorSource.includes('reviewRoomClient.createBaseline({ note })')
     && reviewPanelSource.includes('renderPublish(baselines, historyEvents)')
     && reviewPanelSource.includes('Changes since baseline')
     && reviewItemsSource.includes('Created baseline'),
-  'Expected share client and sidebar host to expose typed Review Room history, task, and baseline loading/actions',
+  'Expected Review Room client and sidebar host to expose typed history, task, and baseline loading/actions',
 );
 assert(
   markPopoverSource.includes('void proof.openReviewRoomReviewSidebar({ useSelection: true, initialTab: \'comments\' });')
@@ -213,11 +216,11 @@ assert(
   'Expected Review Room selection comments and selection-created suggestions to route through the Review sidebar instead of the SDK popover',
 );
 assert(
-  shareClientSource.includes('ReviewRoomDocumentMember')
-    && shareClientSource.includes('async fetchReviewRoomMembers(')
-    && shareClientSource.includes('/review-room/api/documents/${encodeURIComponent(this.slug)}/members')
-    && shareClientSource.includes('async upsertReviewRoomMember(')
-    && shareClientSource.includes('async revokeReviewRoomMember(')
+  reviewRoomClientSource.includes('export interface ReviewRoomDocumentMember')
+    && reviewRoomClientSource.includes('async fetchMembers(')
+    && reviewRoomClientSource.includes("this.getDocumentUrl('/members')")
+    && reviewRoomClientSource.includes('async upsertMember(')
+    && reviewRoomClientSource.includes('async revokeMember(')
     && editorSource.includes('private openReviewRoomMembersModal()')
     && editorSource.includes('Manage human access')
     && editorSource.includes('View collaborators')
@@ -284,11 +287,11 @@ assert(
   'Expected Add agent to expose a Review Room MCP-first prompt modal',
 );
 assert(
-  shareClientSource.includes('async fetchReviewRoomAgentReviewRuns(')
-    && shareClientSource.includes('async startReviewRoomAgentReview(')
-    && shareClientSource.includes('async retryReviewRoomAgentReview(')
-    && shareClientSource.includes('async cancelReviewRoomAgentReview(')
-    && shareClientSource.includes('async createReviewRoomAgentCredential(')
+  reviewRoomClientSource.includes('async fetchAgentReviewRuns(')
+    && reviewRoomClientSource.includes('async startAgentReview(')
+    && reviewRoomClientSource.includes('async retryAgentReview(')
+    && reviewRoomClientSource.includes('async cancelAgentReview(')
+    && reviewRoomClientSource.includes('async createAgentCredential(')
     && editorSource.includes('private async refreshReviewRoomAgentReviewStatus()')
     && editorSource.includes('private async startReviewRoomAgentReview()')
     && editorSource.includes('private async retryReviewRoomAgentReview()')
@@ -301,8 +304,8 @@ assert(
     && editorSource.includes("addMenuButton('Requeue external review'")
     && editorSource.includes('private reviewRoomAgentReviewTimelineDetail(run: ReviewRoomAgentReviewRun)')
     && editorSource.includes('agent access not copied yet')
-    && shareClientSource.includes('ReviewRoomAgentReviewLifecycleEvent')
-    && shareClientSource.includes('isReviewRoomAgentReviewLifecycleStatus')
+    && reviewRoomClientSource.includes('ReviewRoomAgentReviewLifecycleEvent')
+    && reviewRoomClientSource.includes('isReviewRoomAgentReviewLifecycleStatus')
     && reviewRoomRoutesSource.includes('lifecycle: buildAgentReviewRunLifecycle(run, credential)')
     && reviewRoomMcpSource.includes('lifecycle: buildAgentReviewRunLifecycle(run)')
     && editorSource.includes('the agent brings its own model and credentials')
@@ -366,7 +369,7 @@ assert(
   'Expected existing Review Room member rows to expose copyable tokenized collaborator links',
 );
 assert(
-  shareClientSource.includes('identityInvitePath?: string | null;')
+  reviewRoomClientSource.includes('identityInvitePath?: string | null;')
     && editorSource.includes('saved.identityInvitePath || saved.member.openPath')
     && editorSource.includes('can accept this one-time identity invitation')
     && editorSource.includes("copy.textContent = 'Copy identity invitation';"),
