@@ -8,6 +8,7 @@ import {
   buildCollabSession,
   getCanonicalReadableDocumentSync,
   getCollabRuntime,
+  getLiveCollabBlockStatus,
   invalidateCollabDocument,
   invalidateCollabDocumentAndWait,
   loadedCollabMarksMatch,
@@ -16,6 +17,7 @@ import {
   syncCanonicalDocumentStateToCollab,
   stripEphemeralCollabSpans,
   acquireRewriteLock,
+  type LiveCollabBlockStatus,
 } from './collab.js';
 import { getSnapshotPublicUrl, refreshSnapshotForSlug } from './snapshot.js';
 import { executeCanonicalRewrite, mutateCanonicalDocument } from './canonical-document.js';
@@ -794,6 +796,34 @@ async function resolveOpenContextAccess(
 
 function deriveShareCapabilities(role: ShareRole, shareState: string): ReturnType<typeof deriveReviewRoomCapabilities> {
   return deriveReviewRoomCapabilities(shareRoleToReviewRoomRole(role), shareState);
+}
+
+function setLiveCollabRetryAfter(res: Response, block: LiveCollabBlockStatus): void {
+  if (typeof block.retryAfterMs !== 'number' || !Number.isFinite(block.retryAfterMs) || block.retryAfterMs <= 0) return;
+  res.setHeader('Retry-After', String(Math.max(1, Math.ceil(block.retryAfterMs / 1000))));
+}
+
+function buildLiveCollabUnavailablePayload(
+  slug: string,
+  shareState: string,
+  block: LiveCollabBlockStatus,
+): {
+  collabAvailable: false;
+  snapshotUrl: string | null;
+  code: string;
+  retryAfterMs: number | null;
+  message: string;
+} {
+  const retryAfterMs = typeof block.retryAfterMs === 'number' && Number.isFinite(block.retryAfterMs)
+    ? Math.max(0, Math.trunc(block.retryAfterMs))
+    : null;
+  return {
+    collabAvailable: false,
+    snapshotUrl: shareState === 'ACTIVE' ? getSnapshotPublicUrl(slug) : null,
+    code: block.code ?? 'COLLAB_AUTO_QUARANTINED',
+    retryAfterMs,
+    message: block.message ?? 'Live collaboration is temporarily unavailable.',
+  };
 }
 
 async function buildReviewRoomOpenPayload(slug: string, presentedSecret: string | null): Promise<{
@@ -2439,6 +2469,39 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
   if (!session) {
+    const liveCollabBlock = getLiveCollabBlockStatus(slug);
+    if (liveCollabBlock.active) {
+      setLiveCollabRetryAfter(res, liveCollabBlock);
+      const links = buildShareLink(req, doc.slug);
+      res.json({
+        success: true,
+        ...buildLiveCollabUnavailablePayload(doc.slug, doc.share_state, liveCollabBlock),
+        doc: {
+          slug: doc.slug,
+          docId: doc.doc_id,
+          title: doc.title,
+          markdown: stripProofSpanTags(doc.markdown),
+          marks: parseJson(doc.marks),
+          shareState: doc.share_state,
+          active: doc.share_state === 'ACTIVE',
+          createdAt: doc.created_at,
+          updatedAt: doc.updated_at,
+          viewers: getRoomSize(doc.slug),
+        },
+        ...(reviewRoom ? { reviewRoom } : {}),
+        capabilities,
+        links: {
+          webUrl: links.shareUrl,
+          snapshotUrl: doc.share_state === 'ACTIVE' ? getSnapshotPublicUrl(doc.slug) : null,
+        },
+        collab: {
+          enabled: false,
+          wsUrlBase: collabRuntime.wsUrlBase,
+          reason: liveCollabBlock.reason ?? liveCollabBlock.code ?? 'COLLAB_AUTO_QUARANTINED',
+        },
+      });
+      return;
+    }
     res.status(500).json({ error: 'Unable to build collab session' });
     return;
   }
@@ -2528,6 +2591,15 @@ apiRoutes.post('/documents/:slug/collab-refresh', async (req: Request, res: Resp
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
   if (!session) {
+    const liveCollabBlock = getLiveCollabBlockStatus(slug);
+    if (liveCollabBlock.active) {
+      setLiveCollabRetryAfter(res, liveCollabBlock);
+      res.status(503).json({
+        error: liveCollabBlock.message ?? 'Live collaboration is temporarily unavailable.',
+        ...buildLiveCollabUnavailablePayload(doc.slug, doc.share_state, liveCollabBlock),
+      });
+      return;
+    }
     res.status(500).json({ error: 'Unable to build collab session' });
     return;
   }
@@ -2622,6 +2694,20 @@ apiRoutes.get('/documents/:slug/collab-session', async (req: Request, res: Respo
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
   if (!session) {
+    const liveCollabBlock = getLiveCollabBlockStatus(slug);
+    if (liveCollabBlock.active) {
+      setLiveCollabRetryAfter(res, liveCollabBlock);
+      res.json({
+        success: true,
+        ...buildLiveCollabUnavailablePayload(doc.slug, doc.share_state, liveCollabBlock),
+        capabilities: {
+          canRead,
+          canComment,
+          canEdit,
+        },
+      });
+      return;
+    }
     res.status(500).json({ error: 'Unable to build collab session' });
     return;
   }
