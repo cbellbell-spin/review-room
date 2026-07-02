@@ -418,6 +418,13 @@ assert(
   'Expected accepted/rejected suggestion events to cleanly refresh the live collab session after access-epoch rotation',
 );
 assert(
+  editorSource.includes('if (this.collabEnabled && this.reviewRoomFinalizedSuggestionIds.size > 0) {')
+    && editorSource.includes('await this.refreshCollabSessionAndReconnect(false);')
+    && editorSource.includes('} else if (!this.collabEnabled) {')
+    && editorSource.includes('const contentWithMarks = embedMarks(doc.markdown, serverMarks);'),
+  'Expected Review Room suggestion decisions to rebind to the fresh collab epoch before applying canonical content locally',
+);
+assert(
   !editorSource.includes('if (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0) return;\n    if (this.hasRecentLocalEditorInput()) return;')
     && editorSource.includes('if (this.hasRecentLocalEditorInput()) return;\n    this.collabRemoteSettlingUntilMs = Date.now() + COLLAB_REMOTE_EDIT_SETTLE_MS;'),
   'Expected remote collab updates to gate local edits even while sync counters are active',

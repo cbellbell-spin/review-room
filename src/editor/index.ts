@@ -6238,20 +6238,24 @@ class ProofEditorImpl implements ProofEditor {
     }
     this.lastReceivedServerMarks = { ...serverMarks };
     this.initialMarksSynced = true;
-    if (!this.collabEnabled || this.reviewRoomFinalizedSuggestionIds.size > 0) {
+    if (this.collabEnabled && this.reviewRoomFinalizedSuggestionIds.size > 0) {
+      // Suggestion decisions are canonical server mutations that bump the collab
+      // access epoch. Do not replace the editor while it is still bound to the
+      // old Y.Doc; that local replace can become stale unsynced updates. Rebind
+      // to the fresh epoch and let the sync-ready path apply the pending
+      // canonical snapshot.
+      await this.refreshCollabSessionAndReconnect(false);
+    } else if (!this.collabEnabled) {
       // Only the REST save mode may replace the document wholesale. With live
       // collab connected, a local replaceWith races the same change arriving
       // over the websocket (concurrent full replaces duplicate or revert
       // content); the collab runtime delivers content and marks instead.
-      // After an explicit suggestion decision, the server has bumped the collab
-      // epoch and is authoritative; reloading prevents stale local marks from
-      // resurfacing in the Review pane while the socket reconnects.
       const contentWithMarks = embedMarks(doc.markdown, serverMarks);
       this.loadDocument(contentWithMarks, { allowShareContentMutation: true });
       if (Object.keys(serverMarks).length > 0) {
         this.applyExternalMarks(serverMarks);
       }
-      if (pendingCanonicalDecision && !this.collabEnabled) {
+      if (pendingCanonicalDecision) {
         this.reviewRoomPendingCanonicalDecisionDocument = null;
       }
       this.captureReviewRoomPersistedReviewSnapshot();
